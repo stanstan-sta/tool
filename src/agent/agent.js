@@ -281,6 +281,14 @@ export class Agent {
             return false;
         }
 
+        if (this.history.turns.length > 0) {
+            const lastTurn = this.history.turns[this.history.turns.length - 1];
+            if (lastTurn.role === 'assistant' && lastTurn.content.includes(message)) {
+                console.warn('Caught infinite loop, dropping echoed message.');
+                return false;
+            }
+        }
+
         let used_command = false;
         if (max_responses === null) {
             max_responses = settings.max_commands === -1 ? Infinity : settings.max_commands;
