@@ -2,16 +2,21 @@ import { spawn } from 'child_process';
 import { logoutAgent } from '../mindcraft/mindserver.js';
 
 export class AgentProcess {
-    constructor(name, port) {
+    constructor(name, port, bridge_mode = false) {
         this.name = name;
         this.port = port;
+        this.bridge_mode = bridge_mode;
     }
 
     start(load_memory=false, init_message=null, count_id=0) {
         this.count_id = count_id;
         this.running = true;
 
-        let args = ['src/process/init_agent.js', this.name];
+        const initScript = this.bridge_mode
+            ? 'src/process/init_bridge_agent.js'
+            : 'src/process/init_agent.js';
+
+        let args = [initScript, this.name];
         args.push('-n', this.name);
         args.push('-c', count_id);
         if (load_memory)

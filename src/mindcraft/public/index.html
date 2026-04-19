@@ -824,7 +824,7 @@
             agentSettingsForm.style.gridTemplateColumns = 'repeat(auto-fit, minmax(320px, 1fr))';
             agentSettingsForm.style.gap = '8px';
             Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return; // profile not edited here
+                if (key === 'profile') return; // profile handled by dedicated section below
                 const cfg = settingsSpec[key];
                 const wrapper = document.createElement('div');
                 wrapper.className = 'setting-wrapper';
@@ -856,6 +856,19 @@
                 wrapper.appendChild(input);
                 agentSettingsForm.appendChild(wrapper);
             });
+
+            // Populate the dedicated profile editor fields
+            const profile = settings.profile || {};
+            const modelInput = document.getElementById('profileModel');
+            const personalityInput = document.getElementById('profilePersonality');
+            const conversingInput = document.getElementById('profileConversing');
+            if (modelInput) {
+                const modelVal = profile.model;
+                modelInput.value = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
+            }
+            if (personalityInput) personalityInput.value = profile.personality || '';
+            if (conversingInput) conversingInput.value = profile.conversing || '';
+
             onAgentSettingsChanged();
         }
 
@@ -871,7 +884,8 @@
         window.openAgentSettings = openAgentSettings;
 
         function getEditedAgentSettings() {
-            const newSettings = { profile: (originalAgentSettings && originalAgentSettings.profile) || {} };
+            const baseProfile = (originalAgentSettings && originalAgentSettings.profile) || {};
+            const newSettings = { profile: { ...baseProfile } };
             Object.keys(settingsSpec).forEach(key => {
                 if (key === 'profile') return;
                 const cfg = settingsSpec[key];
@@ -886,6 +900,14 @@
                 } else val = input.value;
                 newSettings[key] = val;
             });
+            // Read profile editor fields
+            const modelRaw = (document.getElementById('profileModel') || {}).value || '';
+            try { newSettings.profile.model = JSON.parse(modelRaw); }
+            catch { newSettings.profile.model = modelRaw || baseProfile.model; }
+            const personality = (document.getElementById('profilePersonality') || {}).value;
+            if (personality !== undefined) newSettings.profile.personality = personality;
+            const conversing = (document.getElementById('profileConversing') || {}).value;
+            if (conversing !== undefined) newSettings.profile.conversing = conversing || undefined;
             return newSettings;
         }
 
@@ -893,14 +915,29 @@
             if (!a || !b) return false;
             const keys = Object.keys(settingsSpec).filter(k => k !== 'profile');
             for (const k of keys) {
-                const va = a[k];
-                const vb = b[k];
+                const va = a[k]; const vb = b[k];
                 if (typeof va === 'object' || typeof vb === 'object') {
                     if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
                 } else if (va !== vb) return false;
             }
+            // Also compare profile editor fields
+            const ap = a.profile || {}; const bp = b.profile || {};
+            const modelA = typeof ap.model === 'object' ? JSON.stringify(ap.model) : (ap.model || '');
+            const modelB = typeof bp.model === 'object' ? JSON.stringify(bp.model) : (bp.model || '');
+            if (modelA !== modelB) return false;
+            if ((ap.personality || '') !== (bp.personality || '')) return false;
+            if ((ap.conversing || '') !== (bp.conversing || '')) return false;
             return true;
         }
+
+        function toggleProfileSection() {
+            const fields = document.getElementById('profileFields');
+            const toggle = document.getElementById('profileSectionToggle');
+            if (!fields || !toggle) return;
+            const collapsed = fields.classList.toggle('collapsed');
+            toggle.textContent = collapsed ? '▼ expand' : '▲ collapse';
+        }
+        window.toggleProfileSection = toggleProfileSection;
 
         function onAgentSettingsChanged() {
             if (!originalAgentSettings) { applyBtn.disabled = true; return; }
