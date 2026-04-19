@@ -180,6 +180,8 @@ export class Agent {
         const respondFunc = async (username, message) => {
             if (message === "") return;
             if (username === this.name) return;
+            const nicknames = this.prompter.profile.nicknames;
+            if (Array.isArray(nicknames) && nicknames.some(n => n.toLowerCase() === username.toLowerCase())) return;
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
@@ -297,7 +299,9 @@ export class Agent {
             max_responses = Infinity;
         }
 
-        const self_prompt = source === 'system' || source === this.name;
+        const nicknames = this.prompter.profile.nicknames;
+        const isOwnNickname = Array.isArray(nicknames) && nicknames.some(n => n.toLowerCase() === source.toLowerCase());
+        const self_prompt = source === 'system' || source === this.name || isOwnNickname;
         const from_other_bot = convoManager.isOtherAgent(source);
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands

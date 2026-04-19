@@ -13,6 +13,23 @@
 
 ---
 
+## 🚀 Minimal Quickstart (Text Guide)
+
+1. **Install Node.js** — [nodejs.org](https://nodejs.org/) (v18 or v20 LTS).
+2. **Clone & install** — `git clone <this repo>`, then `npm install` inside the folder.
+3. **Set up a model**:
+   - **Local (no API key):** Install [Ollama](https://ollama.com/), run `ollama pull sweaterdog/andy-4:micro-q8_0`, and set `"model": "ollama/sweaterdog/andy-4:micro-q8_0"` in `andy.json`.
+   - **Cloud:** Rename `keys.example.json` → `keys.json`, add your API key, and set `"model": "gpt-4o"` (or another model) in `andy.json`.
+   - **LM Studio:** Start the LM Studio local server and set `"model": "lmstudio/<your-model-name>"` in `andy.json`.
+4. **Configure the bot name** — Open `andy.json` and set `"name"` to exactly match your Minecraft account username (important for online servers).
+5. **Open your Minecraft world** — In singleplayer, open to LAN (default port `55916`). For online servers, edit `host` and `port` in `settings.js`.
+6. **Start the bot** — Run `node main.js` (or `npm start`). Open `http://localhost:8080` to view the live console.
+7. **Chat with the bot** — In Minecraft chat, type `<botname> hello` to talk to it.
+
+> **Tip:** To add personality or change the system prompt, edit `andy.json` directly, or use the WebUI at `http://localhost:8080` → click the agent → open Settings.
+
+---
+
 ## ⚡ Quick Start — Local Only (no API key required)
 
 > **Requirements:** [Node.js v18 or v20 LTS](https://nodejs.org/) · [Minecraft Java Edition](https://www.minecraft.net/en-us/store/minecraft-java-bedrock-edition-pc) (up to v1.21.11)
@@ -119,6 +136,7 @@ To connect to online servers your bot will need an official Microsoft/Minecraft 
 ```
 > [!Important]
 > The bot's name in the profile.json must exactly match the Minecraft profile name! Otherwise the bot will spam talk to itself.
+> If the Minecraft server broadcasts messages under a slightly different username, add it to the `"nicknames"` array in your profile JSON (e.g. `"nicknames": ["Nakano_chan", "Miku"]`) so the bot recognizes those as its own name and won't respond to its own echoed messages.
 
 To use different accounts, Mindcraft will connect with the account that the Minecraft launcher is currently using. You can switch accounts in the launcher, then run `node main.js`, then switch to your main account after the bot has connected.
 
