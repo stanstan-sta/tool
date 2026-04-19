@@ -1,0 +1,1314 @@
+{
+  "version": "1.21.11",
+  "description": "Comprehensive Minecraft wiki/cheatsheet for agent knowledge. Structured for fast offline lookup.",
+
+  "categories": {
+    "fuel": {
+      "description": "Items that can be used as fuel in a furnace or smoker.",
+      "items": {
+        "coal": { "burn_time_items": 8, "notes": "Most common fuel" },
+        "charcoal": { "burn_time_items": 8, "notes": "Crafted from wood logs in furnace" },
+        "coal_block": { "burn_time_items": 80, "notes": "9x coal in block form" },
+        "blaze_rod": { "burn_time_items": 12 },
+        "lava_bucket": { "burn_time_items": 100, "notes": "Best single-use fuel" },
+        "wood": { "burn_time_items": 1.5, "notes": "Any log or plank" },
+        "oak_planks": { "burn_time_items": 1.5 },
+        "spruce_planks": { "burn_time_items": 1.5 },
+        "birch_planks": { "burn_time_items": 1.5 },
+        "jungle_planks": { "burn_time_items": 1.5 },
+        "acacia_planks": { "burn_time_items": 1.5 },
+        "dark_oak_planks": { "burn_time_items": 1.5 },
+        "mangrove_planks": { "burn_time_items": 1.5 },
+        "cherry_planks": { "burn_time_items": 1.5 },
+        "bamboo_planks": { "burn_time_items": 1.5 },
+        "stick": { "burn_time_items": 0.5 },
+        "wooden_pickaxe": { "burn_time_items": 1 },
+        "wooden_sword": { "burn_time_items": 1 },
+        "wooden_axe": { "burn_time_items": 1 },
+        "wooden_shovel": { "burn_time_items": 1 },
+        "wooden_hoe": { "burn_time_items": 1 },
+        "bucket_of_lava": { "burn_time_items": 100 },
+        "dried_kelp_block": { "burn_time_items": 20 }
+      }
+    },
+    "raw_food": {
+      "description": "Raw foods that can be cooked in a furnace or smoker.",
+      "items": {
+        "raw_beef": { "cooked": "cooked_beef", "hunger_raw": 3, "hunger_cooked": 8 },
+        "raw_chicken": { "cooked": "cooked_chicken", "hunger_raw": 2, "hunger_cooked": 6 },
+        "raw_porkchop": { "cooked": "cooked_porkchop", "hunger_raw": 3, "hunger_cooked": 8 },
+        "raw_mutton": { "cooked": "cooked_mutton", "hunger_raw": 2, "hunger_cooked": 6 },
+        "raw_rabbit": { "cooked": "cooked_rabbit", "hunger_raw": 3, "hunger_cooked": 5 },
+        "raw_salmon": { "cooked": "cooked_salmon", "hunger_raw": 2, "hunger_cooked": 6 },
+        "raw_cod": { "cooked": "cooked_cod", "hunger_raw": 2, "hunger_cooked": 5 },
+        "potato": { "cooked": "baked_potato", "hunger_raw": 1, "hunger_cooked": 5 },
+        "kelp": { "cooked": "dried_kelp", "hunger_raw": 1, "hunger_cooked": 1 }
+      }
+    },
+    "cooked_food": {
+      "description": "Cooked/prepared foods that restore hunger.",
+      "items": {
+        "cooked_beef": { "hunger": 8, "saturation": 12.8 },
+        "cooked_chicken": { "hunger": 6, "saturation": 7.2 },
+        "cooked_porkchop": { "hunger": 8, "saturation": 12.8 },
+        "cooked_mutton": { "hunger": 6, "saturation": 9.6 },
+        "cooked_rabbit": { "hunger": 5, "saturation": 6 },
+        "cooked_salmon": { "hunger": 6, "saturation": 9.6 },
+        "cooked_cod": { "hunger": 5, "saturation": 6 },
+        "baked_potato": { "hunger": 5, "saturation": 6 },
+        "bread": { "hunger": 5, "saturation": 6 },
+        "cake": { "hunger": 14, "saturation": 2.8, "notes": "Placed block, 7 slices" },
+        "pumpkin_pie": { "hunger": 8, "saturation": 4.8 },
+        "cookie": { "hunger": 2, "saturation": 0.4 },
+        "golden_apple": { "hunger": 4, "saturation": 9.6, "notes": "Gives regeneration and absorption" },
+        "golden_carrot": { "hunger": 6, "saturation": 14.4, "notes": "Highest saturation food" },
+        "mushroom_stew": { "hunger": 6, "saturation": 7.2 },
+        "rabbit_stew": { "hunger": 10, "saturation": 12 },
+        "suspicious_stew": { "hunger": 6, "saturation": 7.2, "notes": "Also gives potion effect" },
+        "dried_kelp": { "hunger": 1, "saturation": 0.6 },
+        "melon_slice": { "hunger": 2, "saturation": 1.2 },
+        "apple": { "hunger": 4, "saturation": 2.4 }
+      }
+    },
+    "tools": {
+      "description": "Tools used for mining, combat, and farming.",
+      "tiers": ["wood", "stone", "iron", "gold", "diamond", "netherite"],
+      "types": {
+        "pickaxe": { "use": "Mining stone and ores" },
+        "axe": { "use": "Chopping wood and as weapon" },
+        "shovel": { "use": "Digging dirt, sand, gravel" },
+        "hoe": { "use": "Tilling farmland" },
+        "sword": { "use": "Combat" },
+        "trident": { "use": "Ranged and melee combat, water" },
+        "bow": { "use": "Ranged combat" },
+        "crossbow": { "use": "Ranged combat, more powerful than bow" },
+        "fishing_rod": { "use": "Fishing" },
+        "shears": { "use": "Shearing sheep, breaking leaves/cobwebs" },
+        "flint_and_steel": { "use": "Lighting fires, activating nether portals" }
+      }
+    },
+    "armor": {
+      "description": "Wearable protection items.",
+      "tiers": ["leather", "chainmail", "iron", "gold", "diamond", "netherite"],
+      "slots": ["helmet", "chestplate", "leggings", "boots"]
+    },
+    "building_blocks": {
+      "description": "Common blocks used for building.",
+      "items": [
+        "stone", "cobblestone", "dirt", "grass_block", "sand", "gravel",
+        "oak_planks", "spruce_planks", "birch_planks", "jungle_planks",
+        "acacia_planks", "dark_oak_planks", "mangrove_planks", "cherry_planks",
+        "oak_log", "spruce_log", "birch_log", "jungle_log", "acacia_log", "dark_oak_log",
+        "bricks", "stone_bricks", "cobblestone", "mossy_cobblestone",
+        "glass", "glass_pane", "wool", "concrete", "terracotta"
+      ]
+    },
+    "ores": {
+      "description": "Mineable ores and their drops.",
+      "items": {
+        "coal_ore": { "drop": "coal", "min_y": -64, "max_y": 320, "best_y": 96 },
+        "deepslate_coal_ore": { "drop": "coal", "min_y": -8, "max_y": 0 },
+        "iron_ore": { "drop": "raw_iron", "min_y": -64, "max_y": 320, "best_y": 16 },
+        "deepslate_iron_ore": { "drop": "raw_iron", "min_y": -64, "max_y": 64 },
+        "copper_ore": { "drop": "raw_copper", "min_y": -16, "max_y": 112, "best_y": 48 },
+        "gold_ore": { "drop": "raw_gold", "min_y": -64, "max_y": 32, "best_y": -16 },
+        "redstone_ore": { "drop": "redstone", "min_y": -64, "max_y": 16, "best_y": -59 },
+        "lapis_ore": { "drop": "lapis_lazuli", "min_y": -64, "max_y": 64, "best_y": 0 },
+        "diamond_ore": { "drop": "diamond", "min_y": -64, "max_y": 16, "best_y": -59 },
+        "emerald_ore": { "drop": "emerald", "min_y": -16, "max_y": 256, "biome": "mountains", "best_y": 236 },
+        "nether_quartz_ore": { "drop": "quartz", "dimension": "nether" },
+        "nether_gold_ore": { "drop": "gold_nugget", "dimension": "nether" },
+        "ancient_debris": { "drop": "ancient_debris", "dimension": "nether", "min_y": 8, "max_y": 22, "best_y": 15 }
+      }
+    },
+    "mob_drops": {
+      "description": "Items dropped by mobs.",
+      "mobs": {
+        "cow": { "drops": ["raw_beef", "leather"], "xp": "1-3" },
+        "pig": { "drops": ["raw_porkchop"], "xp": "1-3" },
+        "chicken": { "drops": ["raw_chicken", "feather", "egg"], "xp": "1-3" },
+        "sheep": { "drops": ["raw_mutton", "wool"], "xp": "1-3" },
+        "rabbit": { "drops": ["raw_rabbit", "rabbit_hide", "rabbit_foot"], "xp": "1-3" },
+        "salmon": { "drops": ["raw_salmon"], "xp": "1-3" },
+        "cod": { "drops": ["raw_cod"], "xp": "1-3" },
+        "zombie": { "drops": ["rotten_flesh", "iron_ingot", "carrot", "potato"], "xp": "5" },
+        "skeleton": { "drops": ["bone", "arrow", "bow"], "xp": "5" },
+        "creeper": { "drops": ["gunpowder"], "xp": "5", "notes": "Drops music disc if killed by skeleton" },
+        "spider": { "drops": ["string", "spider_eye"], "xp": "5" },
+        "enderman": { "drops": ["ender_pearl"], "xp": "5" },
+        "blaze": { "drops": ["blaze_rod"], "xp": "10", "dimension": "nether" },
+        "ghast": { "drops": ["ghast_tear", "gunpowder"], "xp": "5", "dimension": "nether" },
+        "wither_skeleton": { "drops": ["coal", "bone", "wither_skeleton_skull"], "xp": "5", "dimension": "nether" },
+        "witch": { "drops": ["glass_bottle", "glowstone_dust", "gunpowder", "redstone", "spider_eye", "stick", "sugar"], "xp": "5" },
+        "slime": { "drops": ["slimeball"], "xp": "4" },
+        "magma_cube": { "drops": ["magma_cream"], "xp": "4", "dimension": "nether" },
+        "guardian": { "drops": ["prismarine_shard", "prismarine_crystals", "raw_cod"], "xp": "10" },
+        "elder_guardian": { "drops": ["wet_sponge", "prismarine_shard", "prismarine_crystals", "raw_cod"], "xp": "10" },
+        "shulker": { "drops": ["shulker_shell"], "xp": "5", "dimension": "end" },
+        "ender_dragon": { "drops": ["dragon_egg", "dragon_breath"], "xp": "12000", "dimension": "end" },
+        "wither": { "drops": ["nether_star"], "xp": "50" },
+        "piglin": { "drops": ["gold_nugget", "gold_ingot", "crying_obsidian"], "xp": "5", "dimension": "nether" }
+      }
+    },
+    "redstone": {
+      "description": "Redstone components and their functions.",
+      "items": {
+        "redstone": { "use": "Basic wire/signal carrier" },
+        "redstone_torch": { "use": "Always-on power source, inverter (NOT gate)" },
+        "lever": { "use": "Toggle switch, permanent power source" },
+        "button": { "use": "Momentary pulse (stone: 1 tick, wood: 15 ticks)" },
+        "pressure_plate": { "use": "Activates when stepped on" },
+        "tripwire_hook": { "use": "Activates when string is broken" },
+        "daylight_detector": { "use": "Detects sunlight, outputs power based on time" },
+        "observer": { "use": "Detects block state changes, outputs 1-tick pulse" },
+        "piston": { "use": "Pushes blocks in direction when powered" },
+        "sticky_piston": { "use": "Pushes AND pulls blocks when powered/unpowered" },
+        "dispenser": { "use": "Dispenses items when powered" },
+        "dropper": { "use": "Drops items or moves to container when powered" },
+        "hopper": { "use": "Moves items between containers, no power needed" },
+        "comparator": { "use": "Compares or subtracts signal strengths" },
+        "repeater": { "use": "Extends signal (up to 15 blocks), adds delay, locks signals" },
+        "note_block": { "use": "Plays note when powered" },
+        "tnt": { "use": "Explodes when powered by redstone or fire" },
+        "command_block": { "use": "Executes commands when powered (requires OP)" }
+      }
+    }
+  },
+
+  "recipes": {
+    "crafting": {
+      "wooden_pickaxe": {
+        "ingredients": { "oak_planks": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "3 planks in top row, 2 sticks in middle column",
+        "notes": "Can use any wood plank type"
+      },
+      "stone_pickaxe": {
+        "ingredients": { "cobblestone": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_pickaxe": {
+        "ingredients": { "iron_ingot": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "golden_pickaxe": {
+        "ingredients": { "gold_ingot": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_pickaxe": {
+        "ingredients": { "diamond": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "wooden_sword": {
+        "ingredients": { "oak_planks": 2, "stick": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "stone_sword": {
+        "ingredients": { "cobblestone": 2, "stick": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_sword": {
+        "ingredients": { "iron_ingot": 2, "stick": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_sword": {
+        "ingredients": { "diamond": 2, "stick": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "wooden_axe": {
+        "ingredients": { "oak_planks": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "stone_axe": {
+        "ingredients": { "cobblestone": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_axe": {
+        "ingredients": { "iron_ingot": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_axe": {
+        "ingredients": { "diamond": 3, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "wooden_shovel": {
+        "ingredients": { "oak_planks": 1, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "stone_shovel": {
+        "ingredients": { "cobblestone": 1, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_shovel": {
+        "ingredients": { "iron_ingot": 1, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_shovel": {
+        "ingredients": { "diamond": 1, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "wooden_hoe": {
+        "ingredients": { "oak_planks": 2, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "stone_hoe": {
+        "ingredients": { "cobblestone": 2, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_hoe": {
+        "ingredients": { "iron_ingot": 2, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_hoe": {
+        "ingredients": { "diamond": 2, "stick": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_helmet": {
+        "ingredients": { "iron_ingot": 5 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "U-shape top 3 + sides"
+      },
+      "iron_chestplate": {
+        "ingredients": { "iron_ingot": 8 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "Full 3x3 minus center"
+      },
+      "iron_leggings": {
+        "ingredients": { "iron_ingot": 7 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_boots": {
+        "ingredients": { "iron_ingot": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_helmet": {
+        "ingredients": { "diamond": 5 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_chestplate": {
+        "ingredients": { "diamond": 8 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_leggings": {
+        "ingredients": { "diamond": 7 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_boots": {
+        "ingredients": { "diamond": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "crafting_table": {
+        "ingredients": { "oak_planks": 4 },
+        "output": 1,
+        "method": "inventory",
+        "notes": "2x2 grid of any planks"
+      },
+      "furnace": {
+        "ingredients": { "cobblestone": 8 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "Ring of 8 cobblestone (3x3 minus center)"
+      },
+      "chest": {
+        "ingredients": { "oak_planks": 8 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "Ring of 8 planks"
+      },
+      "torch": {
+        "ingredients": { "coal": 1, "stick": 1 },
+        "output": 4,
+        "method": "crafting_table",
+        "notes": "Can use charcoal instead of coal"
+      },
+      "stick": {
+        "ingredients": { "oak_planks": 2 },
+        "output": 4,
+        "method": "crafting_table",
+        "notes": "Stacked vertically"
+      },
+      "oak_planks": {
+        "ingredients": { "oak_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "spruce_planks": {
+        "ingredients": { "spruce_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "birch_planks": {
+        "ingredients": { "birch_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "jungle_planks": {
+        "ingredients": { "jungle_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "acacia_planks": {
+        "ingredients": { "acacia_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "dark_oak_planks": {
+        "ingredients": { "dark_oak_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "mangrove_planks": {
+        "ingredients": { "mangrove_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "cherry_planks": {
+        "ingredients": { "cherry_log": 1 },
+        "output": 4,
+        "method": "inventory"
+      },
+      "bamboo_planks": {
+        "ingredients": { "bamboo_block": 1 },
+        "output": 2,
+        "method": "inventory"
+      },
+      "bow": {
+        "ingredients": { "stick": 3, "string": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "arrow": {
+        "ingredients": { "flint": 1, "stick": 1, "feather": 1 },
+        "output": 4,
+        "method": "crafting_table"
+      },
+      "bread": {
+        "ingredients": { "wheat": 3 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "3 wheat in a row"
+      },
+      "cake": {
+        "ingredients": { "milk_bucket": 3, "sugar": 2, "egg": 1, "wheat": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "cookie": {
+        "ingredients": { "wheat": 2, "cocoa_beans": 1 },
+        "output": 8,
+        "method": "crafting_table"
+      },
+      "pumpkin_pie": {
+        "ingredients": { "pumpkin": 1, "sugar": 1, "egg": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "mushroom_stew": {
+        "ingredients": { "red_mushroom": 1, "brown_mushroom": 1, "bowl": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "rabbit_stew": {
+        "ingredients": { "cooked_rabbit": 1, "baked_potato": 1, "carrot": 1, "mushroom": 1, "bowl": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "golden_apple": {
+        "ingredients": { "apple": 1, "gold_ingot": 8 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "Apple in center, 8 gold around it"
+      },
+      "golden_carrot": {
+        "ingredients": { "carrot": 1, "gold_nugget": 8 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_ingot": {
+        "ingredients": { "iron_nugget": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "gold_ingot": {
+        "ingredients": { "gold_nugget": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_nugget": {
+        "ingredients": { "iron_ingot": 1 },
+        "output": 9,
+        "method": "crafting_table"
+      },
+      "gold_nugget": {
+        "ingredients": { "gold_ingot": 1 },
+        "output": 9,
+        "method": "crafting_table"
+      },
+      "coal_block": {
+        "ingredients": { "coal": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "iron_block": {
+        "ingredients": { "iron_ingot": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "gold_block": {
+        "ingredients": { "gold_ingot": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "diamond_block": {
+        "ingredients": { "diamond": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "emerald_block": {
+        "ingredients": { "emerald": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "lapis_block": {
+        "ingredients": { "lapis_lazuli": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "redstone_block": {
+        "ingredients": { "redstone": 9 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "glass": {
+        "ingredients": { "sand": 1 },
+        "output": 1,
+        "method": "furnace"
+      },
+      "stone": {
+        "ingredients": { "cobblestone": 1 },
+        "output": 1,
+        "method": "furnace"
+      },
+      "smooth_stone": {
+        "ingredients": { "stone": 1 },
+        "output": 1,
+        "method": "furnace"
+      },
+      "bricks": {
+        "ingredients": { "clay_ball": 4 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "2x2 square"
+      },
+      "brick": {
+        "ingredients": { "clay_ball": 1 },
+        "output": 1,
+        "method": "furnace"
+      },
+      "nether_brick": {
+        "ingredients": { "netherrack": 1 },
+        "output": 1,
+        "method": "furnace"
+      },
+      "ladder": {
+        "ingredients": { "stick": 7 },
+        "output": 3,
+        "method": "crafting_table"
+      },
+      "bed": {
+        "ingredients": { "oak_planks": 3, "white_wool": 3 },
+        "output": 1,
+        "method": "crafting_table",
+        "notes": "Any color wool makes matching color bed"
+      },
+      "door": {
+        "ingredients": { "oak_planks": 6 },
+        "output": 3,
+        "method": "crafting_table",
+        "notes": "2x3 grid of planks"
+      },
+      "trapdoor": {
+        "ingredients": { "oak_planks": 6 },
+        "output": 2,
+        "method": "crafting_table"
+      },
+      "fence": {
+        "ingredients": { "oak_planks": 4, "stick": 2 },
+        "output": 3,
+        "method": "crafting_table"
+      },
+      "fence_gate": {
+        "ingredients": { "oak_planks": 2, "stick": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "bookshelf": {
+        "ingredients": { "oak_planks": 6, "book": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "book": {
+        "ingredients": { "paper": 3, "leather": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "paper": {
+        "ingredients": { "sugar_cane": 3 },
+        "output": 3,
+        "method": "crafting_table",
+        "shape": "3 sugar cane in a row"
+      },
+      "enchanting_table": {
+        "ingredients": { "book": 1, "diamond": 2, "obsidian": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "anvil": {
+        "ingredients": { "iron_block": 3, "iron_ingot": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "beacon": {
+        "ingredients": { "nether_star": 1, "obsidian": 3, "glass": 5 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "brewing_stand": {
+        "ingredients": { "blaze_rod": 1, "cobblestone": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "cauldron": {
+        "ingredients": { "iron_ingot": 7 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "compass": {
+        "ingredients": { "iron_ingot": 4, "redstone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "clock": {
+        "ingredients": { "gold_ingot": 4, "redstone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "map": {
+        "ingredients": { "paper": 8, "compass": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "flint_and_steel": {
+        "ingredients": { "iron_ingot": 1, "flint": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "shears": {
+        "ingredients": { "iron_ingot": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "bucket": {
+        "ingredients": { "iron_ingot": 3 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "V-shape"
+      },
+      "fishing_rod": {
+        "ingredients": { "stick": 3, "string": 2 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "saddle": {
+        "notes": "Cannot be crafted - found in chests or fishing"
+      },
+      "name_tag": {
+        "notes": "Cannot be crafted - found in chests or fishing or villager trades"
+      },
+      "elytra": {
+        "notes": "Cannot be crafted - found in End Cities"
+      },
+      "totem_of_undying": {
+        "notes": "Cannot be crafted - dropped by Evoker"
+      },
+      "trident": {
+        "notes": "Cannot be crafted - dropped by Drowned"
+      },
+      "nether_star": {
+        "notes": "Cannot be crafted - dropped by Wither boss"
+      },
+      "dragon_egg": {
+        "notes": "Cannot be crafted - dropped by Ender Dragon (first kill only)"
+      },
+      "end_crystal": {
+        "ingredients": { "glass": 7, "eye_of_ender": 1, "ghast_tear": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "eye_of_ender": {
+        "ingredients": { "ender_pearl": 1, "blaze_powder": 1 },
+        "output": 1,
+        "method": "crafting_table",
+        "notes": "Used to locate and activate End Portal"
+      },
+      "blaze_powder": {
+        "ingredients": { "blaze_rod": 1 },
+        "output": 2,
+        "method": "crafting_table"
+      },
+      "magma_cream": {
+        "ingredients": { "blaze_powder": 1, "slimeball": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "fermented_spider_eye": {
+        "ingredients": { "spider_eye": 1, "sugar": 1, "brown_mushroom": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "glass_bottle": {
+        "ingredients": { "glass": 3 },
+        "output": 3,
+        "method": "crafting_table"
+      },
+      "glistering_melon_slice": {
+        "ingredients": { "melon_slice": 1, "gold_nugget": 8 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "redstone_torch": {
+        "ingredients": { "redstone": 1, "stick": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "lever": {
+        "ingredients": { "stick": 1, "cobblestone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "piston": {
+        "ingredients": { "oak_planks": 3, "cobblestone": 4, "iron_ingot": 1, "redstone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "sticky_piston": {
+        "ingredients": { "piston": 1, "slimeball": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "dispenser": {
+        "ingredients": { "cobblestone": 7, "bow": 1, "redstone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "dropper": {
+        "ingredients": { "cobblestone": 7, "redstone": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "hopper": {
+        "ingredients": { "iron_ingot": 5, "chest": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "comparator": {
+        "ingredients": { "redstone_torch": 3, "nether_quartz": 1, "stone": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "repeater": {
+        "ingredients": { "redstone_torch": 2, "redstone": 1, "stone": 3 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "observer": {
+        "ingredients": { "cobblestone": 6, "redstone": 2, "nether_quartz": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "tnt": {
+        "ingredients": { "gunpowder": 5, "sand": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "wool": {
+        "ingredients": { "string": 4 },
+        "output": 1,
+        "method": "crafting_table",
+        "shape": "2x2 square of string"
+      },
+      "string": {
+        "notes": "Cannot be crafted - obtained from spiders or cobwebs"
+      },
+      "leather": {
+        "notes": "Cannot be crafted - obtained from cows or horses or rabbits (rabbit_hide x4)"
+      },
+      "rabbit_hide_to_leather": {
+        "ingredients": { "rabbit_hide": 4 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "chest_minecart": {
+        "ingredients": { "chest": 1, "minecart": 1 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "minecart": {
+        "ingredients": { "iron_ingot": 5 },
+        "output": 1,
+        "method": "crafting_table"
+      },
+      "rail": {
+        "ingredients": { "iron_ingot": 6, "stick": 1 },
+        "output": 16,
+        "method": "crafting_table"
+      },
+      "powered_rail": {
+        "ingredients": { "gold_ingot": 6, "stick": 1, "redstone": 1 },
+        "output": 6,
+        "method": "crafting_table"
+      },
+      "detector_rail": {
+        "ingredients": { "iron_ingot": 6, "pressure_plate": 1, "redstone": 1 },
+        "output": 6,
+        "method": "crafting_table"
+      }
+    },
+    "smelting": {
+      "cooked_beef": {
+        "input": "raw_beef",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35,
+        "notes": "Also works in smoker (2x faster)"
+      },
+      "cooked_chicken": {
+        "input": "raw_chicken",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "cooked_porkchop": {
+        "input": "raw_porkchop",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "cooked_mutton": {
+        "input": "raw_mutton",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "cooked_rabbit": {
+        "input": "raw_rabbit",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "cooked_salmon": {
+        "input": "raw_salmon",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "cooked_cod": {
+        "input": "raw_cod",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "baked_potato": {
+        "input": "potato",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      },
+      "dried_kelp": {
+        "input": "kelp",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "iron_ingot": {
+        "input": "raw_iron",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.7,
+        "notes": "Also works in blast furnace (2x faster)"
+      },
+      "gold_ingot": {
+        "input": "raw_gold",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 1.0
+      },
+      "copper_ingot": {
+        "input": "raw_copper",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.7
+      },
+      "glass": {
+        "input": "sand",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "stone": {
+        "input": "cobblestone",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "smooth_stone": {
+        "input": "stone",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "charcoal": {
+        "input": "any_log",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.15,
+        "notes": "Burns as long as coal"
+      },
+      "brick": {
+        "input": "clay_ball",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.3
+      },
+      "nether_brick": {
+        "input": "netherrack",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "cracked_stone_bricks": {
+        "input": "stone_bricks",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "smooth_sandstone": {
+        "input": "sandstone",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "smooth_quartz": {
+        "input": "quartz_block",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.1
+      },
+      "sponge": {
+        "input": "wet_sponge",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.15
+      },
+      "netherite_scrap": {
+        "input": "ancient_debris",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 2.0,
+        "notes": "4 scraps + 4 gold ingots = 1 netherite ingot"
+      },
+      "netherite_ingot": {
+        "input": "netherite_scrap + gold_ingot",
+        "fuel": "none",
+        "output": 1,
+        "method": "crafting_table",
+        "notes": "4 netherite_scrap + 4 gold_ingot in crafting grid"
+      },
+      "terracotta": {
+        "input": "clay_block",
+        "fuel": "any_fuel",
+        "output": 1,
+        "method": "furnace",
+        "xp": 0.35
+      }
+    },
+    "brewing": {
+      "water_bottle": {
+        "input": "glass_bottle",
+        "ingredient": "water",
+        "notes": "Fill glass bottle from water source"
+      },
+      "awkward_potion": {
+        "base": "water_bottle",
+        "ingredient": "nether_wart",
+        "notes": "Base for most potions"
+      },
+      "potion_of_healing": {
+        "base": "awkward_potion",
+        "ingredient": "glistering_melon_slice",
+        "effect": "Instantly restores health"
+      },
+      "potion_of_poison": {
+        "base": "awkward_potion",
+        "ingredient": "spider_eye",
+        "effect": "Deals poison damage over time"
+      },
+      "potion_of_regeneration": {
+        "base": "awkward_potion",
+        "ingredient": "ghast_tear",
+        "effect": "Regenerates health over time"
+      },
+      "potion_of_strength": {
+        "base": "awkward_potion",
+        "ingredient": "blaze_powder",
+        "effect": "+130% melee damage"
+      },
+      "potion_of_swiftness": {
+        "base": "awkward_potion",
+        "ingredient": "sugar",
+        "effect": "+20% movement speed"
+      },
+      "potion_of_slowness": {
+        "base": "awkward_potion",
+        "ingredient": "fermented_spider_eye",
+        "effect": "-15% movement speed"
+      },
+      "potion_of_fire_resistance": {
+        "base": "awkward_potion",
+        "ingredient": "magma_cream",
+        "effect": "Immunity to fire and lava"
+      },
+      "potion_of_water_breathing": {
+        "base": "awkward_potion",
+        "ingredient": "pufferfish",
+        "effect": "Breathe underwater"
+      },
+      "potion_of_night_vision": {
+        "base": "awkward_potion",
+        "ingredient": "golden_carrot",
+        "effect": "Full brightness in dark areas"
+      },
+      "potion_of_invisibility": {
+        "base": "potion_of_night_vision",
+        "ingredient": "fermented_spider_eye",
+        "effect": "Become invisible (except held items/armor)"
+      },
+      "potion_of_leaping": {
+        "base": "awkward_potion",
+        "ingredient": "rabbit_foot",
+        "effect": "Higher jump height"
+      },
+      "potion_of_slow_falling": {
+        "base": "awkward_potion",
+        "ingredient": "phantom_membrane",
+        "effect": "Fall slowly, no fall damage"
+      }
+    }
+  },
+
+  "biomes": {
+    "plains": {
+      "description": "Flat open grassland",
+      "resources": ["wood", "animals", "flowers", "villages"],
+      "mobs": ["cow", "pig", "chicken", "sheep", "horse"],
+      "notes": "Best for starter base, villages spawn here"
+    },
+    "forest": {
+      "description": "Dense tree coverage",
+      "resources": ["oak_log", "birch_log", "mushrooms", "apples", "wolves"],
+      "mobs": ["wolf", "rabbit", "fox"],
+      "notes": "Good early wood source"
+    },
+    "birch_forest": {
+      "description": "Forest with birch trees",
+      "resources": ["birch_log"],
+      "mobs": ["rabbit", "fox", "wolf"]
+    },
+    "dark_forest": {
+      "description": "Thick dark oak trees, very dark",
+      "resources": ["dark_oak_log", "mushrooms"],
+      "mobs": ["hostile mobs at day", "witch"],
+      "notes": "Woodland mansions spawn here"
+    },
+    "jungle": {
+      "description": "Dense tropical vegetation",
+      "resources": ["jungle_log", "cocoa_beans", "bamboo", "melon", "ocelot", "parrot"],
+      "mobs": ["ocelot", "parrot", "panda"],
+      "notes": "Jungle temples spawn here with traps and loot"
+    },
+    "savanna": {
+      "description": "Flat dry biome with acacia trees",
+      "resources": ["acacia_log", "animals", "villages"],
+      "mobs": ["cow", "horse", "llama"],
+      "notes": "Acacia wood source"
+    },
+    "desert": {
+      "description": "Sandy terrain",
+      "resources": ["sand", "cactus", "dead_bush", "fossils"],
+      "mobs": ["rabbit", "husk", "camel"],
+      "notes": "Desert temples with loot, villages spawn here"
+    },
+    "snowy_plains": {
+      "description": "Flat snowy terrain",
+      "resources": ["snow", "ice", "animals"],
+      "mobs": ["polar_bear", "stray", "rabbit"],
+      "notes": "Very cold, water freezes"
+    },
+    "taiga": {
+      "description": "Boreal spruce forest",
+      "resources": ["spruce_log", "ferns", "sweet_berries", "wolves"],
+      "mobs": ["wolf", "rabbit", "fox"],
+      "notes": "Villages spawn here"
+    },
+    "swamp": {
+      "description": "Murky water and trees",
+      "resources": ["oak_log", "clay", "mushrooms", "lily_pad", "slime"],
+      "mobs": ["witch", "slime", "frog"],
+      "notes": "Witch huts spawn here, slime spawns at night"
+    },
+    "ocean": {
+      "description": "Large water body",
+      "resources": ["fish", "seagrass", "kelp", "coral"],
+      "mobs": ["cod", "salmon", "squid", "dolphin", "drowned"],
+      "notes": "Ocean monuments have sponges and prismarine"
+    },
+    "mushroom_fields": {
+      "description": "Island covered in mushrooms",
+      "resources": ["red_mushroom", "brown_mushroom", "mycelium"],
+      "mobs": ["mooshroom"],
+      "notes": "No hostile mobs spawn naturally"
+    },
+    "mountains": {
+      "description": "High rocky terrain",
+      "resources": ["stone", "coal", "iron", "emerald_ore", "goat"],
+      "mobs": ["goat"],
+      "notes": "Emerald ore only spawns here"
+    },
+    "nether": {
+      "description": "The Nether dimension",
+      "resources": ["netherrack", "nether_quartz", "glowstone", "soul_sand", "magma_block", "nether_gold_ore", "ancient_debris"],
+      "mobs": ["zombie_pigman", "blaze", "ghast", "wither_skeleton", "magma_cube", "hoglin", "strider", "piglin"],
+      "notes": "Access via nether portal (obsidian frame + flint_and_steel)"
+    },
+    "end": {
+      "description": "The End dimension",
+      "resources": ["end_stone", "purpur_block", "chorus_plant", "elytra", "shulker_shell"],
+      "mobs": ["enderman", "shulker", "ender_dragon"],
+      "notes": "Access via End Portal in stronghold"
+    }
+  },
+
+  "mechanics": {
+    "cooking": {
+      "description": "Cooking transforms raw food into cooked food using a furnace or smoker.",
+      "formula": "raw_food + fuel -> cooked_food (in furnace/smoker)",
+      "examples": [
+        "raw_beef + coal -> cooked_beef (furnace)",
+        "raw_chicken + charcoal -> cooked_chicken (furnace)",
+        "raw_porkchop + wood -> cooked_porkchop (furnace)"
+      ],
+      "furnace_types": {
+        "furnace": "Smelt/cook anything, normal speed",
+        "smoker": "Cook food 2x faster (food only)",
+        "blast_furnace": "Smelt ores/metals 2x faster (ores only)"
+      }
+    },
+    "farming": {
+      "description": "Growing crops for food.",
+      "crops": {
+        "wheat": { "seed": "wheat_seeds", "grow_on": "farmland", "needs": "water nearby", "drops": "wheat + wheat_seeds" },
+        "carrot": { "seed": "carrot", "grow_on": "farmland", "drops": "carrots" },
+        "potato": { "seed": "potato", "grow_on": "farmland", "drops": "potatoes" },
+        "beetroot": { "seed": "beetroot_seeds", "grow_on": "farmland", "drops": "beetroot + beetroot_seeds" },
+        "pumpkin": { "seed": "pumpkin_seeds", "grow_on": "farmland", "drops": "pumpkin" },
+        "melon": { "seed": "melon_seeds", "grow_on": "farmland", "drops": "melon_slice" },
+        "sugar_cane": { "grow_on": "dirt/sand near water", "max_height": 3 },
+        "bamboo": { "grow_on": "dirt/grass/sand", "max_height": 16 },
+        "cactus": { "grow_on": "sand", "max_height": 3 },
+        "nether_wart": { "grow_on": "soul_sand", "dimension": "nether" }
+      }
+    },
+    "mining": {
+      "description": "Key mining strategies.",
+      "tips": [
+        "Strip mine at Y=-59 for diamonds",
+        "Use Fortune III enchantment to multiply ore drops",
+        "Silk Touch preserves original block form",
+        "Iron pickaxe or better needed for gold, diamond, emerald",
+        "Diamond or netherite pickaxe needed for obsidian",
+        "Beds in nether/end explode - use for fast mining",
+        "TNT efficient for large clearing"
+      ],
+      "required_tools": {
+        "wood": ["dirt", "sand", "gravel", "snow", "clay"],
+        "stone": ["coal_ore", "iron_ore", "copper_ore"],
+        "iron": ["gold_ore", "diamond_ore", "lapis_ore", "redstone_ore", "emerald_ore"],
+        "diamond_or_netherite": ["obsidian", "crying_obsidian", "ancient_debris"]
+      }
+    },
+    "survival_basics": {
+      "description": "Essential survival priorities.",
+      "priorities": [
+        "1. Collect wood (punch trees)",
+        "2. Craft crafting table from planks",
+        "3. Craft wooden tools",
+        "4. Collect stone/cobblestone",
+        "5. Craft stone tools and furnace",
+        "6. Collect coal for fuel and torches",
+        "7. Gather food (kill animals or farm)",
+        "8. Cook food in furnace",
+        "9. Mine for iron",
+        "10. Smelt iron ingots, craft iron tools and armor",
+        "11. Find or build shelter before night",
+        "12. Mine for diamonds at Y=-59"
+      ]
+    },
+    "nether_portal": {
+      "description": "How to build a Nether portal.",
+      "steps": [
+        "Mine 10+ obsidian (needs diamond pickaxe, ~5 minutes per block)",
+        "Build a 4x5 frame of obsidian (minimum: 2 wide, 3 tall interior)",
+        "Light the interior with flint_and_steel or fire charge",
+        "Step through to enter the Nether"
+      ],
+      "notes": "Coordinates in Nether = Overworld / 8 (travel faster)"
+    },
+    "enchanting": {
+      "description": "Enchanting adds special abilities to tools/armor.",
+      "setup": "Place enchanting table, surround with up to 15 bookshelves for max level (30)",
+      "materials_needed": "Lapis lazuli + experience levels",
+      "common_enchantments": {
+        "efficiency": "Mine faster",
+        "fortune": "More drops from ores",
+        "silk_touch": "Get original block instead of drop",
+        "unbreaking": "Reduces durability loss",
+        "mending": "Repairs with XP orbs",
+        "protection": "Reduces damage taken",
+        "sharpness": "More melee damage",
+        "power": "More arrow damage",
+        "infinity": "Infinite arrows (need 1 arrow)",
+        "looting": "More mob drops",
+        "fire_aspect": "Sets targets on fire",
+        "knockback": "Knocks enemies back",
+        "depth_strider": "Faster underwater movement",
+        "feather_falling": "Reduces fall damage",
+        "aqua_affinity": "Normal mining speed underwater",
+        "respiration": "Longer underwater breath"
+      }
+    },
+    "trading": {
+      "description": "Villager trading for resources.",
+      "currency": "emerald",
+      "professions": {
+        "farmer": "Buys wheat/carrots/potatoes, sells golden carrot/apple",
+        "librarian": "Buys books/paper, sells enchanted books",
+        "blacksmith/toolsmith": "Buys iron/diamonds, sells tools",
+        "butcher": "Buys raw meat, sells cooked meat",
+        "fletcher": "Buys sticks/strings, sells bows/arrows",
+        "fisherman": "Buys fish, sells fishing rods/enchanted fishing rods",
+        "cleric": "Buys rotten_flesh/gold_ingot, sells redstone/lapis/ender_pearl",
+        "armorer": "Buys iron ingots, sells armor",
+        "weaponsmith": "Buys iron/diamonds, sells swords/axes"
+      }
+    },
+    "respawn_anchor": {
+      "description": "Set respawn point in the Nether.",
+      "craft": "6 crying_obsidian + 3 glowstone_block",
+      "charge": "Use glowstone_block on it (up to 4 charges)",
+      "notes": "Explodes if used in Overworld or End!"
+    },
+    "end_portal": {
+      "description": "Accessing The End dimension.",
+      "steps": [
+        "Obtain Eyes of Ender (ender_pearl + blaze_powder)",
+        "Throw Eye of Ender to locate stronghold",
+        "Find End Portal room in stronghold",
+        "Place Eyes of Ender in all 12 portal frames",
+        "Jump into portal"
+      ]
+    }
+  },
+
+  "chest_simplifications": {
+    "description": "Rules for simplifying chest contents into actionable summaries.",
+    "rules": [
+      {
+        "name": "can_cook_meat",
+        "condition": { "requires_any": ["raw_beef", "raw_chicken", "raw_porkchop", "raw_mutton", "raw_rabbit", "raw_salmon", "raw_cod"], "requires_fuel": true },
+        "summary": "Can cook meat: {raw_food} + {fuel} = cooked food"
+      },
+      {
+        "name": "can_smelt_ore",
+        "condition": { "requires_any": ["raw_iron", "raw_gold", "raw_copper"], "requires_fuel": true },
+        "summary": "Can smelt ore: {ore} + {fuel} = metal ingot"
+      },
+      {
+        "name": "has_fuel_for_furnace",
+        "condition": { "has_fuel": true },
+        "summary": "Has fuel: {fuel} (enough for {count} items)"
+      },
+      {
+        "name": "can_make_tools",
+        "condition": { "requires_any": ["iron_ingot", "gold_ingot", "diamond"], "has_sticks": true },
+        "summary": "Can craft {material} tools/weapons"
+      },
+      {
+        "name": "has_armor_materials",
+        "condition": { "requires_any": ["iron_ingot", "gold_ingot", "diamond", "leather"] },
+        "summary": "Has materials for {material} armor"
+      }
+    ]
+  }
+}

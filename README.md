@@ -198,6 +198,52 @@ When running in docker, if you want the bot to join your local minecraft server,
 
 To connect to an unsupported minecraft version, you can try to use [viaproxy](services/viaproxy/README.md)
 
+## 📖 Built-in Minecraft Wiki / Cheatsheet
+
+Mindcraft includes an offline Minecraft wiki/cheatsheet (`src/utils/minecraft_wiki.json`) covering recipes, item categories, biomes, mobs, enchantments, and survival mechanics for Minecraft 1.21+. This reduces model token usage by providing quick, reliable answers without relying on the LLM for basic game facts.
+
+### Features
+
+- **`!wiki <query>`** — query the local wiki in-game for instant answers
+- **Chest memory** — the agent remembers scanned chest contents by coordinates, categorizes items using the wiki (fuel, food, tools, etc.), and notes if expected items are missing
+- **`$WIKI_DATA` prompt placeholder** — injects context-relevant recipe/item info into prompts to reduce hallucinations (opt-in via `wiki_in_prompt: true`)
+
+### Example Usage (in Minecraft chat)
+
+```
+<you> Andy !wiki cooked_beef
+Andy  WIKI: cooked_beef: raw_beef + fuel -> 1x (furnace). Also works in smoker (2x faster)
+
+<you> Andy !wiki iron_pickaxe
+Andy  WIKI: iron_pickaxe: 3x iron_ingot, 2x stick -> 1x (crafting_table)
+
+<you> Andy !wiki forest
+Andy  WIKI biome "forest": Dense tree coverage. Resources: oak_log, birch_log, mushrooms, apples, wolves. Mobs: wolf, rabbit, fox
+
+<you> Andy !wiki enchanting
+Andy  WIKI mechanic "enchanting": Enchanting adds special abilities to tools/armor. ...
+```
+
+### Settings (`settings.js`)
+
+```javascript
+"enable_wiki": true,       // enable/disable the !wiki command and wiki features
+"wiki_in_prompt": false,   // inject relevant wiki data into prompts (slightly more tokens)
+```
+
+### Extending the Wiki
+
+Edit `src/utils/minecraft_wiki.json` to add new recipes, items, or game mechanics. The structure is documented inline:
+
+- `categories` — item groups like `fuel`, `raw_food`, `ores`, `mob_drops`, `redstone`
+- `recipes.crafting` — crafting table recipes
+- `recipes.smelting` — furnace/smelting recipes
+- `recipes.brewing` — potion brewing recipes
+- `biomes` — biome descriptions with resources and mobs
+- `mechanics` — game mechanics like cooking, farming, mining, enchanting
+
+---
+
 # Bot Profiles
 
 Bot profiles are json files (such as `andy.json`) that define:
