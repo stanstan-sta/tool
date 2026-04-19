@@ -130,7 +130,7 @@ export class Agent {
             try {
                 if (spawnTimeout) clearTimeout(spawnTimeout);
                 addBrowserViewer(this.bot, count_id);
-                console.log('Initializing vision intepreter...');
+                console.log('Initializing vision interpreter...');
                 this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
 
                 // wait for a bit so stats are not undefined
