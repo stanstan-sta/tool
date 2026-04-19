@@ -1,0 +1,10 @@
+{
+    "name": "Andy",
+
+    "model": {
+        "api": "local-gguf",
+        "model": "auto"
+    },
+
+    "embedding": "none"
+}

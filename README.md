@@ -1,53 +1,74 @@
 <h1 align="center">🧠mindcraft⛏️</h1>
-<h1 align="center">
-  <a href="https://trendshift.io/repositories/9163" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9163" alt="kolbytn%2Fmindcraft | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</h1>
 
 <p align="center">Crafting minds for Minecraft with LLMs and <a href="https://prismarinejs.github.io/mineflayer/#/">Mineflayer!</a></p>
 
 <p align="center">
-  <a href="https://github.com/mindcraft-bots/mindcraft/blob/main/FAQ.md">FAQ</a> | 
-  <a href="https://discord.gg/mp73p35dzC">Discord Support</a> | 
-  <a href="https://www.youtube.com/watch?v=gRotoL8P8D8">Video Tutorial</a> | 
-  <a href="https://kolbynottingham.com/mindcraft/">Blog Post</a> | 
-  <a href="https://mindcraft-minecollab.github.io/index.html">Paper Website</a> | 
-  <a href="https://github.com/mindcraft-bots/mindcraft/blob/main/minecollab.md">MineCollab</a>
+  <a href="FAQ.md">FAQ</a> |
+  <a href="https://discord.gg/mp73p35dzC">Discord</a> |
+  <a href="minecollab.md">MineCollab</a>
 </p>
 
 > [!Caution]
-Do not connect this bot to public servers with coding enabled. This project allows an LLM to write/execute code on your computer. The code is sandboxed, but still vulnerable to injection attacks. Code writing is disabled by default, you can enable it by setting `allow_insecure_coding` to `true` in `settings.js`. Ye be warned.
+> Do not connect this bot to public servers with coding enabled. Code writing is disabled by default; enable it with `allow_insecure_coding: true` in `settings.js` at your own risk.
 
-# Getting Started
-## Requirements
+---
 
-- [Minecraft Java Edition](https://www.minecraft.net/en-us/store/minecraft-java-bedrock-edition-pc) (up to v1.21.11, recommend v1.21.6)
-- [Node.js Installed](https://nodejs.org/) (Node v18 or v20 LTS recommended. Node v24+ may cause issues with native dependencies)
-- At least one API key from a supported API provider. See [supported APIs](#model-customization). OpenAI is the default.
+## ⚡ Quick Start — Local Only (no API key required)
 
-> [!Important]
-> If installing node on windows, ensure you check `Automatically install the necessary tools`
+> **Requirements:** [Node.js v18 or v20 LTS](https://nodejs.org/) · [Minecraft Java Edition](https://www.minecraft.net/en-us/store/minecraft-java-bedrock-edition-pc) (up to v1.21.11)
 >
-> If you encounter `npm install` errors on macOS, see the [FAQ](FAQ.md#common-issues) for troubleshooting native module build issues
+> If installing Node.js on Windows, check **"Automatically install the necessary tools"** during setup.
 
-## Install and Run
+### Step 1 — Install & download model
 
-1. Make sure you have the requirements above.
+| Platform | Command |
+|----------|---------|
+| **Windows** | Double-click `SETUP_LOCAL.bat` |
+| **macOS / Linux** | `chmod +x setup_local.sh && ./setup_local.sh` |
+| **Any (npm)** | `npm run setup-local` |
 
-2. Download the [latest release](https://github.com/mindcraft-bots/mindcraft/releases/latest) and unzip it, or clone the repository.
+This will install dependencies and download a small GGUF model (~400 MB) into the `models/` folder automatically.
 
-3. Rename `keys.example.json` to `keys.json` and fill in your API keys (you only need one). The desired model is set in `andy.json` or other profiles. For other models refer to the table below.
+### Step 2 — Open your Minecraft world
 
-4. In terminal/command prompt, run `npm install` from the installed directory
+Start a **Singleplayer** world and click **Open to LAN** → **Start LAN World** (default port `55916`).
 
-5. Start a minecraft world and open it to LAN on localhost port `55916`
+### Step 3 — Run the bot
 
-6. Run `node main.js` from the installed directory
+| Platform | Command |
+|----------|---------|
+| **Windows** | Double-click `START_LOCAL.bat` |
+| **macOS / Linux** | `./start_local.sh` |
+| **Any (npm)** | `npm run start-local` |
 
-If you encounter issues, check the [FAQ](https://github.com/mindcraft-bots/mindcraft/blob/main/FAQ.md) or find support on [discord](https://discord.gg/mp73p35dzC). We are currently not very responsive to github issues. To run tasks please refer to [Minecollab Instructions](minecollab.md#installation)
+Open **http://localhost:8080** in your browser to see the live debug console.
 
+---
 
-# Configuration
-## Model Customization
+## ☁️ Cloud Models (OpenAI, Claude, Gemini, …)
+
+1. Rename `keys.example.json` → `keys.json` and add your API key  
+   (or run `npm run setup` to do this automatically).
+2. Edit `andy.json` and set `"model"` to your chosen model, e.g. `"gpt-4o"`.
+3. Run `npm start`.
+
+---
+
+## 🔧 Configuration
+
+- **Bot settings** — `settings.js` (host, port, auth mode, active profiles …)
+- **Bot personality & model** — profile files in `profiles/` (e.g. `andy.json`)
+- **Local model** — any `.gguf` file placed in `models/` is auto-detected
+
+### Specifying profiles on the command line
+
+```bash
+node main.js --profiles ./profiles/andy.json ./profiles/jill.json
+```
+
+---
+
+# Model Customization
 
 You can configure project details in `settings.js`. [See file.](settings.js)
 
