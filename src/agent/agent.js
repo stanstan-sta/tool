@@ -446,12 +446,12 @@ export class Agent {
             remaining = message.substring(translate_up_to);
         }
         const translated = (await handleTranslation(to_translate)).trim();
+        // chat_message is the conversational text only (no command) for in-game chat
+        const chat_message = translated.replaceAll('\n', ' ');
+
         message = translated + (remaining ? " " + remaining : "");
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
-
-        // chat_message is the conversational text only (no command) for in-game chat
-        const chat_message = remaining ? message.slice(0, translated.length).trimEnd() : message;
 
         // simulated typing delay: proportional to message length + random jitter
         const typingDelay = message.length * 50 + (Math.random() * 1000 - 500);
