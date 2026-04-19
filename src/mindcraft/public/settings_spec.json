@@ -74,7 +74,7 @@
     "max_messages": {
         "type": "number",
         "description": "Maximum number of recent messages to keep in context for LLM",
-        "default": 15
+        "default": 50
     },
     "num_examples": {
         "type": "number",
