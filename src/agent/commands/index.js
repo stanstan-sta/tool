@@ -1,10 +1,12 @@
 import { getBlockId, getItemId } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
+import { baritoneList } from './baritone.js';
+import settings from '../settings.js';
 
 let suppressNoDomainWarning = true;
 
-const commandList = queryList.concat(actionsList);
+const commandList = queryList.concat(actionsList).concat(settings.use_baritone ? baritoneList : []);
 const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;
@@ -256,4 +258,88 @@ export function getCommandDocs(agent) {
         }
     }
     return docs + '*\n';
+}
+
+/**
+ * Returns a system prompt snippet informing the model to use native tool calls
+ * instead of typing !commands in text. Used in place of $COMMAND_DOCS when
+ * the model supports native tool calling.
+ * @returns {string}
+ */
+export function getToolCallDocs() {
+    return '\n*TOOL CALLING\n Use the provided tools to perform actions and get information about the world. ' +
+        'Do NOT type !commands in your text response. Call the appropriate tool directly for any action you want to perform. ' +
+        'You may include a brief conversational message alongside your tool call if appropriate.*\n';
+}
+
+/**
+ * Converts the available commands into an array of tool schemas compatible with the
+ * Ollama / OpenAI function-calling specification.
+ * @param {Object} agent
+ * @returns {Array}
+ */
+export function getToolSchemas(agent) {
+    const typeMap = {
+        'float':           'number',
+        'int':             'integer',
+        'boolean':         'boolean',
+        'string':          'string',
+        'BlockName':       'string',
+        'ItemName':        'string',
+        'BlockOrItemName': 'string',
+    };
+
+    return commandList
+        .filter(command => !agent.blocked_actions.includes(command.name))
+        .map(command => {
+            const toolFunc = {
+                name: command.name.substring(1), // strip the leading '!'
+                description: command.description,
+                parameters: { type: 'object', properties: {} },
+            };
+
+            if (command.params && Object.keys(command.params).length > 0) {
+                toolFunc.parameters.required = [];
+                for (const [paramName, paramDef] of Object.entries(command.params)) {
+                    toolFunc.parameters.properties[paramName] = {
+                        type: typeMap[paramDef.type] || 'string',
+                        description: paramDef.description,
+                    };
+                    toolFunc.parameters.required.push(paramName);
+                }
+            }
+
+            return { type: 'function', function: toolFunc };
+        });
+}
+
+/**
+ * Converts a native tool call (function name + arguments object) back into the
+ * equivalent `!command(arg1, arg2, ...)` string that the existing command pipeline
+ * can parse and execute.
+ *
+ * Arguments are ordered according to the command's parameter definition so the
+ * result is always valid regardless of how the model ordered the JSON keys.
+ *
+ * @param {string} toolName  - Function name as returned by the model (no `!` prefix).
+ * @param {Object} toolArgs  - Named arguments returned by the model.
+ * @returns {string|null}    - The `!command(...)` string, or null if unknown command.
+ */
+export function toolCallToCommand(toolName, toolArgs) {
+    const commandName = '!' + toolName;
+    const command = commandMap[commandName];
+    if (!command) return null;
+
+    if (!command.params || Object.keys(command.params).length === 0) {
+        return commandName;
+    }
+
+    // Use the param order from the command definition, not from the model's JSON.
+    const args = Object.keys(command.params).map(paramName => {
+        const val = toolArgs[paramName];
+        if (typeof val === 'string') return `"${val}"`;
+        return String(val);
+    });
+
+    return `${commandName}(${args.join(', ')})`;
 }

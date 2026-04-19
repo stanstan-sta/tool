@@ -307,6 +307,62 @@
         }
         .footer-left { color: #cccccc; font-style: italic; }
 
+        /* ── Profile editor section inside settings modal ─────────── */
+        .profile-section {
+            margin-top: 16px;
+            border-top: 1px solid #3a3a3a;
+            padding-top: 12px;
+        }
+        .profile-section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            margin-bottom: 8px;
+        }
+        .profile-section-header h3 {
+            margin: 0;
+            font-size: 0.95em;
+            color: #e0e0e0;
+        }
+        .profile-section-header .section-toggle {
+            color: #aaa;
+            font-size: 0.8em;
+        }
+        .profile-fields { display: block; }
+        .profile-fields.collapsed { display: none; }
+        .profile-field-row {
+            margin-bottom: 10px;
+        }
+        .profile-field-row label {
+            display: block;
+            font-size: 0.85em;
+            color: #aaa;
+            margin-bottom: 3px;
+        }
+        .profile-field-row input[type="text"],
+        .profile-field-row textarea {
+            width: 100%;
+            box-sizing: border-box;
+            background: #262626;
+            border: 1px solid #555;
+            color: #e0e0e0;
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 0.85em;
+            font-family: 'Courier New', Courier, monospace;
+            resize: vertical;
+        }
+        .profile-field-row textarea {
+            min-height: 80px;
+        }
+        .profile-field-row .field-hint {
+            font-size: 0.75em;
+            color: #777;
+            margin-top: 2px;
+        }
+
         /* ── Live Console ─────────────────────────────────────────── */
         #consoleSection {
             margin-top: 20px;
@@ -475,6 +531,30 @@
             <div class="modal-body">
                 <div id="agentSettingsSection">
                     <div id="agentSettingsForm"></div>
+                    <!-- Profile editor: model, personality, system prompt -->
+                    <div class="profile-section">
+                        <div class="profile-section-header" onclick="toggleProfileSection()">
+                            <h3>🤖 Profile Settings</h3>
+                            <span class="section-toggle" id="profileSectionToggle">▼ expand</span>
+                        </div>
+                        <div class="profile-fields collapsed" id="profileFields">
+                            <div class="profile-field-row">
+                                <label for="profileModel">Model</label>
+                                <input type="text" id="profileModel" placeholder='e.g. ollama/qwen2.5:7b or gpt-4o' oninput="onAgentSettingsChanged()">
+                                <div class="field-hint">Ollama: <code>ollama/&lt;model&gt;</code> &nbsp;|&nbsp; OpenAI: <code>gpt-4o</code> &nbsp;|&nbsp; Claude: <code>claude-3-5-sonnet-20241022</code></div>
+                            </div>
+                            <div class="profile-field-row">
+                                <label for="profilePersonality">Personality / Character Description</label>
+                                <textarea id="profilePersonality" rows="3" placeholder="Describe your bot's personality and character here. Injected via $PERSONALITY in the system prompt." oninput="onAgentSettingsChanged()"></textarea>
+                                <div class="field-hint">Add <code>$PERSONALITY</code> to the system prompt below to use this field.</div>
+                            </div>
+                            <div class="profile-field-row">
+                                <label for="profileConversing">System Prompt (conversing template)</label>
+                                <textarea id="profileConversing" rows="8" placeholder="Leave blank to use the default system prompt." oninput="onAgentSettingsChanged()"></textarea>
+                                <div class="field-hint">Available placeholders: <code>$NAME $PERSONALITY $MEMORY $STATS $INVENTORY $COMMAND_DOCS $EXAMPLES $SELF_PROMPT</code></div>
+                            </div>
+                        </div>
+                    </div>
                     <div id="agentSettingsError" style="color:#f44336;margin-top:10px;"></div>
                 </div>
             </div>
@@ -744,7 +824,7 @@
             agentSettingsForm.style.gridTemplateColumns = 'repeat(auto-fit, minmax(320px, 1fr))';
             agentSettingsForm.style.gap = '8px';
             Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return; // profile not edited here
+                if (key === 'profile') return; // profile handled by dedicated section below
                 const cfg = settingsSpec[key];
                 const wrapper = document.createElement('div');
                 wrapper.className = 'setting-wrapper';
@@ -776,6 +856,19 @@
                 wrapper.appendChild(input);
                 agentSettingsForm.appendChild(wrapper);
             });
+
+            // Populate the dedicated profile editor fields
+            const profile = settings.profile || {};
+            const modelInput = document.getElementById('profileModel');
+            const personalityInput = document.getElementById('profilePersonality');
+            const conversingInput = document.getElementById('profileConversing');
+            if (modelInput) {
+                const modelVal = profile.model;
+                modelInput.value = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
+            }
+            if (personalityInput) personalityInput.value = profile.personality || '';
+            if (conversingInput) conversingInput.value = profile.conversing || '';
+
             onAgentSettingsChanged();
         }
 
@@ -791,7 +884,8 @@
         window.openAgentSettings = openAgentSettings;
 
         function getEditedAgentSettings() {
-            const newSettings = { profile: (originalAgentSettings && originalAgentSettings.profile) || {} };
+            const baseProfile = (originalAgentSettings && originalAgentSettings.profile) || {};
+            const newSettings = { profile: { ...baseProfile } };
             Object.keys(settingsSpec).forEach(key => {
                 if (key === 'profile') return;
                 const cfg = settingsSpec[key];
@@ -806,6 +900,14 @@
                 } else val = input.value;
                 newSettings[key] = val;
             });
+            // Read profile editor fields
+            const modelRaw = (document.getElementById('profileModel') || {}).value || '';
+            try { newSettings.profile.model = JSON.parse(modelRaw); }
+            catch { newSettings.profile.model = modelRaw || baseProfile.model; }
+            const personality = (document.getElementById('profilePersonality') || {}).value;
+            if (personality !== undefined) newSettings.profile.personality = personality;
+            const conversing = (document.getElementById('profileConversing') || {}).value;
+            if (conversing !== undefined) newSettings.profile.conversing = conversing || undefined;
             return newSettings;
         }
 
@@ -813,14 +915,29 @@
             if (!a || !b) return false;
             const keys = Object.keys(settingsSpec).filter(k => k !== 'profile');
             for (const k of keys) {
-                const va = a[k];
-                const vb = b[k];
+                const va = a[k]; const vb = b[k];
                 if (typeof va === 'object' || typeof vb === 'object') {
                     if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
                 } else if (va !== vb) return false;
             }
+            // Also compare profile editor fields
+            const ap = a.profile || {}; const bp = b.profile || {};
+            const modelA = typeof ap.model === 'object' ? JSON.stringify(ap.model) : (ap.model || '');
+            const modelB = typeof bp.model === 'object' ? JSON.stringify(bp.model) : (bp.model || '');
+            if (modelA !== modelB) return false;
+            if ((ap.personality || '') !== (bp.personality || '')) return false;
+            if ((ap.conversing || '') !== (bp.conversing || '')) return false;
             return true;
         }
+
+        function toggleProfileSection() {
+            const fields = document.getElementById('profileFields');
+            const toggle = document.getElementById('profileSectionToggle');
+            if (!fields || !toggle) return;
+            const collapsed = fields.classList.toggle('collapsed');
+            toggle.textContent = collapsed ? '▼ expand' : '▲ collapse';
+        }
+        window.toggleProfileSection = toggleProfileSection;
 
         function onAgentSettingsChanged() {
             if (!originalAgentSettings) { applyBtn.disabled = true; return; }

@@ -44,20 +44,26 @@ export async function createAgent(settings) {
     let init_message = settings.init_message || null;
 
     try {
-        try {
-            const server = await getServer(settings.host, settings.port, settings.minecraft_version);
-            settings.host = server.host;
-            settings.port = server.port;
-            settings.minecraft_version = server.version;
-        } catch (error) {
-            console.warn(`Error getting server:`, error);
-            if (settings.minecraft_version === "auto") {
-                settings.minecraft_version = null;
+        const isBridgeMode = settings.bridge_mode === true;
+
+        if (!isBridgeMode) {
+            try {
+                const server = await getServer(settings.host, settings.port, settings.minecraft_version);
+                settings.host = server.host;
+                settings.port = server.port;
+                settings.minecraft_version = server.version;
+            } catch (error) {
+                console.warn(`Error getting server:`, error);
+                if (settings.minecraft_version === "auto") {
+                    settings.minecraft_version = null;
+                }
+                console.warn(`Attempting to connect anyway...`);
             }
-            console.warn(`Attempting to connect anyway...`);
+        } else {
+            console.log(`Bridge mode enabled — skipping Minecraft server discovery.`);
         }
 
-        const agentProcess = new AgentProcess(agent_name, mindserver_port);
+        const agentProcess = new AgentProcess(agent_name, mindserver_port, isBridgeMode);
         agentProcess.start(load_memory, init_message, agentIndex);
         agent_processes[settings.profile.name] = agentProcess;
     } catch (error) {

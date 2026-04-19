@@ -1,0 +1,281 @@
+import { Prompter } from '../models/prompter.js';
+import { History } from '../agent/history.js';
+import { FabricBridge } from './fabric_bridge.js';
+import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
+import settings from '../agent/settings.js';
+
+const POLL_INTERVAL_MS = 2500; // how often to poll Fabric mod state (ms)
+
+/**
+ * Parse the LLM's response into a chat text portion and a list of COMMAND: lines.
+ *
+ * Expected format (any ordering, COMMAND lines can appear multiple times):
+ *   THOUGHT: <reasoning>
+ *   PLAN: <goal>
+ *   COMMAND: #goto 100 64 -200
+ *   COMMAND: #mine iron_ore 16
+ *
+ * Lines that are not THOUGHT/PLAN/COMMAND are treated as chat text.
+ * @param {string} response
+ * @returns {{chat: string, commands: string[]}}
+ */
+export function parseBridgeResponse(response) {
+    const commands = [];
+    const chatLines = [];
+
+    for (const raw of response.split('\n')) {
+        const line = raw.trim();
+        if (line.startsWith('COMMAND:')) {
+            const cmd = line.slice('COMMAND:'.length).trim();
+            if (cmd) commands.push(cmd);
+        } else if (line.startsWith('THOUGHT:') || line.startsWith('PLAN:')) {
+            // These are internal reasoning lines — don't show in chat but keep for context
+        } else if (line) {
+            chatLines.push(line);
+        }
+    }
+
+    return { chat: chatLines.join('\n'), commands };
+}
+
+/**
+ * Minimal stub that satisfies the small subset of the SelfPrompter interface
+ * used by Prompter.replaceStrings when $SELF_PROMPT is in the template.
+ */
+class BridgeSelfPrompter {
+    constructor() {
+        this.prompt = '';
+        this.state = 'stopped';
+    }
+    isStopped() { return true; }
+    isActive() { return false; }
+    shouldInterrupt() { return false; }
+    handleUserPromptedCmd() {}
+}
+
+/**
+ * A lightweight agent that controls a Fabric + Baritone Minecraft client via
+ * the Mindcraft Bridge Mod's HTTP API. No Mineflayer connection is used.
+ *
+ * The agent:
+ *  1. Polls the Fabric mod for world state and new chat messages.
+ *  2. Injects state snapshots into the conversation history.
+ *  3. Calls the Ollama/other LLM to decide what to do.
+ *  4. Parses COMMAND: lines from the LLM response and forwards them to the mod.
+ *  5. Records command results back into history for context.
+ */
+export class BridgeAgent {
+    async start(load_mem = false, init_message = null) {
+        this.stopped = false;
+        this._pendingMessage = null;  // {source, message} set by respondFunc
+
+        // ── Prompter / LLM ────────────────────────────────────────────────────
+        this.prompter = new Prompter(this, settings.profile);
+        this.name = (this.prompter.getName() || '').trim();
+        console.log(`Initializing bridge agent: ${this.name}`);
+
+        // ── History ────────────────────────────────────────────────────────────
+        this.history = new History(this);
+
+        // ── Stubs for Prompter compatibility ──────────────────────────────────
+        this.self_prompter = new BridgeSelfPrompter();
+        this.blocked_actions = settings.blocked_actions || [];
+        this.actions = { currentActionLabel: 'Idle' };
+        this.npc = { constructions: null };
+        this.last_sender = null;
+        this.shut_up = false;
+
+        // ── Fabric bridge HTTP client ──────────────────────────────────────────
+        this.bridge = new FabricBridge(settings.bridge_url || 'http://localhost:8765');
+        this._lastStateStr = '';
+
+        // ── MindServer registration ────────────────────────────────────────────
+        // respondFunc is called by serverProxy when the WebUI sends a message.
+        this.respondFunc = async (from, msg) => {
+            try {
+                if (msg) this._pendingMessage = { source: from, message: msg };
+            } catch (e) {
+                console.error('BridgeAgent respondFunc error:', e);
+            }
+        };
+        serverProxy.setAgent(this);
+        serverProxy.login();
+
+        await this.prompter.initExamples();
+
+        if (load_mem) {
+            this.history.load();
+        }
+
+        // Verify mod reachability
+        const reachable = await this.bridge.isReachable();
+        if (reachable) {
+            sendLogToUI(`${this.name}: Fabric bridge mod connected at ${this.bridge.url}`);
+        } else {
+            sendLogToUI(`${this.name}: ⚠️  Fabric bridge mod not reachable at ${this.bridge.url} — waiting...`);
+        }
+
+        if (init_message) {
+            this._pendingMessage = { source: 'system', message: init_message };
+        } else {
+            sendOutputToServer(this.name, `Bridge agent ${this.name} is online. Waiting for commands.`);
+        }
+
+        // Start the main loop
+        this._runLoop();
+    }
+
+    /**
+     * Main agent loop. Polls state, processes pending messages, calls LLM.
+     */
+    async _runLoop() {
+        while (!this.stopped) {
+            try {
+                // ── 1. Poll Fabric mod state ───────────────────────────────────
+                const state = await this.bridge.getState();
+
+                if (state && state.connected) {
+                    const stateStr = FabricBridge.formatState(state);
+
+                    // Only inject state as system message when something meaningful changed
+                    if (stateStr !== this._lastStateStr) {
+                        this._lastStateStr = stateStr;
+                        this.history.add('system', `World state:\n${stateStr}`);
+                    }
+
+                    // ── 2. Bubble up any chat messages received in-game ────────
+                    if (state.chat && state.chat.length > 0) {
+                        for (const msg of state.chat) {
+                            // Minecraft chat format is typically "<PlayerName> message"
+                            const match = msg.match(/^<([^>]+)>\s*(.+)$/);
+                            if (match) {
+                                const [, from, text] = match;
+                                if (from !== this.name) {
+                                    this.history.add(from, text);
+                                    this._pendingMessage = { source: from, message: text };
+                                }
+                            } else {
+                                this.history.add('system', msg);
+                            }
+                        }
+                    }
+                }
+
+                // ── 3. Process any pending message ────────────────────────────
+                if (this._pendingMessage) {
+                    const { source, message } = this._pendingMessage;
+                    this._pendingMessage = null;
+
+                    console.log(`${this.name} handling message from ${source}: ${message}`);
+                    await this._handleMessage(source, message, state);
+
+                    // Tight loop while there's a response to work on
+                    continue;
+                }
+
+            } catch (err) {
+                console.error('BridgeAgent loop error:', err);
+            }
+
+            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+        }
+    }
+
+    /**
+     * Handle a single incoming message — call LLM, execute commands, record results.
+     * @param {string} source
+     * @param {string} message
+     * @param {object|null} state  Most-recent Fabric state snapshot
+     */
+    async _handleMessage(source, message, state) {
+        if (!source || !message) return;
+
+        // Add the triggering message to history (if not already added by the chat poller above)
+        const alreadyAdded = source !== 'system' && source !== this.name && state?.chat?.length > 0;
+        if (!alreadyAdded) {
+            this.history.add(source, message);
+        }
+
+        // ── 4. Build prompt and call LLM ──────────────────────────────────────
+        const history = this.history.getHistory();
+        let response;
+        try {
+            response = await this.prompter.promptConvo(history);
+        } catch (err) {
+            console.error('LLM error:', err);
+            sendOutputToServer(this.name, `LLM error: ${err.message}`);
+            return;
+        }
+
+        if (!response || response.trim().length === 0) {
+            console.warn(`${this.name}: empty LLM response`);
+            return;
+        }
+
+        console.log(`${this.name} LLM response: ${response}`);
+
+        // ── 5. Parse COMMAND: lines ───────────────────────────────────────────
+        const { chat, commands } = parseBridgeResponse(response);
+
+        // Record the full LLM response in history
+        this.history.add(this.name, response);
+
+        // Send the chat portion to the WebUI output panel
+        if (chat.trim()) {
+            sendOutputToServer(this.name, chat.trim());
+        }
+
+        // ── 6. Execute each COMMAND: line via Fabric bridge ───────────────────
+        for (const cmd of commands) {
+            sendOutputToServer(this.name, `⚡ ${cmd}`);
+            console.log(`${this.name} → Fabric: ${cmd}`);
+
+            const result = await this.bridge.sendCommand(cmd);
+
+            if (result.output) {
+                const resultMsg = `${cmd} → ${result.output}`;
+                this.history.add('system', resultMsg);
+                sendOutputToServer(this.name, result.output);
+            } else if (!result.success) {
+                const errMsg = `Command failed: ${result.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+            }
+        }
+
+        this.history.save();
+    }
+
+    /** Called by serverProxy on disconnect from MindServer. */
+    cleanKill(msg, code = 0) {
+        console.log(`${this.name} clean kill: ${msg || 'shutting down'}`);
+        this.stopped = true;
+        setTimeout(() => process.exit(code), 500);
+    }
+
+    /** Stub for full-state polling — returns bridge state in a compatible format. */
+    async getFullState() {
+        const state = await this.bridge.getState();
+        if (!state || !state.connected) return null;
+        return {
+            gameplay: {
+                health: state.health,
+                healthMax: 20,
+                hunger: state.hunger,
+                hungerMax: 20,
+                position: { x: state.x, y: state.y, z: state.z },
+                biome: state.dimension,
+                gamemode: state.gameMode,
+            },
+            inventory: {
+                stacksUsed: (state.inventory || []).length,
+                totalSlots: 36,
+                counts: Object.fromEntries(
+                    (state.inventory || []).map(i => [i.item.replace('minecraft:', ''), i.count])
+                ),
+                equipment: {},
+            },
+            action: { current: 'Baritone' },
+        };
+    }
+}

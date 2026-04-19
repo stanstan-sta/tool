@@ -43,6 +43,9 @@ const settings = {
     "allow_insecure_coding": false, // allows newAction command and model can write/run code on your computer. enable at own risk
     "allow_vision": false, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
+    "use_baritone": false, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.
+    "bridge_mode": false, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
+    "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server (only used when bridge_mode is true)
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
 

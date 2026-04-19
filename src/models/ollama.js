@@ -1,7 +1,10 @@
 import { strictFormat } from '../utils/text.js';
+import { toolCallToCommand } from '../agent/commands/index.js';
 
 export class Ollama {
     static prefix = 'ollama';
+    static supportsTools = true;
+
     constructor(model_name, url, params) {
         this.model_name = model_name;
         this.params = params;
@@ -14,7 +17,7 @@ export class Ollama {
         return (this.model_name && this.model_name !== 'auto') ? this.model_name : defaultModel;
     }
 
-    async sendRequest(turns, systemMessage) {
+    async sendRequest(turns, systemMessage, tools=null) {
         let model = this.resolveModelName('sweaterdog/andy-4:micro-q8_0');
         let messages = strictFormat(turns);
         messages.unshift({ role: 'system', content: systemMessage });
@@ -27,13 +30,29 @@ export class Ollama {
             console.log(`Awaiting local response... (model: ${model}, attempt: ${attempt})`);
             let res = null;
             try {
-                let apiResponse = await this.send(this.chat_endpoint, {
+                const payload = {
                     model: model,
                     messages: messages,
                     stream: false,
+                    ...(tools && tools.length > 0 ? { tools } : {}),
                     ...(this.params || {})
-                });
-                if (apiResponse?.message?.content) {
+                };
+                let apiResponse = await this.send(this.chat_endpoint, payload);
+
+                if (apiResponse?.message?.tool_calls && apiResponse.message.tool_calls.length > 0) {
+                    // Native tool call: convert the first tool call to !command(...) format.
+                    const toolCall = apiResponse.message.tool_calls[0];
+                    const funcName = toolCall.function.name;
+                    const funcArgs = toolCall.function.arguments || {};
+                    const cmdStr = toolCallToCommand(funcName, funcArgs);
+                    const textContent = apiResponse.message.content?.trim() || '';
+                    if (cmdStr) {
+                        res = textContent ? `${textContent} ${cmdStr}` : cmdStr;
+                    } else {
+                        console.warn(`Ollama returned unknown tool call: ${funcName}`);
+                        res = textContent || 'No response data from Ollama.';
+                    }
+                } else if (apiResponse?.message?.content) {
                     res = apiResponse['message']['content'];
                 } else {
                     res = 'No response data from Ollama.';

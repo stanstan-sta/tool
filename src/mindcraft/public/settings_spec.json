@@ -122,6 +122,21 @@
         "description": "Whether to allow newAction command that let's LLM write/run code on host computer. Despite sandboxxing, it is potentially insecure.",
         "default": false
     },
+    "use_baritone": {
+        "type": "boolean",
+        "description": "Enable Baritone-inspired pathfinder (@miner-org/mineflayer-baritone) with parkour, block-breaking, swimming and ladder support. Adds !baritoneGoto, !baritoneCancel, !baritioneMine, !baritoneFollow, !baritoneExplore, !espLocate and !espGoto commands.",
+        "default": false
+    },
+    "bridge_mode": {
+        "type": "boolean",
+        "description": "When true, the agent connects to a Fabric Bridge Mod HTTP server (see bridge_url) instead of joining Minecraft directly via Mineflayer. Use this to control a real Fabric+Baritone+ESP modded client.",
+        "default": false
+    },
+    "bridge_url": {
+        "type": "string",
+        "description": "URL of the Fabric Bridge Mod HTTP server. Only used when bridge_mode is true.",
+        "default": "http://localhost:8765"
+    },
     "code_timeout_mins": {
         "type": "number",
         "description": "Number of minutes to allow code execution. -1 for no timeout",

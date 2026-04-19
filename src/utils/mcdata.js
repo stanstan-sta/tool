@@ -7,7 +7,11 @@ import { plugin as pvp } from 'mineflayer-pvp';
 import { plugin as collectblock } from 'mineflayer-collectblock';
 import { plugin as autoEat } from 'mineflayer-auto-eat';
 import plugin from 'mineflayer-armor-manager';
+import { createRequire } from 'module';
+
 const armorManager = plugin;
+// CJS interop for @miner-org/mineflayer-baritone
+const _require = createRequire(import.meta.url);
 let mc_version = settings.minecraft_version;
 let mcdata = null;
 let Item = null;
@@ -119,6 +123,20 @@ export function initBot(username) {
     bot.loadPlugin(collectblock);
     bot.loadPlugin(autoEat);
     bot.loadPlugin(armorManager); // auto equip armor
+
+    // Load mineflayer-baritone for enhanced pathfinding (parkour, block-breaking,
+    // swimming, ladders) when use_baritone is enabled. The loader requires an
+    // explicit options object — it cannot be passed directly to bot.loadPlugin().
+    if (settings.use_baritone) {
+        try {
+            const baritone = _require('@miner-org/mineflayer-baritone');
+            baritone.loader(bot, {});
+            console.log('Baritone pathfinder (ashfinder) loaded.');
+        } catch (e) {
+            console.warn('Failed to load @miner-org/mineflayer-baritone:', e.message);
+            console.warn('Run: npm install @miner-org/mineflayer-baritone');
+        }
+    }
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
     });
