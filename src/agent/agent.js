@@ -445,24 +445,30 @@ export class Agent {
             to_translate = to_translate.substring(0, translate_up_to);
             remaining = message.substring(translate_up_to);
         }
-        message = (await handleTranslation(to_translate)).trim() + " " + remaining;
+        const translated = (await handleTranslation(to_translate)).trim();
+        message = translated + (remaining ? " " + remaining : "");
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
+
+        // chat_message is the conversational text only (no command) for in-game chat
+        const chat_message = remaining ? message.slice(0, translated.length).trimEnd() : message;
 
         // simulated typing delay: proportional to message length + random jitter
         const typingDelay = message.length * 50 + (Math.random() * 1000 - 500);
         await new Promise(resolve => setTimeout(resolve, Math.max(0, typingDelay)));
 
         if (settings.only_chat_with.length > 0) {
-            for (let username of settings.only_chat_with) {
-                this.bot.whisper(username, message);
+            if (chat_message) {
+                for (let username of settings.only_chat_with) {
+                    this.bot.whisper(username, chat_message);
+                }
             }
         }
         else {
             if (settings.speak) {
                 speak(to_translate, this.prompter.profile.speak_model);
             }
-            if (settings.chat_ingame) {this.bot.chat(message);}
+            if (settings.chat_ingame && chat_message) {this.bot.chat(chat_message);}
             sendOutputToServer(this.name, message);
         }
     }
