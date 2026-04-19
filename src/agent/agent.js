@@ -103,6 +103,9 @@ export class Agent {
             console.log(this.name, 'logged in!');
             serverProxy.login();
             sendLogToUI(`${this.name} logged in to Minecraft.`);
+            if (settings.auth === 'microsoft') {
+                armSpawnTimeout();
+            }
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
             if (this.prompter.profile.skin)
@@ -111,14 +114,21 @@ export class Agent {
                 this.bot.chat(`/skin clear`);
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
-        const spawnTimeout = setTimeout(() => {
-            const msg = `Bot has not spawned after ${spawnTimeoutDuration} seconds. Exiting.`;
-            log(this.name, msg);
-            process.exit(1);
-        }, spawnTimeoutDuration * 1000);
+        let spawnTimeout = null;
+        const armSpawnTimeout = () => {
+            if (spawnTimeout) clearTimeout(spawnTimeout);
+            spawnTimeout = setTimeout(() => {
+                const msg = `Bot has not spawned after ${spawnTimeoutDuration} seconds. Exiting.`;
+                log(this.name, msg);
+                process.exit(1);
+            }, spawnTimeoutDuration * 1000);
+        };
+        if (settings.auth !== 'microsoft') {
+            armSpawnTimeout();
+        }
         this.bot.once('spawn', async () => {
             try {
-                clearTimeout(spawnTimeout);
+                if (spawnTimeout) clearTimeout(spawnTimeout);
                 addBrowserViewer(this.bot, count_id);
                 console.log('Initializing vision intepreter...');
                 this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
