@@ -365,9 +365,45 @@
         #consoleLog .log-line { margin: 0; padding: 0; }
         #consoleLog .log-ts  { color: #555; margin-right: 4px; }
         #consoleLog .log-agent { color: #81d4fa; margin-right: 4px; font-weight: bold; }
+
+        /* ── Debug Panel ──────────────────────────────────────────── */
+        #debugPanel {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.82);
+            color: #00ff00;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 12px;
+            z-index: 9999;
+            min-width: 220px;
+            max-width: 360px;
+            border: 1px solid #1a3a1a;
+            line-height: 1.6;
+            overflow-wrap: break-word;
+        }
+        #debugPanel .debug-title {
+            font-weight: bold;
+            color: #80ff80;
+            margin-bottom: 4px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        #debugPanel .debug-row { margin: 2px 0; }
+        #debugPanel .debug-label { color: #aaffaa; }
     </style>
 </head>
 <body>
+    <!-- Debug Panel -->
+    <div id="debugPanel">
+        <div class="debug-title">🛠 Debug Stats</div>
+        <div class="debug-row"><span class="debug-label">🤖 Models:</span> <span id="debugModels">Loading...</span></div>
+        <div class="debug-row"><span class="debug-label">💾 VRAM/RAM:</span> <span id="debugRam">Loading...</span></div>
+    </div>
+
     <div class="title-row">
         <div class="title-left">
             <h1 style="margin: 0;">Mindcraft</h1>
@@ -1101,6 +1137,23 @@
                 log.scrollTop = log.scrollHeight;
             }
         }
+        // ── Debug Stats Panel ─────────────────────────────────────
+        async function fetchDebugStats() {
+            try {
+                const res = await fetch('/api/debug_stats');
+                const data = await res.json();
+                const modelsText = data.models && data.models.length
+                    ? data.models.map(m => `${m.name} (${m.model})`).join(', ')
+                    : 'None';
+                document.getElementById('debugModels').textContent = modelsText;
+                document.getElementById('debugRam').textContent = data.memory || 'Unknown';
+            } catch (e) {
+                document.getElementById('debugModels').textContent = 'Disconnected';
+                document.getElementById('debugRam').textContent = '-';
+            }
+        }
+        fetchDebugStats();
+        setInterval(fetchDebugStats, 5000);
     </script>
 </body>
 </html> 

@@ -217,6 +217,45 @@ export function createMindServer(host_public = false, port = 8080) {
         });
     });
 
+    app.get('/api/debug_stats', async (req, res) => {
+        const stats = {
+            models: [],
+            memory: 'Unknown',
+            ollama_loaded: []
+        };
+
+        for (const agentName in agent_connections) {
+            const conn = agent_connections[agentName];
+            const profile = conn.settings && conn.settings.profile;
+            if (profile) {
+                const modelVal = profile.model;
+                const modelStr = modelVal && typeof modelVal === 'object'
+                    ? (modelVal.model || JSON.stringify(modelVal))
+                    : (modelVal || 'unknown');
+                stats.models.push({ name: profile.name || agentName, model: modelStr });
+            }
+        }
+
+        try {
+            const ollamaRes = await fetch('http://127.0.0.1:11434/api/ps');
+            if (ollamaRes.ok) {
+                const data = await ollamaRes.json();
+                if (data.models && data.models.length > 0) {
+                    let totalMemoryBytes = 0;
+                    data.models.forEach(m => { totalMemoryBytes += (m.size_vram || m.size || 0); });
+                    stats.memory = (totalMemoryBytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+                    stats.ollama_loaded = data.models.map(m => m.name);
+                } else {
+                    stats.memory = '0 GB (No models loaded)';
+                }
+            }
+        } catch (err) {
+            stats.memory = 'Ollama not reachable';
+        }
+
+        res.json(stats);
+    });
+
     if (host_public) {
         console.log('Public hosting not supported yet. Using localhost.');
     }
