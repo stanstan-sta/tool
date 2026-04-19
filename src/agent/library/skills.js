@@ -813,6 +813,14 @@ export async function equip(bot, itemName) {
             return false;
         }
     }
+    // inventory search delay: if item is not already in the hotbar (slots 36-44),
+    // simulate the time a human takes to open their inventory and locate the item
+    const hotbarItems = bot.inventory.slots.slice(36, 45);
+    const inHotbar = hotbarItems.some(slot => slot && slot.name === itemName);
+    if (!inHotbar) {
+        const searchDelay = 500 + Math.random() * 1000; // 500-1500ms
+        await new Promise(resolve => setTimeout(resolve, searchDelay));
+    }
     if (itemName.includes('leggings')) {
         await bot.equip(item, 'legs');
     }
@@ -1216,7 +1224,12 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     const progressInterval = setInterval(checkDigProgress, 1000);
     
     try {
-        await goToGoal(bot, new pf.goals.GoalNear(x, y, z, min_distance));
+        // imperfect pathfinding: add a small random jitter (up to ±0.5 blocks) so the bot
+        // doesn't always land on the exact center of a block, mimicking human movement
+        const PATHFINDING_JITTER = 0.5;
+        const jitterX = (Math.random() - 0.5) * 2 * PATHFINDING_JITTER;
+        const jitterZ = (Math.random() - 0.5) * 2 * PATHFINDING_JITTER;
+        await goToGoal(bot, new pf.goals.GoalNear(x + jitterX, y, z + jitterZ, min_distance));
         clearInterval(progressInterval);
         const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
         if (distance <= min_distance+1) {

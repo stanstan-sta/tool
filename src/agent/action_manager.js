@@ -101,6 +101,10 @@ export class ActionManager {
                 TIMEOUT = this._startTimeout(timeout);
             }
 
+            // micro-hesitation: simulate human reaction/thinking time before starting action
+            const hesitationDelay = Math.floor(Math.random() * 601) + 200; // 200-800ms
+            await new Promise(resolve => setTimeout(resolve, hesitationDelay));
+
             // start the action
             await actionFn();
 

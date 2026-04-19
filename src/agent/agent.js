@@ -414,6 +414,10 @@ export class Agent {
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
 
+        // simulated typing delay: proportional to message length + random jitter
+        const typingDelay = message.length * 50 + (Math.random() * 1000 - 500);
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, typingDelay)));
+
         if (settings.only_chat_with.length > 0) {
             for (let username of settings.only_chat_with) {
                 this.bot.whisper(username, message);
@@ -489,9 +493,32 @@ export class Agent {
             this.bot.clearControlStates();
             this.bot.pathfinder.stop(); // clear any lingering pathfinder
             this.bot.modes.unPauseAll();
-            setTimeout(() => {
+            setTimeout(async () => {
                 if (this.isIdle()) {
-                    this.actions.resumeAction();
+                    // fidget: occasionally perform a small social action before resuming
+                    const fidgetRoll = Math.random();
+                    if (fidgetRoll < 0.15) {
+                        // look at the nearest player
+                        const nearestPlayer = Object.values(this.bot.players)
+                            .filter(p => p.entity && p.username !== this.bot.username)
+                            .reduce((nearest, p) => {
+                                if (!nearest) return p;
+                                return this.bot.entity.position.distanceTo(p.entity.position) <
+                                    this.bot.entity.position.distanceTo(nearest.entity.position) ? p : nearest;
+                            }, null);
+                        if (nearestPlayer && nearestPlayer.entity) {
+                            await this.bot.lookAt(nearestPlayer.entity.position.offset(0, 1.6, 0));
+                            await new Promise(resolve => setTimeout(resolve, 1500));
+                        }
+                    } else if (fidgetRoll < 0.25) {
+                        // small jump
+                        this.bot.setControlState('jump', true);
+                        await new Promise(resolve => setTimeout(resolve, 250));
+                        this.bot.setControlState('jump', false);
+                    }
+                    if (this.isIdle()) {
+                        this.actions.resumeAction();
+                    }
                 }
             }, 1000);
         });
