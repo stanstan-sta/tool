@@ -1,8 +1,11 @@
 import OpenAIApi from 'openai';
 import { strictFormat } from '../utils/text.js';
+import { toolCallToCommand } from '../agent/commands/index.js';
 
 export class LMStudio {
     static prefix = 'lmstudio';
+    static supportsTools = true;
+
     constructor(model_name, url, params) {
         this.model_name = model_name;
         this.params = params;
@@ -12,7 +15,7 @@ export class LMStudio {
         });
     }
 
-    async sendRequest(turns, systemMessage, stop_seq='***') {
+    async sendRequest(turns, systemMessage, tools=null) {
         let messages = [{ role: 'system', content: systemMessage }].concat(strictFormat(turns));
         let model = this.model_name || 'andy-4.1';
         let res = null;
@@ -22,22 +25,42 @@ export class LMStudio {
             const pack = {
                 model,
                 messages,
-                stop: stop_seq,
+                ...(tools && tools.length > 0 ? { tools } : { stop: '***' }),
                 ...(this.params || {})
             };
             const completion = await this.openai.chat.completions.create(pack);
             if (completion.choices[0].finish_reason === 'length')
                 throw new Error('Context length exceeded');
             console.log('Received.');
-            res = completion.choices[0].message.content;
-            if (res.includes('</think>')) {
+
+            const choice = completion.choices[0];
+            if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+                // Native tool call: convert the first tool call to !command(...) format.
+                const toolCall = choice.message.tool_calls[0];
+                const funcName = toolCall.function.name;
+                const funcArgs = typeof toolCall.function.arguments === 'string'
+                    ? JSON.parse(toolCall.function.arguments)
+                    : (toolCall.function.arguments || {});
+                const cmdStr = toolCallToCommand(funcName, funcArgs);
+                const textContent = choice.message.content?.trim() || '';
+                if (cmdStr) {
+                    res = textContent ? `${textContent} ${cmdStr}` : cmdStr;
+                } else {
+                    console.warn(`LM Studio returned unknown tool call: ${funcName}`);
+                    res = textContent || 'No response data from LM Studio.';
+                }
+            } else {
+                res = choice.message.content;
+            }
+
+            if (res && res.includes('</think>')) {
                 if (!res.includes('<think>')) res = '<think>' + res;
                 res = res.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
             }
         } catch (err) {
             if ((err.message === 'Context length exceeded' || err.code === 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
-                return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
+                return await this.sendRequest(turns.slice(1), systemMessage, tools);
             } else {
                 console.log(err);
                 res = 'My brain disconnected, try again.';

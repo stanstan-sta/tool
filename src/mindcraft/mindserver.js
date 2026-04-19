@@ -4,7 +4,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as mindcraft from './mindcraft.js';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mindserver is:
@@ -26,6 +26,7 @@ class AgentConnection {
         this.in_game = false;
         this.full_state = null;
         this.viewer_port = viewer_port;
+        this.profile_path = settings.profile_path || null;
     }
     setSettings(settings) {
         this.settings = settings;
@@ -151,6 +152,14 @@ export function createMindServer(host_public = false, port = 8080) {
             const agent = agent_connections[agentName];
             if (agent) {
                 agent.setSettings(settings);
+                if (agent.profile_path && settings.profile) {
+                    try {
+                        writeFileSync(agent.profile_path, JSON.stringify(settings.profile, null, 4), 'utf8');
+                        console.log(`Saved profile for ${agentName} to ${agent.profile_path}`);
+                    } catch (err) {
+                        console.error(`Failed to save profile for ${agentName}:`, err);
+                    }
+                }
                 agent.socket.emit('restart-agent');
             }
         });
