@@ -367,12 +367,11 @@ export class Prompter {
         const recentText = messages.slice(-4).map(m => m.content || '').join(' ').toLowerCase();
         const lines = [];
 
-        // Look for item names that have wiki entries
-        const wordsToCheck = recentText.match(/\b[a-z_]{3,30}\b/g) || [];
-        const seen = new Set();
+        // Extract unique candidate words (limit to 60 to avoid long iteration)
+        const rawWords = recentText.match(/\b[a-z_]{3,30}\b/g) || [];
+        const wordsToCheck = [...new Set(rawWords)].slice(0, 60);
+
         for (const word of wordsToCheck) {
-            if (seen.has(word)) continue;
-            seen.add(word);
             const recipe = wiki.getRecipe(word);
             if (recipe) {
                 lines.push(wiki.formatRecipeSummary(word));
