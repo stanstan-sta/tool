@@ -8,6 +8,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
+import { wiki } from '../utils/MinecraftWiki.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,6 +203,13 @@ export class Prompter {
                 prompt = prompt.replaceAll('$BLUEPRINTS', blueprints.slice(0, -2));
             }
         }
+        if (prompt.includes('$WIKI_DATA')) {
+            let wikiText = '';
+            if (settings.enable_wiki) {
+                wikiText = this._buildWikiContext(messages);
+            }
+            prompt = prompt.replaceAll('$WIKI_DATA', wikiText);
+        }
 
         // check if there are any remaining placeholders with syntax $<word>
         let remaining = prompt.match(/\$[A-Z_]+/g);
@@ -344,6 +352,36 @@ export class Prompter {
         }
         goal.quantity = parseInt(goal.quantity);
         return goal;
+    }
+
+    /**
+     * Builds a short wiki context snippet based on recent conversation messages.
+     * Scans for item/recipe keywords and injects relevant wiki summaries.
+     * Capped at ~500 chars to avoid token bloat.
+     * @param {Array} messages
+     * @returns {string}
+     */
+    _buildWikiContext(messages) {
+        if (!messages || messages.length === 0) return '';
+        // Collect recent text to scan for item mentions
+        const recentText = messages.slice(-4).map(m => m.content || '').join(' ').toLowerCase();
+        const lines = [];
+
+        // Look for item names that have wiki entries
+        const wordsToCheck = recentText.match(/\b[a-z_]{3,30}\b/g) || [];
+        const seen = new Set();
+        for (const word of wordsToCheck) {
+            if (seen.has(word)) continue;
+            seen.add(word);
+            const recipe = wiki.getRecipe(word);
+            if (recipe) {
+                lines.push(wiki.formatRecipeSummary(word));
+            }
+            if (lines.length >= 5) break;
+        }
+
+        if (lines.length === 0) return '';
+        return '\nWIKI CONTEXT (relevant recipes):\n' + lines.join('\n') + '\n';
     }
 
     async _saveLog(prompt, messages, generation, tag) {

@@ -4,6 +4,8 @@ import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
 import { load } from 'cheerio';
+import { wiki } from '../../utils/MinecraftWiki.js';
+import settings from '../settings.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
@@ -335,6 +337,71 @@ export const queryList = [
                 console.error("Error fetching or parsing HTML:", error);
                 return `The following error occurred: ${error}`
               }
+        }
+    },
+    {
+        name: '!wiki',
+        description: 'Look up Minecraft recipes, items, biomes, or game mechanics in the built-in offline wiki. Returns concise results. Use !searchWiki for more detailed online results.',
+        params: {
+            'query': { type: 'string', description: 'The item, recipe, biome, mechanic, or category to look up (e.g. "cooked_beef", "diamond_pickaxe", "enchanting", "forest").' }
+        },
+        perform: function (agent, query) {
+            if (!settings.enable_wiki) {
+                return 'Wiki is disabled. Set enable_wiki: true in settings.js to use it.';
+            }
+            const q = query.trim();
+
+            // Try direct recipe lookup first
+            const recipeSummary = wiki.formatRecipeSummary(q);
+            if (!recipeSummary.includes('unknown recipe')) {
+                return pad(`WIKI: ${recipeSummary}`);
+            }
+
+            // Try category lookup
+            const cat = wiki.getCategory(q);
+            if (cat) {
+                const items = cat.items;
+                let itemList;
+                if (Array.isArray(items)) {
+                    itemList = items.slice(0, 20).join(', ');
+                } else if (items) {
+                    itemList = Object.keys(items).slice(0, 20).join(', ');
+                } else {
+                    itemList = '(see data)';
+                }
+                return pad(`WIKI category "${q}": ${cat.description || ''}. Items: ${itemList}`);
+            }
+
+            // Try biome lookup
+            const biome = wiki.getBiome(q);
+            if (biome) {
+                return pad(`WIKI biome "${q}": ${biome.description}. Resources: ${(biome.resources || []).join(', ')}. Mobs: ${(biome.mobs || []).join(', ')}${biome.notes ? '. Note: ' + biome.notes : ''}`);
+            }
+
+            // Try mechanic lookup
+            const mech = wiki.getMechanic(q);
+            if (mech) {
+                let desc = mech.description || '';
+                if (mech.formula) desc += ' Formula: ' + mech.formula;
+                if (mech.tips) desc += ' Tips: ' + mech.tips.slice(0, 3).join('; ');
+                return pad(`WIKI mechanic "${q}": ${desc}`);
+            }
+
+            // Fall back to search
+            const results = wiki.search(q);
+            if (results.length === 0) {
+                return pad(`WIKI: No results found for "${q}". Unknown - query model or use !searchWiki for online results.`);
+            }
+            const lines = results.slice(0, 5).map(r => {
+                if (r.type.startsWith('recipe_')) return `Recipe: ${wiki.formatRecipeSummary(r.name)}`;
+                if (r.type === 'biome') return `Biome ${r.name}: ${r.data.description}. Resources: ${(r.data.resources || []).slice(0, 5).join(', ')}`;
+                if (r.type === 'category') return `Category ${r.name}: ${r.data.description}`;
+                if (r.type === 'category_item') return `Item ${r.name} is in category: ${r.category}`;
+                if (r.type === 'mob') return `Mob ${r.name}: drops ${(r.data.drops || []).join(', ')}`;
+                if (r.type === 'mechanic') return `Mechanic ${r.name}: ${r.data.description}`;
+                return `${r.type} ${r.name}`;
+            });
+            return pad(`WIKI results for "${q}":\n${lines.join('\n')}`);
         }
     },
     {
