@@ -10,8 +10,12 @@ export class Ollama {
         this.embedding_endpoint = '/api/embeddings';
     }
 
+    resolveModelName(defaultModel) {
+        return (this.model_name && this.model_name !== 'auto') ? this.model_name : defaultModel;
+    }
+
     async sendRequest(turns, systemMessage) {
-        let model = this.model_name || 'sweaterdog/andy-4:micro-q8_0';
+        let model = this.resolveModelName('sweaterdog/andy-4:micro-q8_0');
         let messages = strictFormat(turns);
         messages.unshift({ role: 'system', content: systemMessage });
         const maxAttempts = 5;
@@ -71,7 +75,7 @@ export class Ollama {
     }
 
     async embed(text) {
-        let model = this.model_name || 'embeddinggemma';
+        let model = this.resolveModelName('embeddinggemma');
         let body = { model: model, input: text };
         let res = await this.send(this.embedding_endpoint, body);
         return res['embedding'];
