@@ -134,3 +134,10 @@ export function sendBotChatToServer(agentName, json) {
 export function sendOutputToServer(agentName, message) {
     serverProxy.getSocket().emit('bot-output', agentName, message);
 }
+
+// convenience wrapper: sends a log line to the UI using the proxy's own agent name,
+// so callers in agent.js don't have to pass the name explicitly every time
+export function sendLogToUI(message) {
+    if (!serverProxy.name || !serverProxy.connected) return;
+    sendOutputToServer(serverProxy.name, message);
+}

@@ -12,7 +12,7 @@ import { SelfPrompter } from './self_prompter.js';
 import convoManager from './conversation.js';
 import { handleTranslation, handleEnglishTranslation } from '../utils/translator.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
-import { serverProxy, sendOutputToServer } from './mindserver_proxy.js';
+import { serverProxy, sendOutputToServer, sendLogToUI } from './mindserver_proxy.js';
 import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
@@ -29,6 +29,15 @@ export class Agent {
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing agent ${this.name}...`);
+
+        // Intercept console.log in this agent process so every log line is also
+        // forwarded to the browser UI console.  The original console.log is called
+        // first, so terminal output is completely preserved.
+        const _origLog = console.log.bind(console);
+        console.log = (...args) => {
+            _origLog(...args);
+            sendLogToUI(args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '));
+        };
         
         // Validate Name Format
         // connection_handler now ensures the message has [LoginGuard] prefix
@@ -93,6 +102,7 @@ export class Agent {
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
             serverProxy.login();
+            sendLogToUI(`${this.name} logged in to Minecraft.`);
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
             if (this.prompter.profile.skin)
@@ -117,6 +127,7 @@ export class Agent {
                 await new Promise((resolve) => setTimeout(resolve, 1000));
                 
                 console.log(`${this.name} spawned.`);
+                sendLogToUI(`${this.name} spawned and is ready.`);
                 this.clearBotLogs();
               
                 this._setupEventHandlers(save_data, init_message);
@@ -124,12 +135,14 @@ export class Agent {
               
                 if (!load_mem) {
                     if (settings.task) {
+                        sendLogToUI(`Task started: ${JSON.stringify(settings.task)}`);
                         this.task.initBotTask();
                         this.task.setAgentGoal();
                     }
                 } else {
                     // set the goal without initializing the rest of the task
                     if (settings.task) {
+                        sendLogToUI(`Goal updated: ${JSON.stringify(settings.task)}`);
                         this.task.setAgentGoal();
                     }
                 }
