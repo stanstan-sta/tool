@@ -29,18 +29,20 @@ export class Ollama {
                     stream: false,
                     ...(this.params || {})
                 });
-                if (apiResponse) {
+                if (apiResponse?.message?.content) {
                     res = apiResponse['message']['content'];
                 } else {
-                    res = 'No response data.';
+                    res = 'No response data from Ollama.';
                 }
             } catch (err) {
-                if (err.message.toLowerCase().includes('context length') && turns.length > 1) {
+                if (err.message?.toLowerCase().includes('context length') && turns.length > 1) {
                     console.log('Context length exceeded, trying again with shorter context.');
                     return await this.sendRequest(turns.slice(1), systemMessage);
+                } else if (err.status === 404) {
+                    res = `Ollama returned 404. Verify the base URL (${this.url}) and that the model "${model}" is available.`;
                 } else {
                     console.log(err);
-                    res = 'My brain disconnected, try again.';
+                    res = err.message || 'My brain disconnected, try again.';
                 }
             }
 
@@ -78,19 +80,34 @@ export class Ollama {
     async send(endpoint, body) {
         const url = new URL(endpoint, this.url);
         let method = 'POST';
-        let headers = new Headers();
+        let headers = new Headers({ 'Content-Type': 'application/json' });
         const request = new Request(url, { method, headers, body: JSON.stringify(body) });
         let data = null;
         try {
             const res = await fetch(request);
-            if (res.ok) {
-                data = await res.json();
-            } else {
-                throw new Error(`Ollama Status: ${res.status}`);
+            const responseText = await res.text();
+            if (!res.ok) {
+                let detail = responseText;
+                try {
+                    const parsed = JSON.parse(responseText);
+                    if (parsed?.error) {
+                        detail = typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error);
+                    }
+                } catch (_) {}
+                const statusText = res.statusText ? ` ${res.statusText}` : '';
+                const message = detail
+                    ? `Ollama request failed (${res.status}${statusText}): ${detail}`
+                    : `Ollama request failed (${res.status}${statusText}).`;
+                const error = new Error(message);
+                error.status = res.status;
+                error.detail = detail;
+                throw error;
             }
+            data = responseText ? JSON.parse(responseText) : null;
         } catch (err) {
             console.error('Failed to send Ollama request.');
             console.error(err);
+            throw err;
         }
         return data;
     }
