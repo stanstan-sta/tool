@@ -122,6 +122,11 @@
         "description": "Whether to allow newAction command that let's LLM write/run code on host computer. Despite sandboxxing, it is potentially insecure.",
         "default": false
     },
+    "use_baritone": {
+        "type": "boolean",
+        "description": "Enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, !baritioneMine, !baritoneFollow, !baritoneExplore). Requires a Baritone-enabled Minecraft client or a server-side Baritone plugin that listens to # chat commands.",
+        "default": false
+    },
     "code_timeout_mins": {
         "type": "number",
         "description": "Number of minutes to allow code execution. -1 for no timeout",

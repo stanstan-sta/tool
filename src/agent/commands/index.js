@@ -1,10 +1,12 @@
 import { getBlockId, getItemId } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
+import { baritoneList } from './baritone.js';
+import settings from '../settings.js';
 
 let suppressNoDomainWarning = true;
 
-const commandList = queryList.concat(actionsList);
+const commandList = queryList.concat(actionsList).concat(settings.use_baritone ? baritoneList : []);
 const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;

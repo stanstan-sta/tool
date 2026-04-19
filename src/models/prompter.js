@@ -162,8 +162,16 @@ export class Prompter {
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES') && examples !== null)
-            prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
+        if (prompt.includes('$PERSONALITY')) {
+            prompt = prompt.replaceAll('$PERSONALITY', this.profile.personality || '');
+        }
+        if (prompt.includes('$EXAMPLES') && examples !== null) {
+            // When native tool calling is active the few-shot examples use
+            // !command text syntax which contradicts the tool-call instructions.
+            // Replace with an empty string so the model is not confused.
+            const exampleText = useNativeTools ? '' : await examples.createExampleMessage(messages);
+            prompt = prompt.replaceAll('$EXAMPLES', exampleText);
+        }
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$TO_SUMMARIZE'))
