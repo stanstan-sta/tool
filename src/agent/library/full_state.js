@@ -89,6 +89,7 @@ export function getFullState(agent) {
         // Ignore transient world-read errors during startup/reconnect.
     }
 
+    // These helper calls may throw while world chunks/entities are still syncing.
     try {
         state.surroundings.below = getBlockAtPosition(bot, 0, -1, 0)?.name ?? null;
         state.surroundings.legs = getBlockAtPosition(bot, 0, 0, 0)?.name ?? null;
@@ -111,7 +112,8 @@ export function getFullState(agent) {
     } catch {
         // Ignore transient inventory-read errors during startup/reconnect.
     }
-    state.inventory.stacksUsed = bot?.inventory?.items ? bot.inventory.items().length : 0;
+    const inventoryItems = bot?.inventory?.items?.();
+    state.inventory.stacksUsed = inventoryItems?.length ?? 0;
     state.inventory.totalSlots = bot?.inventory?.slots?.length ?? 0;
 
     const slots = bot?.inventory?.slots ?? [];
