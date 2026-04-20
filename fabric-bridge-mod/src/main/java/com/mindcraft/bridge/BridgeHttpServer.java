@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
@@ -160,7 +161,8 @@ public class BridgeHttpServer {
             String[] kv = part.split("=", 2);
             if (kv.length == 2 && key.equals(kv[0])) {
                 try {
-                    return Long.parseLong(kv[1]);
+                    String decoded = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                    return Long.parseLong(decoded);
                 } catch (NumberFormatException ignored) {
                     return null;
                 }

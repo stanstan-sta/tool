@@ -7,6 +7,7 @@ import settings from '../agent/settings.js';
 const POLL_MIN_MS = 800;
 const POLL_DEFAULT_MS = 2000;
 const POLL_MAX_MS = 5000;
+const BRIDGE_STRUCTURED_SCHEMA_PROMPT = 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. No markdown. No extra keys.';
 
 function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
@@ -39,6 +40,7 @@ function normalizeAction(action) {
 
 function commandToTypedAction(cmd) {
     const raw = String(cmd || '').trim();
+    const rawLower = raw.toLowerCase();
     if (!raw) return null;
     const goto = raw.match(/^#goto\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
     if (goto) {
@@ -52,7 +54,7 @@ function commandToTypedAction(cmd) {
     if (follow) {
         return { type: 'follow', provider: 'baritone_chat', target: follow[1] };
     }
-    if (/^#cancel$/i.test(raw)) {
+    if (rawLower === '#cancel') {
         return { type: 'cancel', provider: 'baritone_chat' };
     }
     return { type: 'raw_command', provider: 'baritone_chat', command: raw };
@@ -83,6 +85,7 @@ export function parseBridgeResponse(response, expectStructured = false) {
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                 const reply = typeof parsed.reply === 'string'
                     ? parsed.reply.trim()
+                    // Backward-compat: allow "chat" from older structured bridge prompts.
                     : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
                 const structuredActions = Array.isArray(parsed.actions)
                     ? parsed.actions.map(normalizeAction).filter(Boolean)
@@ -317,7 +320,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. No markdown. No extra keys.',
+                content: BRIDGE_STRUCTURED_SCHEMA_PROMPT,
             });
         }
         let response;

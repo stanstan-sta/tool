@@ -92,11 +92,10 @@ public class CommandExecutor {
             String z,
             String count
     ) {
-        String selectedProvider = (provider == null || provider.isBlank()) ? "baritone_chat" : provider;
-        boolean nativeRequested = "baritone_native".equalsIgnoreCase(selectedProvider);
+        boolean nativeRequested = "baritone_native".equalsIgnoreCase(provider);
         if (nativeRequested) {
-            // Native provider placeholder: currently falls back to chat-prefixed Baritone.
-            selectedProvider = "baritone_chat";
+            // Native provider placeholder: currently falls back to chat-prefixed Baritone mapping below.
+            MindcraftBridgeMod.LOGGER.info("[Bridge] baritone_native requested; using baritone_chat fallback.");
         }
 
         switch (type) {
