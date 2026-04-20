@@ -85,24 +85,32 @@ export function getFullState(agent) {
 
     try {
         state.gameplay.biome = getBiomeName(bot);
-    } catch { }
+    } catch {
+        // Ignore transient world-read errors during startup/reconnect.
+    }
 
     try {
         state.surroundings.below = getBlockAtPosition(bot, 0, -1, 0)?.name ?? null;
         state.surroundings.legs = getBlockAtPosition(bot, 0, 0, 0)?.name ?? null;
         state.surroundings.head = getBlockAtPosition(bot, 0, 1, 0)?.name ?? null;
         state.surroundings.firstBlockAboveHead = getFirstBlockAboveHead(bot, null, 32);
-    } catch { }
+    } catch {
+        // Ignore transient world-read errors during startup/reconnect.
+    }
 
     try {
         let players = getNearbyPlayerNames(bot);
         players = players.filter(p => !bots.includes(p));
         state.nearby.humanPlayers = players;
-    } catch { }
+    } catch {
+        // Ignore transient entity-read errors during startup/reconnect.
+    }
 
     try {
         state.inventory.counts = getInventoryCounts(bot);
-    } catch { }
+    } catch {
+        // Ignore transient inventory-read errors during startup/reconnect.
+    }
     state.inventory.stacksUsed = bot?.inventory?.items ? bot.inventory.items().length : 0;
     state.inventory.totalSlots = bot?.inventory?.slots?.length ?? 0;
 
@@ -118,7 +126,9 @@ export function getFullState(agent) {
 
     try {
         state.nearby.entityTypes = getNearbyEntityTypes(bot).filter(t => t !== 'player' && t !== 'item');
-    } catch { }
+    } catch {
+        // Ignore transient entity-read errors during startup/reconnect.
+    }
 
     return state;
 }
