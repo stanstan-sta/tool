@@ -141,7 +141,7 @@ The mod exposes HTTP endpoints on `localhost:8765`:
 | `GET` | `/ping` | Health check |
 | `GET` | `/state` | Player state (position, health, inventory, nearby entities, queued chat) |
 | `POST` | `/command` | Execute a command |
-| `POST` | `/action` | Execute typed action payload (`move`, `mine`, `follow`, `interact`, `cancel`, `raw_command`) |
+| `POST` | `/action` | Execute typed action payload (`move`, `mine`, `follow`, `find`, `interact`, `cancel`, `raw_command`) |
 | `GET` | `/capabilities` | Provider and feature metadata (`baritone_native`, `baritone_chat`, typed-action support) |
 
 `/state` supports `?since=<seq>` for lightweight delta polling. When unchanged it returns:
@@ -153,7 +153,7 @@ The mod exposes HTTP endpoints on `localhost:8765`:
 
 | Prefix | Example | Handled by |
 |--------|---------|------------|
-| `#` | `#goto 100 64 -200` | Baritone (chat prefix intercept) |
+| `#` | `#goto 100 64 -200` / `#find minecraft:white_bed` / `#interact minecraft:white_bed` | Baritone (chat prefix intercept) |
 | `/` | `/time set day` | Minecraft command |
 | `chat:` | `chat: Hello!` | Public chat message |
 
@@ -182,7 +182,7 @@ The system prompt in `profiles/fabric_bridge.json` now uses structured output:
   "reply": "I'll head underground to mine iron.",
   "actions": [
     {"type":"move","x":45,"y":12,"z":-89},
-    {"type":"mine","target":"iron_ore","count":16}
+    {"type":"find","target":"minecraft:white_bed"}
   ]
 }
 ```

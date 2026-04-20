@@ -7,7 +7,7 @@ import settings from '../agent/settings.js';
 const POLL_MIN_MS = 800;
 const POLL_DEFAULT_MS = 2000;
 const POLL_MAX_MS = 5000;
-const BRIDGE_STRUCTURED_SCHEMA_PROMPT = 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. No markdown. No extra keys.';
+const BRIDGE_STRUCTURED_SCHEMA_PROMPT = 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|find|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. For locating a block/entity, prefer type="find" with a namespaced target like "minecraft:white_bed". No markdown. No extra keys.';
 
 function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
@@ -54,6 +54,14 @@ function commandToTypedAction(cmd) {
     if (follow) {
         return { type: 'follow', provider: 'baritone_chat', target: follow[1] };
     }
+    const find = raw.match(/^#find\s+([a-z0-9_:-]+)$/i);
+    if (find) {
+        return { type: 'find', provider: 'baritone_chat', target: find[1] };
+    }
+    const interact = raw.match(/^#interact(?:\s+([a-z0-9_:-]+))?$/i);
+    if (interact) {
+        return { type: 'interact', provider: 'baritone_chat', target: interact[1] || '' };
+    }
     if (rawLower === '#cancel') {
         return { type: 'cancel', provider: 'baritone_chat' };
     }
@@ -68,6 +76,7 @@ function commandToTypedAction(cmd) {
  *   PLAN: <goal>
  *   COMMAND: #goto 100 64 -200
  *   COMMAND: #mine iron_ore 16
+ *   COMMAND: #find minecraft:white_bed
  *
  * Lines that are not THOUGHT/PLAN/COMMAND are treated as chat text.
  * @param {string} response

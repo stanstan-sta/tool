@@ -112,9 +112,15 @@ public class CommandExecutor {
             case "follow":
                 if (target == null || target.isBlank()) return null;
                 return "#follow player " + target;
+            case "find":
+                if (target == null || target.isBlank()) return null;
+                return "#find " + target;
             case "cancel":
                 return "#cancel";
             case "interact":
+                if (target != null && !target.isBlank()) {
+                    return "#interact " + target;
+                }
                 if (message != null && !message.isBlank()) {
                     return "chat: " + message;
                 }
@@ -131,6 +137,7 @@ public class CommandExecutor {
         return "{"
                 + "\"supports_typed_actions\":true,"
                 + "\"default_provider\":\"baritone_chat\","
+                + "\"supported_actions\":[\"move\",\"mine\",\"follow\",\"find\",\"interact\",\"cancel\",\"raw_command\"],"
                 + "\"providers\":{"
                 + "\"baritone_native\":{\"available\":" + baritoneLoaded + "},"
                 + "\"baritone_chat\":{\"available\":true}"
