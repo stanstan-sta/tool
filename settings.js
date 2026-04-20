@@ -66,6 +66,6 @@ const settings = {
     "enable_wiki": true, // enable the built-in offline Minecraft wiki/cheatsheet (!wiki command and $WIKI_DATA prompt placeholder)
     "wiki_in_prompt": false, // inject a short wiki summary into agent prompts via $WIKI_DATA (can increase token usage slightly)
 
-}
+};
 
 export default settings;

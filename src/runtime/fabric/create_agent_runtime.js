@@ -1,4 +1,4 @@
-export async function prepareFabricRuntime(settings) {
+export function prepareFabricRuntime(settings) {
     const next = { ...settings };
     next.bridge_mode = true;
     const launchMode = next.launch_mode || 'fabric_ui';
@@ -8,4 +8,3 @@ export async function prepareFabricRuntime(settings) {
         runtime: 'fabric',
     };
 }
-

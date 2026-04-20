@@ -2,6 +2,7 @@ package com.mindcraft.bridge;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.fabricmc.loader.api.FabricLoader;
 
 /**
  * Executes a command string on the Minecraft client main thread.
@@ -14,8 +15,19 @@ import net.minecraft.client.network.ClientPlayerEntity;
  *   (default) Treated as a plain chat message
  */
 public class CommandExecutor {
+    private static String lastCommand = "";
+    private static long lastCommandAt = 0L;
+    private static final long COMMAND_DEBOUNCE_MS = 150L;
 
     public static void execute(String command) {
+        long now = System.currentTimeMillis();
+        if (command != null && command.equals(lastCommand) && (now - lastCommandAt) < COMMAND_DEBOUNCE_MS) {
+            MindcraftBridgeMod.LOGGER.info("[Bridge] Debounced duplicate command: {}", command);
+            return;
+        }
+        lastCommand = command;
+        lastCommandAt = now;
+
         MinecraftClient client = MinecraftClient.getInstance();
         // Schedule on the main game thread to avoid concurrency issues
         client.execute(() -> {
@@ -44,5 +56,83 @@ public class CommandExecutor {
                 MindcraftBridgeMod.LOGGER.info("[Bridge] Chat/Baritone: {}", command);
             }
         });
+    }
+
+    public static String executeTypedJson(String actionJson) {
+        String type = BridgeHttpServer.extractJsonString(actionJson, "type");
+        String provider = BridgeHttpServer.extractJsonString(actionJson, "provider");
+        String target = BridgeHttpServer.extractJsonString(actionJson, "target");
+        String command = BridgeHttpServer.extractJsonString(actionJson, "command");
+        String message = BridgeHttpServer.extractJsonString(actionJson, "message");
+        String x = BridgeHttpServer.extractJsonPrimitive(actionJson, "x");
+        String y = BridgeHttpServer.extractJsonPrimitive(actionJson, "y");
+        String z = BridgeHttpServer.extractJsonPrimitive(actionJson, "z");
+        String count = BridgeHttpServer.extractJsonPrimitive(actionJson, "count");
+
+        if (type == null || type.isBlank()) {
+            return null;
+        }
+
+        String mapped = mapTypedAction(type, provider, target, command, message, x, y, z, count);
+        if (mapped == null || mapped.isBlank()) {
+            return null;
+        }
+        execute(mapped);
+        return mapped;
+    }
+
+    private static String mapTypedAction(
+            String type,
+            String provider,
+            String target,
+            String command,
+            String message,
+            String x,
+            String y,
+            String z,
+            String count
+    ) {
+        String selectedProvider = (provider == null || provider.isBlank()) ? "baritone_chat" : provider;
+        boolean nativeRequested = "baritone_native".equalsIgnoreCase(selectedProvider);
+        if (nativeRequested) {
+            // Native provider placeholder: currently falls back to chat-prefixed Baritone.
+            selectedProvider = "baritone_chat";
+        }
+
+        switch (type) {
+            case "move":
+                if (x == null || y == null || z == null) return null;
+                return "#goto " + x + " " + y + " " + z;
+            case "mine":
+                if (target == null || target.isBlank()) return null;
+                String mineCount = (count == null || count.isBlank()) ? "1" : count;
+                return "#mine " + target + " " + mineCount;
+            case "follow":
+                if (target == null || target.isBlank()) return null;
+                return "#follow player " + target;
+            case "cancel":
+                return "#cancel";
+            case "interact":
+                if (message != null && !message.isBlank()) {
+                    return "chat: " + message;
+                }
+                return command;
+            case "raw_command":
+                return command;
+            default:
+                return null;
+        }
+    }
+
+    public static String capabilitiesJson() {
+        boolean baritoneLoaded = FabricLoader.getInstance().isModLoaded("baritone");
+        return "{"
+                + "\"supports_typed_actions\":true,"
+                + "\"default_provider\":\"baritone_chat\","
+                + "\"providers\":{"
+                + "\"baritone_native\":{\"available\":" + baritoneLoaded + "},"
+                + "\"baritone_chat\":{\"available\":true}"
+                + "}"
+                + "}";
     }
 }

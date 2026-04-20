@@ -105,10 +105,12 @@ cp build/libs/mindcraft-bridge-*.jar \
    ~/Library/Application\ Support/minecraft/mods/
 ```
 
-#### Step 5 — Enable bridge mode in settings.js
+#### Step 5 — Enable Fabric runtime in settings.js
 ```js
-"bridge_mode": true,
+"launch_mode": "fabric_ui", // or "fabric_headless"
+"bridge_mode": true,        // legacy switch; launch_mode is preferred
 "bridge_url": "http://localhost:8765",
+"bridge_structured_output": true
 ```
 
 And set up a bridge profile. Copy `profiles/fabric_bridge.json` and edit as needed:
@@ -132,13 +134,20 @@ node main.js
 
 ### Bridge Mod API
 
-The mod exposes three HTTP endpoints on `localhost:8765`:
+The mod exposes HTTP endpoints on `localhost:8765`:
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/ping` | Health check |
-| `GET` | `/state` | Player state (position, health, inventory, queued chat) |
+| `GET` | `/state` | Player state (position, health, inventory, nearby entities, queued chat) |
 | `POST` | `/command` | Execute a command |
+| `POST` | `/action` | Execute typed action payload (`move`, `mine`, `follow`, `interact`, `cancel`, `raw_command`) |
+| `GET` | `/capabilities` | Provider and feature metadata (`baritone_native`, `baritone_chat`, typed-action support) |
+
+`/state` supports `?since=<seq>` for lightweight delta polling. When unchanged it returns:
+```json
+{"connected":true,"seq":42,"unchanged":true,"chat":[]}
+```
 
 #### Command types
 
@@ -166,19 +175,20 @@ The mod exposes three HTTP endpoints on `localhost:8765`:
 
 ### LLM output format (bridge mode)
 
-The system prompt in `profiles/fabric_bridge.json` instructs the model to use:
+The system prompt in `profiles/fabric_bridge.json` now uses structured output:
 
+```json
+{
+  "reply": "I'll head underground to mine iron.",
+  "actions": [
+    {"type":"move","x":45,"y":12,"z":-89},
+    {"type":"mine","target":"iron_ore","count":16}
+  ]
+}
 ```
-THOUGHT: I need to find iron ore and mine 16 of it.
-PLAN: Navigate to the nearest iron ore vein.
-COMMAND: #goto 45 12 -89
 
-I'll head underground to mine some iron for us!
-COMMAND: #mine iron_ore 16
-```
-
-Any text that isn't a `COMMAND:`, `THOUGHT:`, or `PLAN:` line is shown in the WebUI
-output and optionally sent as Minecraft chat.
+Only `reply` is shown in WebUI chat output. Game operations are executed from `actions`,
+which prevents commands from leaking into user-facing chat.
 
 ---
 

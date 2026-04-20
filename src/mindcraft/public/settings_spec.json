@@ -140,7 +140,7 @@
     },
     "bridge_url": {
         "type": "string",
-        "description": "URL of the Fabric Bridge Mod HTTP server. Only used when bridge_mode is true.",
+        "description": "URL of the Fabric Bridge Mod HTTP server. Used by fabric launch modes and legacy bridge_mode.",
         "default": "http://localhost:8765"
     },
     "bridge_structured_output": {
