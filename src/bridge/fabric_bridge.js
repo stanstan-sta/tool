@@ -10,6 +10,8 @@
  *   #goto x y z            — Baritone: navigate to coordinates
  *   #mine <block> <count>  — Baritone: mine a block type
  *   #follow player <name>  — Baritone: follow a player
+ *   #find <target>         — Baritone: locate a block/entity target
+ *   #interact <target>     — Baritone: interact with a target
  *   #cancel                — Baritone: cancel current task
  *   #explore               — Baritone: explore the world
  *   /say <text>            — Minecraft slash command
