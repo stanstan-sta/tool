@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Collects the current player state into a JSON string.
  *
  * State includes: position, health, hunger, saturation, dimension, game mode,
- * inventory, and nearby players.  Chat messages received since the last /state
+ * inventory, and nearby players. Chat messages received since the last /state
  * call are appended and then cleared (so callers see only new messages).
  */
 public class StateCollector {
@@ -74,8 +74,9 @@ public class StateCollector {
         String dim = client.world.getRegistryKey().getValue().toString();
         sb.append(String.format("\"dimension\":\"%s\",", dim));
 
-        String mode = player.interactionManager != null
-                ? player.interactionManager.getCurrentGameMode().getName()
+        // Game mode (ClientPlayerEntity no longer exposes interactionManager in newer mappings)
+        String mode = (client.interactionManager != null && client.interactionManager.getCurrentGameMode() != null)
+                ? client.interactionManager.getCurrentGameMode().getName()
                 : "unknown";
         sb.append(String.format("\"gameMode\":\"%s\",", mode));
 
@@ -127,15 +128,15 @@ public class StateCollector {
             entitiesSig.append(e.getType().toString()).append('@')
                     .append(round(ex)).append(',').append(round(ey)).append(',').append(round(ez)).append(';');
             sb.append("{")
-              .append("\"name\":\"").append(escape(e.getName().getString())).append("\",")
-              .append("\"type\":\"").append(escape(e.getType().toString())).append("\",")
-              .append("\"x\":").append(round(ex)).append(",")
-              .append("\"y\":").append(round(ey)).append(",")
-              .append("\"z\":").append(round(ez)).append(",")
-              .append("\"vx\":").append(round(v.x)).append(",")
-              .append("\"vy\":").append(round(v.y)).append(",")
-              .append("\"vz\":").append(round(v.z))
-              .append("}");
+                    .append("\"name\":\"").append(escape(e.getName().getString())).append("\",")
+                    .append("\"type\":\"").append(escape(e.getType().toString())).append("\",")
+                    .append("\"x\":").append(round(ex)).append(",")
+                    .append("\"y\":").append(round(ey)).append(",")
+                    .append("\"z\":").append(round(ez)).append(",")
+                    .append("\"vx\":").append(round(v.x)).append(",")
+                    .append("\"vy\":").append(round(v.y)).append(",")
+                    .append("\"vz\":").append(round(v.z))
+                    .append("}");
         }
         sb.append("],");
 
