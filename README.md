@@ -85,6 +85,64 @@ node main.js --profiles ./profiles/andy.json ./profiles/jill.json
 
 ---
 
+## 🧩 Fabric Bridge Tutorial (when this repo is **not** a standalone Fabric client)
+
+Mindcraft itself is a Node.js controller.  
+The Minecraft **Fabric client is launched separately** (Prism Launcher / Minecraft Launcher), then Mindcraft connects to it through the bridge mod HTTP API.
+
+### What launches what?
+
+- **Launcher / Prism / MultiMC** launches Minecraft + Fabric mods.
+- **Mindcraft (`node main.js`)** launches the LLM agent runtime.
+- They communicate via `bridge_url` (default `http://localhost:8765`).
+
+### Setup flow
+
+1. Build bridge mod:
+   ```bash
+   cd fabric-bridge-mod
+   ./gradlew build
+   ```
+2. Copy the generated `mindcraft-bridge-*.jar` to your Fabric `mods/` folder.
+3. Install Baritone Fabric jar in the same `mods/` folder.
+4. Launch Minecraft with your Fabric profile first.
+5. In this repo, enable Fabric runtime in `settings.js`:
+   ```js
+   "launch_mode": "fabric_ui", // or "fabric_headless"
+   "bridge_url": "http://localhost:8765",
+   "bridge_structured_output": true
+   ```
+6. Use a Fabric bridge profile (example: `profiles/fabric_bridge.json`) and run:
+   ```bash
+   node main.js --profiles ./profiles/fabric_bridge.json
+   ```
+
+### Important note about `.bat` / `.sh`
+
+`START_LOCAL.bat` and `start_local.sh` start the packet/Mineflayer path, not a standalone Fabric game client.  
+For Fabric Bridge mode, start Minecraft from your launcher, then start Mindcraft from terminal.
+
+### If you build a fully custom Fabric client (optimization stack)
+
+For true client-side optimization, consider baking in a curated mod stack (verify version compatibility first):
+
+- Sodium — https://github.com/CaffeineMC/sodium-fabric
+- Lithium — https://github.com/CaffeineMC/lithium-fabric
+- FerriteCore — https://github.com/malte0811/FerriteCore
+- Starlight (for supported versions) — https://github.com/PaperMC/Starlight
+- C2ME — https://github.com/RelativityMC/C2ME-fabric
+- ModernFix — https://github.com/embeddedt/ModernFix
+- EntityCulling — https://github.com/tr7zw/EntityCulling
+- ImmediatelyFast — https://github.com/RaphiMC/ImmediatelyFast
+- Krypton (for supported versions) — https://github.com/astei/krypton
+
+Suggested strategy:
+- Keep automation-critical mods (bridge + baritone) minimal and stable.
+- Add performance mods incrementally, testing for bridge API and Baritone regressions after each addition.
+- Maintain a locked modpack manifest for reproducible behavior.
+
+---
+
 # Model Customization
 
 You can configure project details in `settings.js`. [See file.](settings.js)

@@ -644,9 +644,20 @@
                         input.value = cfg.default;
                         break;
                     default:
-                        input = document.createElement('input');
-                        input.type = 'text';
-                        input.value = typeof cfg.default === 'object' ? JSON.stringify(cfg.default) : cfg.default;
+                        if (Array.isArray(cfg.options) && cfg.options.length > 0) {
+                            input = document.createElement('select');
+                            cfg.options.forEach(opt => {
+                                const optionEl = document.createElement('option');
+                                optionEl.value = String(opt);
+                                optionEl.textContent = String(opt);
+                                if (String(cfg.default) === String(opt)) optionEl.selected = true;
+                                input.appendChild(optionEl);
+                            });
+                        } else {
+                            input = document.createElement('input');
+                            input.type = 'text';
+                            input.value = typeof cfg.default === 'object' ? JSON.stringify(cfg.default) : cfg.default;
+                        }
                 }
                 input.title = cfg.description || '';
                 input.id = `setting-${key}`;
@@ -844,10 +855,22 @@
                         input.value = settings[key] ?? cfg.default ?? 0;
                         break;
                     default:
-                        input = document.createElement('input');
-                        input.type = 'text';
-                        const defVal = settings[key] ?? cfg.default ?? '';
-                        input.value = typeof defVal === 'object' ? JSON.stringify(defVal) : defVal;
+                        if (Array.isArray(cfg.options) && cfg.options.length > 0) {
+                            input = document.createElement('select');
+                            cfg.options.forEach(opt => {
+                                const optionEl = document.createElement('option');
+                                optionEl.value = String(opt);
+                                optionEl.textContent = String(opt);
+                                input.appendChild(optionEl);
+                            });
+                            const selected = settings[key] ?? cfg.default ?? '';
+                            input.value = String(selected);
+                        } else {
+                            input = document.createElement('input');
+                            input.type = 'text';
+                            const defVal = settings[key] ?? cfg.default ?? '';
+                            input.value = typeof defVal === 'object' ? JSON.stringify(defVal) : defVal;
+                        }
                 }
                 input.id = `agent-setting-${key}`;
                 input.addEventListener('input', onAgentSettingsChanged);

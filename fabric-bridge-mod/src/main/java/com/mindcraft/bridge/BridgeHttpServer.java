@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
@@ -28,6 +29,8 @@ public class BridgeHttpServer {
         server.createContext("/ping",    this::handlePing);
         server.createContext("/state",   this::handleState);
         server.createContext("/command", this::handleCommand);
+        server.createContext("/action", this::handleAction);
+        server.createContext("/capabilities", this::handleCapabilities);
 
         // Single-threaded executor is fine — Minecraft main-thread work is
         // scheduled via MinecraftClient.execute() inside the handlers.
@@ -55,7 +58,9 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
-        String json = StateCollector.collect();
+        String query = ex.getRequestURI().getRawQuery();
+        Long since = extractQueryLong(query, "since");
+        String json = StateCollector.collect(since);
         respond(ex, 200, json);
     }
 
@@ -75,6 +80,38 @@ public class BridgeHttpServer {
             CommandExecutor.execute(command);
             respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
         }
+    }
+
+    private void handleAction(HttpExchange ex) throws IOException {
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        try (InputStream in = ex.getRequestBody()) {
+            String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            String actionJson = extractJsonObject(body, "action");
+            if (actionJson == null) {
+                actionJson = body != null ? body.trim() : null;
+            }
+            if (actionJson == null || actionJson.isBlank()) {
+                respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'action' field\"}");
+                return;
+            }
+            String executed = CommandExecutor.executeTypedJson(actionJson);
+            if (executed == null || executed.isBlank()) {
+                respond(ex, 400, "{\"success\":false,\"error\":\"Invalid typed action\"}");
+                return;
+            }
+            respond(ex, 200, "{\"success\":true,\"output\":\"Action sent: " + jsonEscape(executed) + "\"}");
+        }
+    }
+
+    private void handleCapabilities(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        respond(ex, 200, CommandExecutor.capabilitiesJson());
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -115,6 +152,67 @@ public class BridgeHttpServer {
                    .replace("\\t",  "\t")
                    .replace("\\\\", "\\")
                    .replace("\\\"", "\"");
+    }
+
+    static Long extractQueryLong(String query, String key) {
+        if (query == null || query.isBlank()) return null;
+        String[] parts = query.split("&");
+        for (String part : parts) {
+            String[] kv = part.split("=", 2);
+            if (kv.length == 2 && key.equals(kv[0])) {
+                try {
+                    String decoded = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                    return Long.parseLong(decoded);
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    static String extractJsonObject(String json, String key) {
+        String search = "\"" + key + "\"";
+        int ki = json.indexOf(search);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + search.length());
+        if (colon < 0) return null;
+        int start = json.indexOf('{', colon + 1);
+        if (start < 0) return null;
+        int depth = 0;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return json.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    static String extractJsonPrimitive(String json, String key) {
+        String search = "\"" + key + "\"";
+        int ki = json.indexOf(search);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + search.length());
+        if (colon < 0) return null;
+        int i = colon + 1;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length()) return null;
+        if (json.charAt(i) == '"') {
+            return extractJsonString(json, key);
+        }
+        int end = i;
+        while (end < json.length()) {
+            char c = json.charAt(end);
+            if (c == ',' || c == '}' || Character.isWhitespace(c)) break;
+            end++;
+        }
+        if (end <= i) return null;
+        return json.substring(i, end);
     }
 
     /** Escape a string for embedding inside a JSON string value. */

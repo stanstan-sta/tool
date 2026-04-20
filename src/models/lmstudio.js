@@ -5,6 +5,7 @@ import { toolCallToCommand } from '../agent/commands/index.js';
 export class LMStudio {
     static prefix = 'lmstudio';
     static supportsTools = true;
+    static supportsStructuredOutput = true;
 
     constructor(model_name, url, params) {
         this.model_name = model_name;
@@ -28,6 +29,12 @@ export class LMStudio {
                 ...(tools && tools.length > 0 ? { tools } : { stop: '***' }),
                 ...(this.params || {})
             };
+            if (!pack.response_format && this.params?.structured_output_schema) {
+                pack.response_format = {
+                    type: 'json_schema',
+                    json_schema: this.params.structured_output_schema,
+                };
+            }
             const completion = await this.openai.chat.completions.create(pack);
             if (completion.choices[0].finish_reason === 'length')
                 throw new Error('Context length exceeded');

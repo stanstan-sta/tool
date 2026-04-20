@@ -44,8 +44,10 @@ const settings = {
     "allow_vision": false, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "use_baritone": false, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.
+    "launch_mode": "packet", // packet, fabric_ui, or fabric_headless. fabric_* starts BridgeAgent runtime.
     "bridge_mode": false, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
     "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server (only used when bridge_mode is true)
+    "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
 
@@ -64,6 +66,6 @@ const settings = {
     "enable_wiki": true, // enable the built-in offline Minecraft wiki/cheatsheet (!wiki command and $WIKI_DATA prompt placeholder)
     "wiki_in_prompt": false, // inject a short wiki summary into agent prompts via $WIKI_DATA (can increase token usage slightly)
 
-}
+};
 
 export default settings;

@@ -127,15 +127,26 @@
         "description": "Enable Baritone-inspired pathfinder (@miner-org/mineflayer-baritone) with parkour, block-breaking, swimming and ladder support. Adds !baritoneGoto, !baritoneCancel, !baritioneMine, !baritoneFollow, !baritoneExplore, !espLocate and !espGoto commands.",
         "default": false
     },
+    "launch_mode": {
+        "type": "string",
+        "description": "Runtime mode. packet = Mineflayer packet bot, fabric_ui = Fabric bridge runtime with normal client UI, fabric_headless = Fabric bridge runtime tuned for lower render overhead.",
+        "default": "packet",
+        "options": ["packet", "fabric_ui", "fabric_headless"]
+    },
     "bridge_mode": {
         "type": "boolean",
-        "description": "When true, the agent connects to a Fabric Bridge Mod HTTP server (see bridge_url) instead of joining Minecraft directly via Mineflayer. Use this to control a real Fabric+Baritone+ESP modded client.",
+        "description": "Legacy bridge switch. Prefer launch_mode=fabric_ui or fabric_headless. When true, the agent connects to a Fabric Bridge Mod HTTP server (see bridge_url) instead of joining Minecraft directly via Mineflayer.",
         "default": false
     },
     "bridge_url": {
         "type": "string",
-        "description": "URL of the Fabric Bridge Mod HTTP server. Only used when bridge_mode is true.",
+        "description": "URL of the Fabric Bridge Mod HTTP server. Used by fabric launch modes and legacy bridge_mode.",
         "default": "http://localhost:8765"
+    },
+    "bridge_structured_output": {
+        "type": "boolean",
+        "description": "When true in fabric runtime, requests structured JSON responses ({reply, actions[]}) so actions are executed from parsed data and command text is not leaked into chat output.",
+        "default": true
     },
     "code_timeout_mins": {
         "type": "number",

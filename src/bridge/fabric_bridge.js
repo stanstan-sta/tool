@@ -57,6 +57,42 @@ export class FabricBridge {
     }
 
     /**
+     * Send a typed action to the Fabric client.
+     * @param {object} action
+     * @returns {Promise<{success: boolean, output?: string, error?: string}>}
+     */
+    async sendAction(action) {
+        try {
+            const res = await fetch(`${this.url}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action }),
+                signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Retrieve bridge/runtime capabilities.
+     * @returns {Promise<object|null>}
+     */
+    async getCapabilities() {
+        try {
+            const res = await fetch(`${this.url}/capabilities`, {
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Get the current player state snapshot from the Fabric client.
      * The `chat` array is automatically cleared by the mod after each /state call
      * so callers always receive only new messages.
@@ -77,9 +113,10 @@ export class FabricBridge {
      * @property {string[]} nearby_players
      * @property {string[]} chat        messages received since last poll
      */
-    async getState() {
+    async getState(sinceSeq = null) {
         try {
-            const res = await fetch(`${this.url}/state`, {
+            const query = sinceSeq == null ? '' : `?since=${encodeURIComponent(String(sinceSeq))}`;
+            const res = await fetch(`${this.url}/state${query}`, {
                 signal: AbortSignal.timeout(3000),
             });
             if (!res.ok) return null;
@@ -102,6 +139,10 @@ export class FabricBridge {
             .map(i => `${i.count}x ${i.item.replace('minecraft:', '')}`)
             .join(', ') || 'empty';
         const nearby = (state.nearby_players || []).join(', ') || 'none';
+        const nearbyEntities = (state.nearby_entities || [])
+            .slice(0, 5)
+            .map(e => `${e.type}@(${e.x},${e.y},${e.z})`)
+            .join(', ') || 'none';
         const dim = (state.dimension || 'overworld').replace('minecraft:', '');
 
         return [
@@ -109,6 +150,7 @@ export class FabricBridge {
             `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}`,
             `Inventory: ${inv}`,
             `Nearby players: ${nearby}`,
+            `Nearby entities: ${nearbyEntities}`,
         ].join('\n');
     }
 }

@@ -4,7 +4,61 @@ import { FabricBridge } from './fabric_bridge.js';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import settings from '../agent/settings.js';
 
-const POLL_INTERVAL_MS = 2500; // how often to poll Fabric mod state (ms)
+const POLL_MIN_MS = 800;
+const POLL_DEFAULT_MS = 2000;
+const POLL_MAX_MS = 5000;
+const BRIDGE_STRUCTURED_SCHEMA_PROMPT = 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. No markdown. No extra keys.';
+
+function clamp(n, min, max) {
+    return Math.min(max, Math.max(min, n));
+}
+
+function extractJsonObjectCandidate(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return null;
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) return fenced[1].trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) return trimmed.slice(first, last + 1);
+    return null;
+}
+
+function normalizeAction(action) {
+    if (!action) return null;
+    if (typeof action === 'string') {
+        return { type: 'raw_command', command: action };
+    }
+    if (typeof action !== 'object') return null;
+    if (!action.type && action.command) {
+        return { type: 'raw_command', command: action.command };
+    }
+    if (!action.type) return null;
+    return action;
+}
+
+function commandToTypedAction(cmd) {
+    const raw = String(cmd || '').trim();
+    const rawLower = raw.toLowerCase();
+    if (!raw) return null;
+    const goto = raw.match(/^#goto\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
+    if (goto) {
+        return { type: 'move', provider: 'baritone_chat', x: Number(goto[1]), y: Number(goto[2]), z: Number(goto[3]) };
+    }
+    const mine = raw.match(/^#mine\s+([a-z0-9_:-]+)(?:\s+(\d+))?/i);
+    if (mine) {
+        return { type: 'mine', provider: 'baritone_chat', target: mine[1], count: Number(mine[2] || 1) };
+    }
+    const follow = raw.match(/^#follow\s+player\s+([^\s]+)$/i);
+    if (follow) {
+        return { type: 'follow', provider: 'baritone_chat', target: follow[1] };
+    }
+    if (rawLower === '#cancel') {
+        return { type: 'cancel', provider: 'baritone_chat' };
+    }
+    return { type: 'raw_command', provider: 'baritone_chat', command: raw };
+}
 
 /**
  * Parse the LLM's response into a chat text portion and a list of COMMAND: lines.
@@ -19,15 +73,56 @@ const POLL_INTERVAL_MS = 2500; // how often to poll Fabric mod state (ms)
  * @param {string} response
  * @returns {{chat: string, commands: string[]}}
  */
-export function parseBridgeResponse(response) {
+export function parseBridgeResponse(response, expectStructured = false) {
     const commands = [];
+    const actions = [];
     const chatLines = [];
+
+    const jsonCandidate = extractJsonObjectCandidate(response);
+    if (jsonCandidate) {
+        try {
+            const parsed = JSON.parse(jsonCandidate);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                const reply = typeof parsed.reply === 'string'
+                    ? parsed.reply.trim()
+                    // Backward-compat: allow "chat" from older structured bridge prompts.
+                    : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
+                const structuredActions = Array.isArray(parsed.actions)
+                    ? parsed.actions.map(normalizeAction).filter(Boolean)
+                    : [];
+                if (reply || structuredActions.length > 0) {
+                    return {
+                        chat: reply,
+                        commands,
+                        actions: structuredActions,
+                        structured: true,
+                    };
+                }
+            }
+        } catch {
+            // fall back to COMMAND parsing below
+        }
+    }
 
     for (const raw of response.split('\n')) {
         const line = raw.trim();
         if (line.startsWith('COMMAND:')) {
             const cmd = line.slice('COMMAND:'.length).trim();
             if (cmd) commands.push(cmd);
+        } else if (line.startsWith('ACTION:')) {
+            const rawAction = line.slice('ACTION:'.length).trim();
+            if (rawAction) {
+                let actionObj = rawAction;
+                if (rawAction.startsWith('{') && rawAction.endsWith('}')) {
+                    try {
+                        actionObj = JSON.parse(rawAction);
+                    } catch {
+                        actionObj = rawAction;
+                    }
+                }
+                const normalized = normalizeAction(actionObj);
+                if (normalized) actions.push(normalized);
+            }
         } else if (line.startsWith('THOUGHT:') || line.startsWith('PLAN:')) {
             // These are internal reasoning lines — don't show in chat but keep for context
         } else if (line) {
@@ -35,7 +130,13 @@ export function parseBridgeResponse(response) {
         }
     }
 
-    return { chat: chatLines.join('\n'), commands };
+    return {
+        chat: chatLines.join('\n'),
+        commands,
+        actions,
+        structured: false,
+        expectedStructured: expectStructured,
+    };
 }
 
 /**
@@ -88,10 +189,13 @@ export class BridgeAgent {
         // ── Fabric bridge HTTP client ──────────────────────────────────────────
         this.bridge = new FabricBridge(settings.bridge_url || 'http://localhost:8765');
         this._lastStateStr = '';
+        this._lastStateSeq = null;
+        this._pollIntervalMs = POLL_DEFAULT_MS;
+        this._capabilities = null;
 
         // ── MindServer registration ────────────────────────────────────────────
         // respondFunc is called by serverProxy when the WebUI sends a message.
-        this.respondFunc = async (from, msg) => {
+        this.respondFunc = (from, msg) => {
             try {
                 if (msg) this._pendingMessage = { source: from, message: msg };
             } catch (e) {
@@ -111,6 +215,10 @@ export class BridgeAgent {
         const reachable = await this.bridge.isReachable();
         if (reachable) {
             sendLogToUI(`${this.name}: Fabric bridge mod connected at ${this.bridge.url}`);
+            this._capabilities = await this.bridge.getCapabilities();
+            if (this._capabilities) {
+                sendLogToUI(`${this.name}: Bridge capabilities: provider=${this._capabilities.default_provider || 'unknown'}, typed_actions=${this._capabilities.supports_typed_actions === true}`);
+            }
         } else {
             sendLogToUI(`${this.name}: ⚠️  Fabric bridge mod not reachable at ${this.bridge.url} — waiting...`);
         }
@@ -132,9 +240,12 @@ export class BridgeAgent {
         while (!this.stopped) {
             try {
                 // ── 1. Poll Fabric mod state ───────────────────────────────────
-                const state = await this.bridge.getState();
+                const state = await this.bridge.getState(this._lastStateSeq);
+                if (typeof state?.seq === 'number') {
+                    this._lastStateSeq = state.seq;
+                }
 
-                if (state && state.connected) {
+                if (state && state.connected && !state.unchanged) {
                     const stateStr = FabricBridge.formatState(state);
 
                     // Only inject state as system message when something meaningful changed
@@ -170,14 +281,21 @@ export class BridgeAgent {
                     await this._handleMessage(source, message, state);
 
                     // Tight loop while there's a response to work on
+                    this._pollIntervalMs = POLL_MIN_MS;
                     continue;
+                }
+
+                if (state?.unchanged) {
+                    this._pollIntervalMs = clamp(this._pollIntervalMs + 200, POLL_MIN_MS, POLL_MAX_MS);
+                } else {
+                    this._pollIntervalMs = clamp(this._pollIntervalMs - 200, POLL_MIN_MS, POLL_DEFAULT_MS);
                 }
 
             } catch (err) {
                 console.error('BridgeAgent loop error:', err);
             }
 
-            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+            await new Promise(r => setTimeout(r, this._pollIntervalMs));
         }
     }
 
@@ -198,6 +316,13 @@ export class BridgeAgent {
 
         // ── 4. Build prompt and call LLM ──────────────────────────────────────
         const history = this.history.getHistory();
+        const wantStructured = settings.bridge_structured_output === true;
+        if (wantStructured) {
+            history.push({
+                role: 'system',
+                content: BRIDGE_STRUCTURED_SCHEMA_PROMPT,
+            });
+        }
         let response;
         try {
             response = await this.prompter.promptConvo(history);
@@ -215,7 +340,7 @@ export class BridgeAgent {
         console.log(`${this.name} LLM response: ${response}`);
 
         // ── 5. Parse COMMAND: lines ───────────────────────────────────────────
-        const { chat, commands } = parseBridgeResponse(response);
+        const { chat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
 
         // Record the full LLM response in history
         this.history.add(this.name, response);
@@ -226,11 +351,29 @@ export class BridgeAgent {
         }
 
         // ── 6. Execute each COMMAND: line via Fabric bridge ───────────────────
+        for (const action of actions) {
+            sendOutputToServer(this.name, `⚡ action:${action.type}`);
+            const result = action.type === 'raw_command'
+                ? await this.bridge.sendCommand(action.command || '')
+                : await this.bridge.sendAction(action);
+            if (result.output) {
+                this.history.add('system', `action:${action.type} → ${result.output}`);
+                sendOutputToServer(this.name, result.output);
+            } else if (!result.success) {
+                const errMsg = `Action failed (${action.type}): ${result.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+            }
+        }
+
         for (const cmd of commands) {
             sendOutputToServer(this.name, `⚡ ${cmd}`);
             console.log(`${this.name} → Fabric: ${cmd}`);
 
-            const result = await this.bridge.sendCommand(cmd);
+            const compatAction = commandToTypedAction(cmd);
+            const result = compatAction
+                ? await this.bridge.sendAction(compatAction)
+                : await this.bridge.sendCommand(cmd);
 
             if (result.output) {
                 const resultMsg = `${cmd} → ${result.output}`;
@@ -241,6 +384,10 @@ export class BridgeAgent {
                 this.history.add('system', errMsg);
                 sendOutputToServer(this.name, `⚠️ ${errMsg}`);
             }
+        }
+
+        if (wantStructured && !structured && commands.length === 0 && actions.length === 0) {
+            this.history.add('system', 'Invalid structured response: expected JSON object with reply/actions.');
         }
 
         this.history.save();
@@ -257,6 +404,7 @@ export class BridgeAgent {
     async getFullState() {
         const state = await this.bridge.getState();
         if (!state || !state.connected) return null;
+        const now = Date.now();
         return {
             gameplay: {
                 health: state.health,
@@ -266,6 +414,12 @@ export class BridgeAgent {
                 position: { x: state.x, y: state.y, z: state.z },
                 biome: state.dimension,
                 gamemode: state.gameMode,
+            },
+            world_model: {
+                freshness_ts: now,
+                confidence: 1.0,
+                nearbyPlayers: state.nearby_players || [],
+                nearbyEntities: state.nearby_entities || [],
             },
             inventory: {
                 stacksUsed: (state.inventory || []).length,
