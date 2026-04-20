@@ -81,13 +81,16 @@ export class History {
 
     async save() {
         try {
+            const selfPrompter = this.agent?.self_prompter;
             const data = {
                 memory: this.memory,
                 turns: this.turns,
-                self_prompting_state: this.agent.self_prompter.state,
-                self_prompt: this.agent.self_prompter.isStopped() ? null : this.agent.self_prompter.prompt,
-                taskStart: this.agent.task.taskStartTime,
-                last_sender: this.agent.last_sender
+                self_prompting_state: selfPrompter?.state ?? null,
+                self_prompt: selfPrompter
+                    ? ((typeof selfPrompter.isStopped === 'function' && selfPrompter.isStopped()) ? null : (selfPrompter.prompt ?? null))
+                    : null,
+                taskStart: this.agent?.task?.taskStartTime ?? null,
+                last_sender: this.agent?.last_sender ?? null
             };
             writeFileSync(this.memory_fp, JSON.stringify(data, null, 2));
             console.log('Saved memory to:', this.memory_fp);

@@ -10,80 +10,115 @@ import {
 import convoManager from '../conversation.js';
 
 export function getFullState(agent) {
-    const bot = agent.bot;
-
+    const bot = agent?.bot;
     const pos = getPosition(bot);
-    const position = {
+    const ready = !!pos;
+
+    const position = pos ? {
         x: Number(pos.x.toFixed(2)),
         y: Number(pos.y.toFixed(2)),
         z: Number(pos.z.toFixed(2))
-    };
+    } : null;
 
-    let weather = 'Clear';
-    if (bot.thunderState > 0) weather = 'Thunderstorm';
-    else if (bot.rainState > 0) weather = 'Rain';
-
-    let timeLabel = 'Night';
-    if (bot.time.timeOfDay < 6000) timeLabel = 'Morning';
-    else if (bot.time.timeOfDay < 12000) timeLabel = 'Afternoon';
-
-    const below = getBlockAtPosition(bot, 0, -1, 0).name;
-    const legs = getBlockAtPosition(bot, 0, 0, 0).name;
-    const head = getBlockAtPosition(bot, 0, 1, 0).name;
-
-    let players = getNearbyPlayerNames(bot);
-    let bots = convoManager.getInGameAgents().filter(b => b !== agent.name);
-    players = players.filter(p => !bots.includes(p));
-
-    const helmet = bot.inventory.slots[5];
-    const chestplate = bot.inventory.slots[6];
-    const leggings = bot.inventory.slots[7];
-    const boots = bot.inventory.slots[8];
+    const isIdle = typeof agent?.isIdle === 'function' ? agent.isIdle() : true;
+    let bots = [];
+    if (typeof convoManager.getInGameAgents === 'function') {
+        bots = convoManager.getInGameAgents().filter(b => b !== agent?.name);
+    }
 
     const state = {
-        name: agent.name,
+        name: agent?.name ?? null,
+        ready,
         gameplay: {
             position,
-            dimension: bot.game.dimension,
-            gamemode: bot.game.gameMode,
-            health: Math.round(bot.health),
-            hunger: Math.round(bot.food),
-            biome: getBiomeName(bot),
-            weather,
-            timeOfDay: bot.time.timeOfDay,
-            timeLabel
+            dimension: bot?.game?.dimension ?? null,
+            gamemode: bot?.game?.gameMode ?? null,
+            health: Number.isFinite(bot?.health) ? Math.round(bot.health) : null,
+            hunger: Number.isFinite(bot?.food) ? Math.round(bot.food) : null,
+            biome: null,
+            weather: 'Clear',
+            timeOfDay: bot?.time?.timeOfDay ?? null,
+            timeLabel: null
         },
         action: {
-            current: agent.isIdle() ? 'Idle' : agent.actions.currentActionLabel,
-            isIdle: agent.isIdle()
+            current: isIdle ? 'Idle' : (agent?.actions?.currentActionLabel ?? null),
+            isIdle
         },
         surroundings: {
-            below,
-            legs,
-            head,
-            firstBlockAboveHead: getFirstBlockAboveHead(bot, null, 32)
+            below: null,
+            legs: null,
+            head: null,
+            firstBlockAboveHead: null
         },
         inventory: {
-            counts: getInventoryCounts(bot),
-            stacksUsed: bot.inventory.items().length,
-            totalSlots: bot.inventory.slots.length,
+            counts: {},
+            stacksUsed: 0,
+            totalSlots: bot?.inventory?.slots?.length ?? 0,
             equipment: {
-                helmet: helmet ? helmet.name : null,
-                chestplate: chestplate ? chestplate.name : null,
-                leggings: leggings ? leggings.name : null,
-                boots: boots ? boots.name : null,
-                mainHand: bot.heldItem ? bot.heldItem.name : null
+                helmet: null,
+                chestplate: null,
+                leggings: null,
+                boots: null,
+                mainHand: bot?.heldItem?.name ?? null
             }
         },
         nearby: {
-            humanPlayers: players,
+            humanPlayers: [],
             botPlayers: bots,
-            entityTypes: getNearbyEntityTypes(bot).filter(t => t !== 'player' && t !== 'item'),
+            entityTypes: []
         },
         modes: {
-            summary: bot.modes.getMiniDocs()
+            summary: bot?.modes?.getMiniDocs ? bot.modes.getMiniDocs() : null
         }
     };
+
+    if (!ready) return state;
+
+    if (bot.thunderState > 0) state.gameplay.weather = 'Thunderstorm';
+    else if (bot.rainState > 0) state.gameplay.weather = 'Rain';
+
+    if (Number.isFinite(state.gameplay.timeOfDay)) {
+        state.gameplay.timeLabel = 'Night';
+        if (state.gameplay.timeOfDay < 6000) state.gameplay.timeLabel = 'Morning';
+        else if (state.gameplay.timeOfDay < 12000) state.gameplay.timeLabel = 'Afternoon';
+    }
+
+    try {
+        state.gameplay.biome = getBiomeName(bot);
+    } catch { }
+
+    try {
+        state.surroundings.below = getBlockAtPosition(bot, 0, -1, 0)?.name ?? null;
+        state.surroundings.legs = getBlockAtPosition(bot, 0, 0, 0)?.name ?? null;
+        state.surroundings.head = getBlockAtPosition(bot, 0, 1, 0)?.name ?? null;
+        state.surroundings.firstBlockAboveHead = getFirstBlockAboveHead(bot, null, 32);
+    } catch { }
+
+    try {
+        let players = getNearbyPlayerNames(bot);
+        players = players.filter(p => !bots.includes(p));
+        state.nearby.humanPlayers = players;
+    } catch { }
+
+    try {
+        state.inventory.counts = getInventoryCounts(bot);
+    } catch { }
+    state.inventory.stacksUsed = bot?.inventory?.items ? bot.inventory.items().length : 0;
+    state.inventory.totalSlots = bot?.inventory?.slots?.length ?? 0;
+
+    const slots = bot?.inventory?.slots ?? [];
+    const helmet = slots[5];
+    const chestplate = slots[6];
+    const leggings = slots[7];
+    const boots = slots[8];
+    state.inventory.equipment.helmet = helmet ? helmet.name : null;
+    state.inventory.equipment.chestplate = chestplate ? chestplate.name : null;
+    state.inventory.equipment.leggings = leggings ? leggings.name : null;
+    state.inventory.equipment.boots = boots ? boots.name : null;
+
+    try {
+        state.nearby.entityTypes = getNearbyEntityTypes(bot).filter(t => t !== 'player' && t !== 'item');
+    } catch { }
 
     return state;
 }
