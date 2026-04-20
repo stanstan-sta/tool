@@ -469,8 +469,9 @@ export class Agent {
                 speak(to_translate, this.prompter.profile.speak_model);
             }
             if (settings.chat_ingame && chat_message) {this.bot.chat(chat_message);}
-            sendOutputToServer(this.name, message);
         }
+        // always send the full message (including commands) to the WebUI console
+        sendOutputToServer(this.name, message);
     }
 
     startEvents() {
