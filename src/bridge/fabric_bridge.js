@@ -93,6 +93,23 @@ export class FabricBridge {
     }
 
     /**
+     * Retrieve the current command registry from the Fabric client.
+     * @returns {Promise<Array<string>>}
+     */
+    async getCommands() {
+        try {
+            const res = await fetch(`${this.url}/commands`, {
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return [];
+            const data = await res.json();
+            return Array.isArray(data) ? data : [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
      * Get the current player state snapshot from the Fabric client.
      * The `chat` array is automatically cleared by the mod after each /state call
      * so callers always receive only new messages.

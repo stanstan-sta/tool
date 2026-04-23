@@ -18,13 +18,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * Collects the current player state into a JSON string.
  *
  * State includes: position, health, hunger, saturation, dimension, game mode,
- * inventory, and nearby players. Chat messages received since the last /state
- * call are appended and then cleared (so callers see only new messages).
+ * inventory, nearby players, and structured chat events. Chat messages received
+ * since the last /state call are appended and then cleared (so callers see only
+ * new messages).
  */
 public class StateCollector {
 
-    /** Thread-safe queue of chat messages received since the last /state poll. */
-    static final Queue<String> chatQueue = new ConcurrentLinkedQueue<>();
+    static final Queue<ChatEvent> chatQueue = new ConcurrentLinkedQueue<>();
     static final int MAX_CHAT_QUEUE = 200;
     private static String lastStateHash = "";
     private static final AtomicLong stateSeq = new AtomicLong(0);
@@ -36,12 +36,11 @@ public class StateCollector {
     public static void registerEvents() {
         // Listen for incoming chat messages and queue them for the Node.js agent.
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            if (!overlay) {
-                while (chatQueue.size() >= MAX_CHAT_QUEUE) {
-                    chatQueue.poll();
-                }
-                chatQueue.add(message.getString());
+            while (chatQueue.size() >= MAX_CHAT_QUEUE) {
+                chatQueue.poll();
             }
+            String type = overlay ? "system" : "player";
+            chatQueue.add(new ChatEvent(type, message.getString()));
         });
     }
 
@@ -151,19 +150,31 @@ public class StateCollector {
         long seq = stateSeq.get();
 
         if (sinceSeq != null && sinceSeq == seq && chatQueue.isEmpty()) {
-            return "{\"connected\":true,\"seq\":" + seq + ",\"unchanged\":true,\"chat\":[]}";
+            return "{\"connected\":true,\"seq\":" + seq + ",\"unchanged\":true,\"chat\":[],\"chat_events\":[]}";
         }
 
-        // Chat messages received since last poll — drain the queue
-        sb.append("\"chat\":[");
+        // Chat messages received since last poll — drain the queue into both legacy and structured arrays.
+        StringBuilder chatArray = new StringBuilder();
+        StringBuilder eventArray = new StringBuilder();
+        chatArray.append("[");
+        eventArray.append("[");
         boolean firstChat = true;
-        String msg;
-        while ((msg = chatQueue.poll()) != null) {
-            if (!firstChat) sb.append(",");
+        boolean firstEvent = true;
+        ChatEvent event;
+        while ((event = chatQueue.poll()) != null) {
+            if (!firstChat) chatArray.append(",");
             firstChat = false;
-            sb.append("\"").append(escape(msg)).append("\"");
+            chatArray.append("\"").append(escape(event.message)).append("\"");
+
+            if (!firstEvent) eventArray.append(",");
+            firstEvent = false;
+            eventArray.append(event.toJson());
         }
-        sb.append("]");
+        chatArray.append("]");
+        eventArray.append("]");
+
+        sb.append("\"chat\":").append(chatArray).append(",");
+        sb.append("\"chat_events\":").append(eventArray);
         sb.append(",\"seq\":").append(seq);
         sb.append(",\"unchanged\":false");
 
@@ -177,6 +188,20 @@ public class StateCollector {
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
                 .replace("\r", "\\r");
+    }
+
+    private static class ChatEvent {
+        final String type;
+        final String message;
+
+        ChatEvent(String type, String message) {
+            this.type = type;
+            this.message = message;
+        }
+
+        String toJson() {
+            return "{\"type\":\"" + escape(type) + "\",\"message\":\"" + escape(message) + "\"}";
+        }
     }
 
     private static String round(double v) {

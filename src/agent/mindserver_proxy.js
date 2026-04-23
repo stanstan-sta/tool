@@ -69,6 +69,47 @@ class MindServerProxy {
             }
         });
 
+        this.socket.on('clear-agent-memory', async (preserveImportant = false) => {
+            try {
+                if (this.agent?.clearAllMemory) {
+                    await this.agent.clearAllMemory(preserveImportant);
+                }
+            } catch (error) {
+                console.error('Error clearing agent memory:', error);
+            }
+        });
+
+        this.socket.on('compact-agent-memory', async (reason = 'manual') => {
+            try {
+                if (this.agent?.compactMemoryNow) {
+                    await this.agent.compactMemoryNow(reason);
+                }
+            } catch (error) {
+                console.error('Error compacting agent memory:', error);
+            }
+        });
+
+        this.socket.on('set-important-memory', async (memoryText) => {
+            try {
+                if (this.agent?.history) {
+                    this.agent.history.memory = String(memoryText || '');
+                    await this.agent.history.save();
+                }
+            } catch (error) {
+                console.error('Error setting important memory:', error);
+            }
+        });
+
+        this.socket.on('get-agent-memory', (callback) => {
+            try {
+                const memory = this.agent?.history?.memory ?? '';
+                callback(memory);
+            } catch (error) {
+                console.error('Error getting agent memory:', error);
+                callback('');
+            }
+        });
+
         this.socket.on('get-full-state', (callback) => {
             try {
                 const state = getFullState(this.agent);

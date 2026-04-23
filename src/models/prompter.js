@@ -150,7 +150,7 @@ export class Prompter {
             prompt = prompt.replaceAll('$ACTION', this.agent.actions.currentActionLabel);
         }
         if (prompt.includes('$COMMAND_DOCS')) {
-            const docs = useNativeTools ? getToolCallDocs() : getCommandDocs(this.agent);
+            const docs = useNativeTools ? getToolCallDocs(this.agent) : getCommandDocs(this.agent);
             prompt = prompt.replaceAll('$COMMAND_DOCS', docs);
         }
         if (prompt.includes('$CODE_DOCS')) {

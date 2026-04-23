@@ -1,10 +1,6 @@
 {
     "name": "Andy",
-
-    "model": {
-        "api": "local-gguf",
-        "model": "auto"
-    },
-
-    "embedding": "none"
+    "model": "lmstudio/google/gemma-4-e2b",
+    "embedding": "none",
+    "personality": ""
 }

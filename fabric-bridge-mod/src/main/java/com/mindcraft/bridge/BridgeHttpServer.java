@@ -31,6 +31,7 @@ public class BridgeHttpServer {
         server.createContext("/command", this::handleCommand);
         server.createContext("/action", this::handleAction);
         server.createContext("/capabilities", this::handleCapabilities);
+        server.createContext("/commands", this::handleCommands);
 
         // Single-threaded executor is fine — Minecraft main-thread work is
         // scheduled via MinecraftClient.execute() inside the handlers.
@@ -112,6 +113,14 @@ public class BridgeHttpServer {
             return;
         }
         respond(ex, 200, CommandExecutor.capabilitiesJson());
+    }
+
+    private void handleCommands(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        respond(ex, 200, CommandExecutor.discoverCommandsJson());
     }
 
     // ──────────────────────────────────────────────────────────────────────────

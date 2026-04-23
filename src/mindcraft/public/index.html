@@ -568,6 +568,33 @@
         </div>
     </div>
 
+    <!-- Important Memory Modal -->
+    <div id="importantMemoryModal" class="modal-backdrop" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 style="margin:0;">Edit Pinned Facts</h2>
+                <button id="closeImportantMemoryBtn" class="modal-close-btn">Close</button>
+            </div>
+            <div class="modal-body">
+                <div class="profile-field-row">
+                    <label for="importantMemoryTextarea">Pinned facts / important memory</label>
+                    <textarea id="importantMemoryTextarea" rows="10" style="width:100%;font-family:monospace;white-space:pre-wrap;"></textarea>
+                </div>
+                <div style="margin-top:8px; font-size:0.95em; color:#ddd;">
+                    Select any lines or text and click Delete Selected to remove them. Then click Save to update the agent's pinned facts.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="footer-left">Edit the pinned facts and save the updated memory for this agent.</div>
+                <div class="footer-actions">
+                    <button id="deleteSelectedMemoryBtn" class="stop-btn">Delete Selected</button>
+                    <button id="clearImportantMemoryBtn" class="neutral-btn">Clear All</button>
+                    <button id="saveImportantMemoryBtn" class="start-btn">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const socket = io({ path: window.location.pathname + 'socket.io' })
         const agentsDiv = document.getElementById('agents');
@@ -744,6 +771,71 @@
             // Also append to the live console panel
             appendConsoleLine(agentName, message);
         });
+
+        function clearAgentMemory(agentName) {
+            const preserveImportant = confirm('Preserve important facts and places when clearing memory? Click OK to preserve, Cancel to clear fully.');
+            socket.emit('clear-agent-memory', agentName, preserveImportant);
+        }
+
+        function compactAgentMemory(agentName) {
+            const reason = prompt('Reason for compaction (optional):', 'manual');
+            socket.emit('compact-agent-memory', agentName, reason || 'manual');
+        }
+
+        const importantMemoryModal = document.getElementById('importantMemoryModal');
+        const importantMemoryTextarea = document.getElementById('importantMemoryTextarea');
+        let currentImportantMemoryAgent = null;
+
+        function setImportantMemory(agentName, memoryText) {
+            socket.emit('set-important-memory', agentName, memoryText);
+        }
+
+        function editImportantMemory(agentName) {
+            currentImportantMemoryAgent = agentName;
+            socket.emit('get-agent-memory', agentName, (response) => {
+                if (response?.success) {
+                    importantMemoryTextarea.value = response.memory || '';
+                } else {
+                    importantMemoryTextarea.value = '';
+                    if (response?.error) {
+                        alert(`Failed to load pinned facts: ${response.error}`);
+                    }
+                }
+                importantMemoryModal.style.display = 'flex';
+                importantMemoryTextarea.focus();
+            });
+        }
+
+        function saveImportantMemory() {
+            if (!currentImportantMemoryAgent) return;
+            setImportantMemory(currentImportantMemoryAgent, importantMemoryTextarea.value);
+            hideImportantMemoryModal();
+        }
+
+        function deleteSelectedImportantMemory() {
+            const textarea = importantMemoryTextarea;
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            if (start === end) return;
+            textarea.value = textarea.value.slice(0, start) + textarea.value.slice(end);
+            textarea.selectionStart = textarea.selectionEnd = start;
+            textarea.focus();
+        }
+
+        function clearImportantMemoryText() {
+            importantMemoryTextarea.value = '';
+            importantMemoryTextarea.focus();
+        }
+
+        function hideImportantMemoryModal() {
+            importantMemoryModal.style.display = 'none';
+            currentImportantMemoryAgent = null;
+        }
+
+        document.getElementById('closeImportantMemoryBtn').addEventListener('click', hideImportantMemoryModal);
+        document.getElementById('saveImportantMemoryBtn').addEventListener('click', saveImportantMemory);
+        document.getElementById('deleteSelectedMemoryBtn').addEventListener('click', deleteSelectedImportantMemory);
+        document.getElementById('clearImportantMemoryBtn').addEventListener('click', clearImportantMemoryText);
 
         // Subscribe to aggregated state updates (re-sent on each connect)
         socket.on('state-update', (states) => {
@@ -1046,6 +1138,9 @@
                                 ${!agent.in_game ? 'disabled' : ''}>
                             <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stop')" ${!agent.in_game ? 'disabled' : ''}>Stop Action</button>
                             <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stay(-1)')" ${!agent.in_game ? 'disabled' : ''}>Stay Still</button>
+                            <button class="neutral-btn" onclick="clearAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Clear Memory</button>
+                            <button class="neutral-btn" onclick="compactAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Compact Memory</button>
+                            <button class="neutral-btn" onclick="editImportantMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Pinned Facts</button>
                             <button class="neutral-btn" onclick="restartAgent('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Restart</button>
                             <button class="neutral-btn" ${agent.in_game ? `onclick=\"disconnectAgent('${agent.name}')\"` : (agent.socket_connected ? 'disabled' : `onclick=\"startAgent('${agent.name}')\"`)}>${agent.in_game ? 'Disconnect' : (agent.socket_connected ? 'Connecting...' : 'Connect')}</button>
                             <button class="stop-btn" onclick="destroyAgent('${agent.name}')">Remove</button>

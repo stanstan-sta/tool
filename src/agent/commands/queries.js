@@ -11,13 +11,23 @@ const pad = (str) => {
     return '\n' + str + '\n';
 }
 
+function getBot(agent) {
+    if (!agent || !agent.bot || !agent.bot.entity) {
+        return null;
+    }
+    return agent.bot;
+}
+
 // queries are commands that just return strings and don't affect anything in the world
 export const queryList = [
     {
         name: "!stats",
         description: "Get your bot's location, health, hunger, and time of day.", 
         perform: function (agent) {
-            let bot = agent.bot;
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
             let res = 'STATS';
             let pos = bot.entity.position;
             // display position to 2 decimal places
@@ -61,7 +71,7 @@ export const queryList = [
             res += '\n- Nearby Human Players: ' + (players.length > 0 ? players.join(', ') : 'None.');
             res += '\n- Nearby Bot Players: ' + (bots.length > 0 ? bots.join(', ') : 'None.');
 
-            res += '\n' + agent.bot.modes.getMiniDocs() + '\n';
+            res += '\n' + (bot.modes ? bot.modes.getMiniDocs() : 'No mode docs available.') + '\n';
             return pad(res);
         }
     },
@@ -69,7 +79,10 @@ export const queryList = [
         name: "!inventory",
         description: "Get your bot's inventory.",
         perform: function (agent) {
-            let bot = agent.bot;
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
             let inventory = world.getInventoryCounts(bot);
             let res = 'INVENTORY';
             for (const item in inventory) {
@@ -79,7 +92,7 @@ export const queryList = [
             if (res === 'INVENTORY') {
                 res += ': Nothing';
             }
-            else if (agent.bot.game.gameMode === 'creative') {
+            else if (bot.game && bot.game.gameMode === 'creative') {
                 res += '\n(You have infinite items in creative mode. You do not need to gather resources!!)';
             }
 
@@ -106,7 +119,10 @@ export const queryList = [
         name: "!nearbyBlocks",
         description: "Get the blocks near the bot.",
         perform: function (agent) {
-            let bot = agent.bot;
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
             let res = 'NEARBY_BLOCKS';
             let blocks = world.getNearestBlocks(bot);
             let block_details = new Set();
@@ -135,7 +151,11 @@ export const queryList = [
         name: "!craftable",
         description: "Get the craftable items with the bot's inventory.",
         perform: function (agent) {
-            let craftable = world.getCraftableItems(agent.bot);
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
+            let craftable = world.getCraftableItems(bot);
             let res = 'CRAFTABLE_ITEMS';
             for (const item of craftable) {
                 res += `\n- ${item}`;
@@ -150,7 +170,10 @@ export const queryList = [
         name: "!entities",
         description: "Get the nearby players and entities.",
         perform: function (agent) {
-            let bot = agent.bot;
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
             let res = 'NEARBY_ENTITIES';
             let players = world.getNearbyPlayerNames(bot);
             let bots = convoManager.getInGameAgents().filter(b => b !== agent.name);
@@ -218,7 +241,11 @@ export const queryList = [
         name: "!modes",
         description: "Get all available modes and their docs and see which are on/off.",
         perform: function (agent) {
-            return agent.bot.modes.getDocs();
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
+            return bot.modes.getDocs();
         }
     },
     {
@@ -285,7 +312,10 @@ export const queryList = [
             }
         },
         perform: function (agent, targetItem, quantity = 1) {
-            let bot = agent.bot;
+            let bot = getBot(agent);
+            if (!bot) {
+                return pad('Bot is not connected yet.');
+            }
 
             // Fetch the bot's inventory
             const curr_inventory = world.getInventoryCounts(bot); 

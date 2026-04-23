@@ -124,7 +124,7 @@ export const baritoneList = [
         }
     },
     {
-        name: '!baritioneMine',
+        name: '!baritoneMine',
         description: 'Navigate to and mine the nearest block of the given type using the Baritone pathfinder. Collects up to `count` blocks total.',
         params: {
             'block_type': { type: 'BlockName', description: 'The block type to mine (e.g. iron_ore, oak_log).' },

@@ -108,6 +108,17 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
+        socket.on('get-agent-memory', (agentName, callback) => {
+            const agent = agent_connections[agentName];
+            if (agent && agent.socket) {
+                agent.socket.emit('get-agent-memory', (memory) => {
+                    callback({ success: true, memory: memory ?? '' });
+                });
+            } else {
+                callback({ success: false, error: `Agent '${agentName}' not found or not connected.` });
+            }
+        });
+
         socket.on('connect-agent-process', (agentName) => {
             if (agent_connections[agentName]) {
                 agent_connections[agentName].socket = socket;
@@ -216,6 +227,27 @@ export function createMindServer(host_public = false, port = 8080) {
 				console.error('Error: ', error);
 			}
 		});
+
+        socket.on('clear-agent-memory', (agentName, preserveImportant = false) => {
+            const agent = agent_connections[agentName];
+            if (agent?.socket) {
+                agent.socket.emit('clear-agent-memory', preserveImportant);
+            }
+        });
+
+        socket.on('compact-agent-memory', (agentName, reason = 'manual') => {
+            const agent = agent_connections[agentName];
+            if (agent?.socket) {
+                agent.socket.emit('compact-agent-memory', reason);
+            }
+        });
+
+        socket.on('set-important-memory', (agentName, memoryText) => {
+            const agent = agent_connections[agentName];
+            if (agent?.socket) {
+                agent.socket.emit('set-important-memory', memoryText);
+            }
+        });
 
         socket.on('bot-output', (agentName, message) => {
             io.emit('bot-output', agentName, message);

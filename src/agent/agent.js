@@ -616,6 +616,30 @@ export class Agent {
         }
     }
 
+    async clearAllMemory(preserveImportant = false) {
+        const preservedMemory = preserveImportant ? this.history.memory : '';
+        const preservedBank = preserveImportant ? this.memory_bank.getJson() : null;
+        this.history.clear();
+        if (preserveImportant) {
+            this.history.memory = preservedMemory;
+        }
+        if (!preserveImportant) {
+            this.memory_bank.memory = {};
+            this.memory_bank.chests = {};
+        }
+        await this.history.save();
+        if (preserveImportant && preservedBank) {
+            this.memory_bank.loadJson(preservedBank);
+        }
+        sendOutputToServer(this.name, `Memory cleared${preserveImportant ? ' (important facts preserved)' : ''}.`);
+    }
+
+    async compactMemoryNow(reason = 'manual') {
+        this.history.turns = [];
+        await this.history.save();
+        sendOutputToServer(this.name, `Memory compacted (${reason}).`);
+    }
+
     killAll() {
         serverProxy.shutdown();
     }

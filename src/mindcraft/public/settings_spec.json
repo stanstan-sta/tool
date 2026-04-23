@@ -76,6 +76,17 @@
         "description": "Maximum number of recent messages to keep in context for LLM",
         "default": 50
     },
+    "auto_compact_memory": {
+        "type": "boolean",
+        "description": "Whether the agent should automatically compact memory when the history grows too large.",
+        "default": true
+    },
+    "persona_preset": {
+        "type": "string",
+        "description": "Choose a persona preset to shape the agent's behavior and style.",
+        "default": "miku_nakano",
+        "options": ["miku_nakano", "default"]
+    },
     "num_examples": {
         "type": "number",
         "description": "Number of examples to select to help prompt better LLM responses",

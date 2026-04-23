@@ -125,7 +125,92 @@ public class CommandExecutor {
                 return null;
         }
     }
+    public static String discoverCommandsJson() {
+        if (!FabricLoader.getInstance().isModLoaded("baritone")) {
+            return "[]";
+        }
+        try {
+            Class<?> baritoneApi = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = baritoneApi.getMethod("getProvider").invoke(null);
+            Object primaryBaritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object commandManager = primaryBaritone.getClass().getMethod("getCommandManager").invoke(primaryBaritone);
 
+            Object commands = tryInvoke(commandManager, "getKnownCommands");
+            if (commands == null) {
+                commands = tryInvoke(commandManager, "getCommands");
+            }
+            if (commands == null) {
+                commands = tryInvoke(commandManager, "getCommandNames");
+            }
+            if (commands == null) {
+                return "[]";
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("[");
+            boolean first = true;
+            if (commands instanceof java.util.Collection) {
+                for (Object command : (java.util.Collection<?>) commands) {
+                    String name = extractCommandName(command);
+                    if (name == null || name.isBlank()) continue;
+                    if (!first) sb.append(",");
+                    first = false;
+                    sb.append("\"").append(jsonEscape(name)).append("\"");
+                }
+            } else {
+                String text = commands.toString();
+                if (!text.isBlank()) {
+                    sb.append("\"").append(jsonEscape(text)).append("\"");
+                }
+            }
+            sb.append("]");
+            return sb.toString();
+        } catch (Throwable t) {
+            MindcraftBridgeMod.LOGGER.warn("Failed to discover Baritone commands", t);
+            return "[]";
+        }
+    }
+
+    private static Object tryInvoke(Object target, String methodName) {
+        try {
+            java.lang.reflect.Method method = target.getClass().getMethod(methodName);
+            return method.invoke(target);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String extractCommandName(Object commandObject) {
+        if (commandObject == null) return null;
+        if (commandObject instanceof String) {
+            return (String) commandObject;
+        }
+        try {
+            java.lang.reflect.Method getName = commandObject.getClass().getMethod("getName");
+            Object name = getName.invoke(commandObject);
+            if (name instanceof String && !((String) name).isBlank()) {
+                return (String) name;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            java.lang.reflect.Method getCommand = commandObject.getClass().getMethod("getCommand");
+            Object name = getCommand.invoke(commandObject);
+            if (name instanceof String && !((String) name).isBlank()) {
+                return (String) name;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            java.lang.reflect.Method toStringMethod = commandObject.getClass().getMethod("toString");
+            Object name = toStringMethod.invoke(commandObject);
+            if (name instanceof String) {
+                return (String) name;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
     public static String capabilitiesJson() {
         boolean baritoneLoaded = FabricLoader.getInstance().isModLoaded("baritone");
         return "{"

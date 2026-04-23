@@ -32,5 +32,14 @@ if not exist models (
 echo [start] Starting Mindcraft with local model...
 echo [start] Open http://localhost:8080 in your browser for the live console.
 echo.
-node main.js --profiles profiles/local.json
+set "START_CMD=node main.js --profiles profiles/local.json"
+:run_mindcraft
+%START_CMD%
+set EXIT_CODE=%ERRORLEVEL%
+if %EXIT_CODE% neq 0 (
+    echo [start] Mindcraft exited with code %EXIT_CODE%. Restarting in 3 seconds...
+    timeout /t 3 /nobreak >nul
+    goto run_mindcraft
+)
+echo [start] Mindcraft exited normally.
 pause

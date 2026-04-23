@@ -27,7 +27,7 @@ const settings = {
     ],
 
     "load_memory": false, // load memory from previous session
-    "init_message": "Respond with hello world and your name", // sends to all on spawn
+    "init_message": "say hi", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
@@ -40,12 +40,12 @@ const settings = {
     "language": "en", // translate to/from this language. Supports these language names: https://cloud.google.com/translate/docs/languages
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
-    "allow_insecure_coding": false, // allows newAction command and model can write/run code on your computer. enable at own risk
-    "allow_vision": false, // allows vision model to interpret screenshots as inputs
+    "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
+    "allow_vision": true, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
-    "use_baritone": false, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.
-    "launch_mode": "packet", // packet, fabric_ui, or fabric_headless. fabric_* starts BridgeAgent runtime.
-    "bridge_mode": false, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
+    "use_baritone": true, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.
+    "launch_mode": "fabric_ui", // packet, fabric_ui, or fabric_headless. fabric_* starts BridgeAgent runtime.
+    "bridge_mode": true, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
     "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server (only used when bridge_mode is true)
     "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout

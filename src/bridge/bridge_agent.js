@@ -1,13 +1,13 @@
 import { Prompter } from '../models/prompter.js';
 import { History } from '../agent/history.js';
 import { FabricBridge } from './fabric_bridge.js';
+import { buildBridgeSystemPrompt } from './bridge_prompt.js';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import settings from '../agent/settings.js';
 
 const POLL_MIN_MS = 800;
 const POLL_DEFAULT_MS = 2000;
 const POLL_MAX_MS = 5000;
-const BRIDGE_STRUCTURED_SCHEMA_PROMPT = 'Respond with strict JSON only: {"reply":"string","actions":[{"type":"move|mine|follow|interact|cancel|raw_command","provider":"baritone_native|baritone_chat (optional)", "...action_fields": "..."}]}. No markdown. No extra keys.';
 
 function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
@@ -168,13 +168,17 @@ class BridgeSelfPrompter {
 export class BridgeAgent {
     async start(load_mem = false, init_message = null) {
         this.stopped = false;
-        this._pendingMessage = null;  // {source, message} set by respondFunc
+        this._inboundQueue = [];
+        this._bridgeCommands = [];
+        this._bridgeReachable = false;
 
         // ── Prompter / LLM ────────────────────────────────────────────────────
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing bridge agent: ${this.name}`);
-
+        // Bridge mode should not use the normal bot prompt template with internal
+        // queries like $STATS / $INVENTORY. Use a bridge-specific prompt instead.
+        this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '');
         // ── History ────────────────────────────────────────────────────────────
         this.history = new History(this);
 
@@ -197,7 +201,7 @@ export class BridgeAgent {
         // respondFunc is called by serverProxy when the WebUI sends a message.
         this.respondFunc = (from, msg) => {
             try {
-                if (msg) this._pendingMessage = { source: from, message: msg };
+                if (msg) this._inboundQueue.push({ source: from, message: msg });
             } catch (e) {
                 console.error('BridgeAgent respondFunc error:', e);
             }
@@ -219,12 +223,18 @@ export class BridgeAgent {
             if (this._capabilities) {
                 sendLogToUI(`${this.name}: Bridge capabilities: provider=${this._capabilities.default_provider || 'unknown'}, typed_actions=${this._capabilities.supports_typed_actions === true}`);
             }
+            this._bridgeReachable = true;
+            this._bridgeCommands = await this.fetchBridgeCommands();
+            if (Array.isArray(this._bridgeCommands) && this._bridgeCommands.length) {
+                sendLogToUI(`${this.name}: Loaded ${this._bridgeCommands.length} bridge commands.`);
+            }
         } else {
+            this._bridgeReachable = false;
             sendLogToUI(`${this.name}: ⚠️  Fabric bridge mod not reachable at ${this.bridge.url} — waiting...`);
         }
 
         if (init_message) {
-            this._pendingMessage = { source: 'system', message: init_message };
+            this._inboundQueue.push({ source: 'system', message: init_message });
         } else {
             sendOutputToServer(this.name, `Bridge agent ${this.name} is online. Waiting for commands.`);
         }
@@ -241,42 +251,52 @@ export class BridgeAgent {
             try {
                 // ── 1. Poll Fabric mod state ───────────────────────────────────
                 const state = await this.bridge.getState(this._lastStateSeq);
+                const nowReachable = Boolean(state && state.connected);
+                if (nowReachable && !this._bridgeReachable) {
+                    this._bridgeReachable = true;
+                    this._bridgeCommands = await this.fetchBridgeCommands();
+                } else if (!nowReachable) {
+                    this._bridgeReachable = false;
+                }
+
                 if (typeof state?.seq === 'number') {
                     this._lastStateSeq = state.seq;
                 }
 
                 if (state && state.connected && !state.unchanged) {
                     const stateStr = FabricBridge.formatState(state);
-
-                    // Only inject state as system message when something meaningful changed
-                    if (stateStr !== this._lastStateStr) {
-                        this._lastStateStr = stateStr;
-                        this.history.add('system', `World state:\n${stateStr}`);
-                    }
+                    this._lastStateStr = stateStr;
 
                     // ── 2. Bubble up any chat messages received in-game ────────
-                    if (state.chat && state.chat.length > 0) {
-                        for (const msg of state.chat) {
-                            // Minecraft chat format is typically "<PlayerName> message"
-                            const match = msg.match(/^<([^>]+)>\s*(.+)$/);
+                    const events = Array.isArray(state.chat_events)
+                        ? state.chat_events
+                        : (Array.isArray(state.chat) ? state.chat.map(msg => ({ type: 'player', message: msg })) : []);
+
+                    for (const event of events) {
+                        const message = String(event?.message || '');
+                        if (!message) continue;
+
+                        if (String(event.type) === 'player') {
+                            const match = message.match(/^<([^>]+)>\s*(.+)$/);
                             if (match) {
                                 const [, from, text] = match;
                                 if (from !== this.name) {
-                                    this.history.add(from, text);
-                                    this._pendingMessage = { source: from, message: text };
+                                    this._inboundQueue.push({ source: from, message: text });
                                 }
                             } else {
-                                this.history.add('system', msg);
+                                this.history.add('system', message);
                             }
+                        } else {
+                            // System messages are logged and preserved only transiently.
+                            sendLogToUI(`${this.name}: system message: ${message}`);
+                            console.log(`${this.name} system chat event: ${message}`);
                         }
                     }
                 }
 
-                // ── 3. Process any pending message ────────────────────────────
-                if (this._pendingMessage) {
-                    const { source, message } = this._pendingMessage;
-                    this._pendingMessage = null;
-
+                // ── 3. Process any inbound queued message ─────────────────────
+                if (this._inboundQueue.length > 0) {
+                    const { source, message } = this._inboundQueue.shift();
                     console.log(`${this.name} handling message from ${source}: ${message}`);
                     await this._handleMessage(source, message, state);
 
@@ -308,9 +328,8 @@ export class BridgeAgent {
     async _handleMessage(source, message, state) {
         if (!source || !message) return;
 
-        // Add the triggering message to history (if not already added by the chat poller above)
-        const alreadyAdded = source !== 'system' && source !== this.name && state?.chat?.length > 0;
-        if (!alreadyAdded) {
+        // Add the triggering message to history.
+        if (source !== this.name) {
             this.history.add(source, message);
         }
 
@@ -320,7 +339,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: BRIDGE_STRUCTURED_SCHEMA_PROMPT,
+                content: buildBridgeSystemPrompt(settings, this.history.memory),
             });
         }
         let response;
@@ -340,7 +359,9 @@ export class BridgeAgent {
         console.log(`${this.name} LLM response: ${response}`);
 
         // ── 5. Parse COMMAND: lines ───────────────────────────────────────────
-        const { chat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
+        const { chat: rawChat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
+        const suppressChat = actions.length > 0 && /^(no response needed|no reply|none|n\/a)$/i.test(rawChat.trim());
+        const chat = suppressChat ? '' : rawChat;
 
         // Record the full LLM response in history
         this.history.add(this.name, response);
@@ -391,6 +412,32 @@ export class BridgeAgent {
         }
 
         this.history.save();
+    }
+
+    async fetchBridgeCommands() {
+        try {
+            const commands = await this.bridge.getCommands();
+            return Array.isArray(commands) ? commands : [];
+        } catch (err) {
+            console.warn(`${this.name} failed to fetch bridge commands:`, err);
+            return [];
+        }
+    }
+
+    async clearAllMemory(preserveImportant = false) {
+        const preservedMemory = preserveImportant ? this.history.memory : '';
+        this.history.clear();
+        this.history.memory = preservedMemory;
+        await this.history.save();
+        sendOutputToServer(this.name, `Memory cleared${preserveImportant ? ' (important facts preserved)' : ''}.`);
+    }
+
+    async compactMemoryNow(reason = 'manual') {
+        await this.history.save();
+        this.history.turns = [];
+        this.history.memory = this.history.memory || '';
+        await this.history.save();
+        sendOutputToServer(this.name, `Memory compacted (${reason}).`);
     }
 
     /** Called by serverProxy on disconnect from MindServer. */

@@ -266,10 +266,59 @@ export function getCommandDocs(agent) {
  * the model supports native tool calling.
  * @returns {string}
  */
-export function getToolCallDocs() {
-    return '\n*TOOL CALLING\n Use the provided tools to perform actions and get information about the world. ' +
+function formatToolExample(toolName, command) {
+    if (!command.params || Object.keys(command.params).length === 0) {
+        return `${toolName}()`;
+    }
+    const args = Object.keys(command.params).map(paramName => {
+        const param = command.params[paramName];
+        const example = param.type === 'string' || param.type === 'BlockName' || param.type === 'ItemName' || param.type === 'BlockOrItemName'
+            ? `"${paramName}_example"`
+            : param.type === 'boolean'
+                ? 'true'
+                : '1';
+        return `${paramName}: ${example}`;
+    });
+    return `${toolName}({ ${args.join(', ')} })`;
+}
+
+export function getToolCallDocs(agent) {
+    const typeTranslations = {
+        'float':             'number',
+        'int':               'number',
+        'BlockName':         'string',
+        'ItemName':          'string',
+        'BlockOrItemName':   'string',
+        'boolean':           'bool'
+    };
+
+    let docs = '\n*TOOL CALLING\n Use the provided tools to perform actions and get information about the world. ' +
         'Do NOT type !commands in your text response. Call the appropriate tool directly for any action you want to perform. ' +
-        'You may include a brief conversational message alongside your tool call if appropriate.*\n';
+        'Tool names are the command names without the leading !. ' +
+        'For example, use `mine` for the mine command or `baritoneMine` for the Baritone mine helper. ' +
+        'You may include a brief conversational message alongside your tool call if appropriate.*\n\n';
+
+    if (!agent) {
+        return docs + '*\n';
+    }
+
+    for (let command of commandList) {
+        if (agent.blocked_actions.includes(command.name)) {
+            continue;
+        }
+        const toolName = command.name.substring(1);
+        docs += `${toolName}: ${command.description}\n`;
+        if (command.params) {
+            docs += 'Params:\n';
+            for (let paramName in command.params) {
+                const paramDef = command.params[paramName];
+                docs += `  ${paramName}: (${typeTranslations[paramDef.type] ?? paramDef.type}) ${paramDef.description}\n`;
+            }
+            docs += `Example: ${formatToolExample(toolName, command)}\n`;
+        }
+        docs += '\n';
+    }
+    return docs + '*\n';
 }
 
 /**
@@ -292,21 +341,30 @@ export function getToolSchemas(agent) {
     return commandList
         .filter(command => !agent.blocked_actions.includes(command.name))
         .map(command => {
+            const toolName = command.name.substring(1);
             const toolFunc = {
-                name: command.name.substring(1), // strip the leading '!'
-                description: command.description,
+                name: toolName, // strip the leading '!'
+                description: `${command.description}`,
                 parameters: { type: 'object', properties: {} },
             };
 
             if (command.params && Object.keys(command.params).length > 0) {
                 toolFunc.parameters.required = [];
+                const exampleArgs = [];
                 for (const [paramName, paramDef] of Object.entries(command.params)) {
                     toolFunc.parameters.properties[paramName] = {
                         type: typeMap[paramDef.type] || 'string',
                         description: paramDef.description,
                     };
                     toolFunc.parameters.required.push(paramName);
+                    const exampleValue = paramDef.type === 'string' || paramDef.type === 'BlockName' || paramDef.type === 'ItemName' || paramDef.type === 'BlockOrItemName'
+                        ? `${paramName}_example`
+                        : paramDef.type === 'boolean'
+                            ? 'true'
+                            : '1';
+                    exampleArgs.push(`${paramName}: ${exampleValue}`);
                 }
+                toolFunc.description += ` Example: ${toolName}({ ${exampleArgs.join(', ')} })`;
             }
 
             return { type: 'function', function: toolFunc };

@@ -50,8 +50,24 @@ export class LMStudio {
                     : (toolCall.function.arguments || {});
                 const cmdStr = toolCallToCommand(funcName, funcArgs);
                 const textContent = choice.message.content?.trim() || '';
+                const fallbackText = (() => {
+                    if (typeof funcArgs === 'string') return funcArgs.trim();
+                    if (funcArgs && typeof funcArgs === 'object') {
+                        if (Array.isArray(funcArgs.actions) || funcArgs.command) {
+                            return JSON.stringify(funcArgs);
+                        }
+                        if (typeof funcArgs.reply === 'string') return funcArgs.reply.trim();
+                        if (typeof funcArgs.text === 'string') return funcArgs.text.trim();
+                        if (typeof funcArgs.content === 'string') return funcArgs.content.trim();
+                        const stringValues = Object.values(funcArgs).filter(v => typeof v === 'string');
+                        if (stringValues.length > 0) return stringValues.join(' ').trim();
+                    }
+                    return null;
+                })();
                 if (cmdStr) {
                     res = textContent ? `${textContent} ${cmdStr}` : cmdStr;
+                } else if (fallbackText) {
+                    res = textContent ? `${textContent} ${fallbackText}` : fallbackText;
                 } else {
                     console.warn(`LM Studio returned unknown tool call: ${funcName}`);
                     res = textContent || 'No response data from LM Studio.';
