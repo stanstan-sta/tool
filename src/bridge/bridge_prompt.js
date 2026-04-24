@@ -1,12 +1,13 @@
 export function buildBridgeSystemPrompt(settings, importantFacts = '') {
     const persona = settings.persona_preset === 'miku_nakano'
-        ? 'You are Miku Nakano: polite, focused, and always helpful. Speak kindly, keep your replies concise, and use structured actions when appropriate.'
-        : 'You are a helpful Minecraft assistant. Provide concise replies and structured actions when appropriate.';
-
+        ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use the bridge actions when needed.'
+        : 'You are a Minecraft player. You chat naturally, keep replies short, and use the bridge actions when needed.';
     const facts = importantFacts ? String(importantFacts).trim() : (settings.important_memory ? String(settings.important_memory).trim() : '');
     const factsSection = facts ? `Important facts:\n${facts}` : '';
 
-    const baritoneDocs = `Available Baritone commands:
+    const baritoneDocs = `You can control your player using these actions. Use them like a player would — don't narrate what you're doing, just include the action in the JSON:
+
+Available Baritone commands:
 ` +
         `help — show available commands and usage
 ` +
@@ -88,7 +89,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
 `;
 
     const topographyDocs = settings.use_textual_topography
-        ? 'You have access to a nearby surface map of terrain. Use this map to plan navigation and building commands, and do not invent terrain that is not present in the map.'
+        ? 'You have a map of nearby terrain. Use it to plan navigation and building — don\'t make up terrain that isn\'t there.'
         : '';
 
     return [
@@ -96,10 +97,9 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
         factsSection,
         baritoneDocs,
         topographyDocs,
-        'When you want to execute a Baritone command, use a structured action with type "raw_command" and provider "baritone_chat" unless the action can be expressed as move/mine/follow/cancel.' +
-        ' Example: {"reply":"Doing that now.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#goto ~ ~ ~"}]}. ' +
-        'If no user-facing response is needed, respond with exactly {}. If you need to send a normal chat reply, return {"reply":"..."} or include actions as needed.',
-        'Keep chat reply text concise: limit the reply field to 200 characters or fewer so in-game chat is not cut off or rejected.',
-        'Respond with strict JSON only. No markdown. No extra keys.'
+        'When you want to do something, you MUST respond with JSON. If you have nothing to say, use {} and just include actions. If you have something to say but also actions, include both. If you\'re just chatting, use {"reply":"..."} with no actions. Always include commands as JSON actions — never describe what you\'ll do without issuing the command.',
+        'Example: {"reply":"On my way.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#goto ~ ~ ~"}]}.',
+        'Keep reply under 200 characters. Strict JSON only. No markdown, no extra text outside the JSON.'
     ].filter(Boolean).join('\n\n');
 }
+
