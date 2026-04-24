@@ -318,6 +318,16 @@ export class BridgeAgent {
                         const message = String(event?.message || '');
                         if (!message) continue;
 
+                        // If the Fabric mod provided an authoritative sender, skip messages
+                        // that were sent by this client to avoid self-looping.
+                        const senderField = (event && event.sender) ? String(event.sender).trim() : '';
+                        if (senderField) {
+                            if (senderField.toLowerCase() === selfName) {
+                                // Drop self-generated chat — never enqueue.
+                                continue;
+                            }
+                        }
+
                         const parsed = parsePlayerChatMessage(message);
                         if (parsed && isChatAllowed(parsed.from)) {
                             const sender = String(parsed.from || '').trim();
