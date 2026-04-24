@@ -185,7 +185,7 @@ public class StateCollector {
         long seq = stateSeq.get();
 
         if (sinceSeq != null && sinceSeq == seq && chatQueue.isEmpty()) {
-            return "{\"connected\":true,\"seq\":" + seq + ",\"unchanged\":true,\"chat\":[],\"chat_events\":[]}";
+            return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[]}";
         }
 
         // Chat messages received since last poll — drain the queue into both legacy and structured arrays.
