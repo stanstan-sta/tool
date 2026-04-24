@@ -1,13 +1,13 @@
 const settings = {
-    "minecraft_version": "auto", // or specific version like "1.21.6"
-    "host": "127.0.0.1", // or "localhost", "your.ip.address.here"
-    "port": 55916, // set to -1 to automatically scan for open ports
-    "auth": "offline", // or "microsoft"
+    "launch_mode": "fabric_ui", // fabric_ui or fabric_headless. fabric_* starts BridgeAgent runtime.
+    "bridge_mode": true, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
+    "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server
+    "bridge_chat_whitelist": [], // list of player names allowed to trigger the bridge agent
+    "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
+    "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
 
-    // the mindserver manages all agents and hosts the UI
-    "mindserver_port": 8080,
     "auto_open_ui": true, // opens UI in browser on startup
-    
+
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
     "profiles": [
         "./miku.json",
@@ -21,9 +21,6 @@ const settings = {
         // "./profiles/deepseek.json",
         // "./profiles/mercury.json",
         // "./profiles/andy-4.json", // Supports up to 75 messages!
-
-        // using more than 1 profile requires you to /msg each bot indivually
-        // individual profiles override values from the base profile
     ],
 
     "load_memory": false, // load memory from previous session
@@ -31,25 +28,15 @@ const settings = {
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
-    // allows all bots to speak through text-to-speech. 
-    // specify speech model inside each profile with format: {provider}/{model}/{voice}.
-    // if set to "system" it will use basic system text-to-speech. 
-    // Works on windows and mac, but linux requires you to install the espeak package through your package manager eg: `apt install espeak` `pacman -S espeak`.
-
     "chat_ingame": true, // bot responses are shown in minecraft chat
-    "language": "en", // translate to/from this language. Supports these language names: https://cloud.google.com/translate/docs/languages
+    "language": "en", // translate to/from this language
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
     "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
     "allow_vision": true, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "use_baritone": true, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.
-    "launch_mode": "fabric_ui", // packet, fabric_ui, or fabric_headless. fabric_* starts BridgeAgent runtime.
-    "bridge_mode": true, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
-    "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server (only used when bridge_mode is true)
-    "bridge_chat_whitelist": [], // list of player names allowed to trigger the bridge agent
-    "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
-    "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
+
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
 
@@ -60,14 +47,11 @@ const settings = {
     "narrate_behavior": true, // chat simple automatic actions ('Picking up item!')
     "chat_bot_messages": true, // publicly chat messages to other bots
 
-    "spawn_timeout": 30, // num seconds allowed for the bot to spawn before throwing error. Increase when spawning takes a while.
-    "block_place_delay": 0, // delay between placing blocks (ms) if using newAction. helps avoid bot being kicked by anti-cheat mechanisms on servers.
-  
     "log_all_prompts": false, // log ALL prompts to file
 
     "enable_wiki": true, // enable the built-in offline Minecraft wiki/cheatsheet (!wiki command and $WIKI_DATA prompt placeholder)
     "wiki_in_prompt": false, // inject a short wiki summary into agent prompts via $WIKI_DATA (can increase token usage slightly)
-
 };
 
 export default settings;
+

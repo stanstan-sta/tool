@@ -1,5 +1,5 @@
 @echo off
-title Mindcraft – Local Bot
+title Mindcraft – Fabric Bridge Bot
 echo [start] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
@@ -19,27 +19,9 @@ if not exist node_modules (
     )
 )
 
-if not exist models (
-    echo [start] No models/ directory found – running setup-local first...
-    call npm run setup-local
-    if errorlevel 1 (
-        echo [start] ERROR: setup-local failed.
-        pause
-        exit /b 1
-    )
-)
-
-echo [start] Starting Mindcraft with local model...
+echo [start] Starting Mindcraft in Fabric bridge mode...
 echo [start] Open http://localhost:8080 in your browser for the live console.
 echo.
-set "START_CMD=node main.js --profiles profiles/local.json"
-:run_mindcraft
-%START_CMD%
-set EXIT_CODE=%ERRORLEVEL%
-if %EXIT_CODE% neq 0 (
-    echo [start] Mindcraft exited with code %EXIT_CODE%. Restarting in 3 seconds...
-    timeout /t 3 /nobreak >nul
-    goto run_mindcraft
-)
-echo [start] Mindcraft exited normally.
+node main.js
 pause
+

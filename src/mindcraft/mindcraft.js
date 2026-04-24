@@ -1,6 +1,5 @@
 import { createMindServer, registerAgent, numStateListeners } from './mindserver.js';
 import { AgentProcess } from '../process/agent_process.js';
-import { preparePacketRuntime } from '../runtime/packet/create_agent_runtime.js';
 import { prepareFabricRuntime } from '../runtime/fabric/create_agent_runtime.js';
 import open from 'open';
 
@@ -45,19 +44,11 @@ export async function createAgent(settings) {
     let init_message = settings.init_message || null;
 
     try {
-        const launchMode = settings.launch_mode || (settings.bridge_mode ? 'fabric_ui' : 'packet');
-        const isFabricRuntime = launchMode === 'fabric_ui' || launchMode === 'fabric_headless' || settings.bridge_mode === true;
-
-        const prepared = isFabricRuntime
-            ? await prepareFabricRuntime(settings)
-            : await preparePacketRuntime(settings);
+        const prepared = await prepareFabricRuntime(settings);
         settings = prepared.settings;
 
-        if (prepared.runtime === 'fabric') {
-            console.log(`Fabric runtime enabled (${launchMode}) — skipping Minecraft server discovery.`);
-        }
-
-        const agentProcess = new AgentProcess(agent_name, mindserver_port, prepared.runtime === 'fabric');
+        console.log(`Fabric runtime enabled — skipping Minecraft server discovery.`);
+        const agentProcess = new AgentProcess(agent_name, mindserver_port, true);
         agentProcess.start(load_memory, init_message, agentIndex);
         agent_processes[settings.profile.name] = agentProcess;
     } catch (error) {
@@ -109,3 +100,4 @@ export function shutdown() {
         process.exit(0);
     }, 2000);
 }
+

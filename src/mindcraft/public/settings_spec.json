@@ -140,6 +140,8 @@
     },
     "launch_mode": {
         "type": "string",
+
+
         "description": "Runtime mode. packet = Mineflayer packet bot, fabric_ui = Fabric bridge runtime with normal client UI, fabric_headless = Fabric bridge runtime tuned for lower render overhead.",
         "default": "packet",
         "options": ["packet", "fabric_ui", "fabric_headless"]
@@ -151,7 +153,8 @@
     },
     "bridge_url": {
         "type": "string",
-        "description": "URL of the Fabric Bridge Mod HTTP server. Used by fabric launch modes and legacy bridge_mode.",
+
+        "description": "URL of the Fabric Bridge Mod HTTP server.",
         "default": "http://localhost:8765"
     },
     "bridge_structured_output": {
