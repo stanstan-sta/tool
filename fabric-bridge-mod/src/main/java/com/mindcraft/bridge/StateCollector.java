@@ -26,10 +26,22 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class StateCollector {
 
-    static final Queue<ChatEvent> chatQueue = new ConcurrentLinkedQueue<>();
+            static final Queue<ChatEvent> chatQueue = new ConcurrentLinkedQueue<>();
     static final int MAX_CHAT_QUEUE = 200;
     private static String lastStateHash = "";
     private static final AtomicLong stateSeq = new AtomicLong(0);
+
+    // Track recently-sent chat messages so they can be excluded from the
+    // GAME listener, which otherwise echoes them back and causes a loop.
+    private static final Queue<String> recentSentChats = new ConcurrentLinkedQueue<>();
+    private static final int MAX_SENT_TRACK = 16;
+
+    public static void trackSentChat(String message) {
+        while (recentSentChats.size() >= MAX_SENT_TRACK) {
+            recentSentChats.poll();
+        }
+        recentSentChats.add(message);
+    }
 
     /**
      * Register the Fabric chat-receive event listener.
@@ -65,12 +77,20 @@ public class StateCollector {
             chatQueue.add(new ChatEvent("player", message.getString(), senderName));
         });
 
-        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+                        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             while (chatQueue.size() >= MAX_CHAT_QUEUE) {
                 chatQueue.poll();
             }
+            String content = message.getString();
+            // Skip messages that match a recently sent chat to prevent the
+            // echo loop: Node sends "chat:..." → mod sends via network →
+            // GAME listener fires with the same text → Node picks it up →
+            // LLM responds → repeat.
+            if (content != null && recentSentChats.contains(content)) {
+                return;
+            }
             String type = overlay ? "system" : "player";
-            chatQueue.add(new ChatEvent(type, message.getString(), null));
+            chatQueue.add(new ChatEvent(type, content, null));
         });
     }
 

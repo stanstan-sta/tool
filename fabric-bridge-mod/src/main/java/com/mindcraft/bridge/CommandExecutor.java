@@ -41,14 +41,16 @@ public class CommandExecutor {
                 // sendCommand() was removed from ClientPlayerEntity in 1.21.11;
                 // sendChatCommand() on the network handler is the correct replacement.
                 client.getNetworkHandler().sendChatCommand(command.substring(1));
-                MindcraftBridgeMod.LOGGER.info("[Bridge] Command: {}", command);
+                                MindcraftBridgeMod.LOGGER.info("[Bridge] Command: {}", command);
 
             } else if (command.startsWith("chat:")) {
                 String msg = command.substring(5).trim();
                 // sendChatMessage() was removed from ClientPlayerEntity in 1.21.11;
                 // use the network handler directly instead.
-                client.getNetworkHandler().sendChatMessage(truncateChatMessage(msg));
-                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat: {}", truncateChatMessage(msg));
+                String truncated = truncateChatMessage(msg);
+                client.getNetworkHandler().sendChatMessage(truncated);
+                StateCollector.trackSentChat(truncated);
+                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat: {}", truncated);
 
             } else {
                 // Everything else (including Baritone # commands) is sent as a
