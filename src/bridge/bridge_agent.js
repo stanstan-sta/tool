@@ -298,10 +298,12 @@ export class BridgeAgent {
     }
 
     _isSelfSentChat(message) {
-        const normalized = normalizeChatText(message);
-        if (!normalized) return false;
-        return this._recentSentChats.includes(normalized);
-    }
+            const normalized = normalizeChatText(message);
+            if (!normalized || !this._recentSentChats.length) return false;
+            // Use substring matching: the echoed message may be wrapped in a
+            // player-name prefix like "<BotName> Hello" so exact-match won't work.
+            return this._recentSentChats.some(sent => normalized.includes(sent));
+        }
 
     /**
      * Main agent loop. Polls state, processes pending messages, calls LLM.
@@ -335,7 +337,7 @@ export class BridgeAgent {
                         ? state.chat_events
                         : (Array.isArray(state.chat) ? state.chat.map(msg => ({ type: 'player', message: msg })) : []);
 
-                    const selfName = String(state?.player_name || this.name || '').trim().toLowerCase();
+                                        const selfName = String(state?.player_name || this.name || '').trim().toLowerCase();
                     for (const event of events) {
                         const message = String(event?.message || '');
                         if (!message) continue;
@@ -349,7 +351,15 @@ export class BridgeAgent {
                                 continue;
                             }
                         }
+                        // Check against the recently-sent chat buffer (substring match
+                        // because the mod may echo back "<Bot> Hello" not just "Hello").
                         if (this._isSelfSentChat(message)) {
+                            continue;
+                        }
+                        // Broad sanity check: if the raw message starts with the bot's
+                        // own name in angle brackets, skip it even if senderField was missing.
+                        const strippedLower = stripChatFormatting(message).trim().toLowerCase();
+                        if (selfName && strippedLower.startsWith('<' + selfName + '>')) {
                             continue;
                         }
 
