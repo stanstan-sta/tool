@@ -25,6 +25,35 @@ function extractJsonObjectCandidate(text) {
     return null;
 }
 
+function stripChatFormatting(text) {
+    return String(text || '').replace(/§[0-9A-FK-OR]/gi, '');
+}
+
+function parsePlayerChatMessage(message) {
+    const clean = stripChatFormatting(message).trim();
+    const patterns = [
+        /^<([^>]+)>\s*(.+)$/,
+        /^\[.*?\]\s*<([^>]+)>\s*(.+)$/,
+        /^([^:]+):\s*(.+)$/,
+        /^\[.*?\]\s*([^:]+):\s*(.+)$/
+    ];
+    for (const pattern of patterns) {
+        const match = clean.match(pattern);
+        if (match) {
+            return { from: match[1].trim(), text: match[2].trim() };
+        }
+    }
+    return null;
+}
+
+function isChatWhitelisted(playerName) {
+    const whitelist = Array.isArray(settings.bridge_chat_whitelist)
+        ? settings.bridge_chat_whitelist.map(name => String(name || '').trim().toLowerCase())
+        : [];
+    if (!whitelist.length) return true;
+    return whitelist.includes(String(playerName || '').trim().toLowerCase());
+}
+
 function normalizeAction(action) {
     if (!action) return null;
     if (typeof action === 'string') {
@@ -277,18 +306,18 @@ export class BridgeAgent {
                         if (!message) continue;
 
                         if (String(event.type) === 'player') {
-                            const match = message.match(/^<([^>]+)>\s*(.+)$/);
-                            if (match) {
-                                const [, from, text] = match;
-                                if (from !== this.name) {
-                                    this._inboundQueue.push({ source: from, message: text });
+                            const parsed = parsePlayerChatMessage(message);
+                            if (parsed) {
+                                if (parsed.from !== this.name && isChatWhitelisted(parsed.from)) {
+                                    this._inboundQueue.push({ source: parsed.from, message: parsed.text });
                                 }
                             } else {
-                                this.history.add('system', message);
+                                // Fallback: preserve raw player text for system/analysis if parsing failed.
+                                this.history.add('system', stripChatFormatting(message));
                             }
                         } else {
                             // System messages are logged and preserved only transiently.
-                            sendLogToUI(`${this.name}: system message: ${message}`);
+                            sendLogToUI(`${this.name}: system message: ${stripChatFormatting(message)}`);
                             console.log(`${this.name} system chat event: ${message}`);
                         }
                     }
