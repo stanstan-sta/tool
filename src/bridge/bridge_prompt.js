@@ -1,7 +1,7 @@
 export function buildBridgeSystemPrompt(settings, importantFacts = '') {
     const persona = settings.persona_preset === 'miku_nakano'
         ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use the bridge actions when needed.'
-        : 'You are a Minecraft player. You chat naturally, keep replies short, and use the bridge actions when needed.';
+        : 'You are playing minecraft. You chat naturally, keep replies short in a shy way, and use the bridge actions when needed.';
     const facts = importantFacts ? String(importantFacts).trim() : (settings.important_memory ? String(settings.important_memory).trim() : '');
     const factsSection = facts ? `Important facts:\n${facts}` : '';
 
@@ -39,7 +39,7 @@ Available Baritone commands:
 ` +
         `farm — mine ALL farmable crops like wheat, carrots, potatoes, nether wart, etc. and replant them; use #farm 
 ` +
-        `follow — follow a player or entity; use #follow player <name>
+        `follow — follow a player or entity; use #follow player <name>. For example #follow player Chengeration will follow Chengeration around.
 ` +
         `pickup — collect dropped items along the path
 ` +
@@ -89,17 +89,19 @@ Available Baritone commands:
 `;
 
     const topographyDocs = settings.use_textual_topography
-        ? 'You have a map of nearby terrain. Use it to plan navigation and building — don\'t make up terrain that isn\'t there.'
-        : '';
+            ? 'You have a map of nearby terrain. Use it to plan navigation and building — don\'t make up terrain that isn\'t there.'
+            : '';
 
-    return [
-        persona,
-        factsSection,
-        baritoneDocs,
-        topographyDocs,
-        'When you want to do something, you MUST respond with JSON. If you have nothing to say, use {} and just include actions. If you have something to say but also actions, include both. If you\'re just chatting, use {"reply":"..."} with no actions. Always include commands as JSON actions — never describe what you\'ll do without issuing the command.',
-        'Example: {"reply":"On my way.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#goto ~ ~ ~"}]}.',
-        'Keep reply under 200 characters. Strict JSON only. No markdown, no extra text outside the JSON.'
-    ].filter(Boolean).join('\n\n');
-}
+        return [
+            persona,
+            factsSection,
+            'Before responding, ask yourself:\n1. Is the user asking me to *do* something in Minecraft (move, mine, build, follow, etc.)?\n   a) Yes → Include the appropriate JSON action(s) in your response.\n   b) No → Just use {"reply":"..."} with no actions.',
+            baritoneDocs,
+            'When you want to perform an action, use the JSON action type that matches the command:\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <block> [count] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- #cancel → {"type":"cancel"}\n- Everything else: {"type":"raw_command","command":"#your_command"}\n\nAlways use "provider":"baritone_chat" with every action.',
+            topographyDocs,
+            'Example with action: {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
+            'Example only chat: {"reply":"Yeah, the weather is nice today."}',
+            'Keep reply under 200 characters. Strict JSON only. No markdown. No extra text outside the JSON.'
+        ].filter(Boolean).join('\n\n');
+    }
 
