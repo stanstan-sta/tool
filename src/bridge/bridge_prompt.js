@@ -98,7 +98,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
         topographyDocs,
         'When you want to execute a Baritone command, use a structured action with type "raw_command" and provider "baritone_chat" unless the action can be expressed as move/mine/follow/cancel.' +
         ' Example: {"reply":"Doing that now.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#goto ~ ~ ~"}]}. ' +
-        'If the actions execute successfully and no user-facing response is needed, set reply to "no response needed" or leave it empty.',
+        'If no user-facing response is needed, respond with exactly {}. If you need to send a normal chat reply, return {"reply":"..."} or include actions as needed.',
         'Keep chat reply text concise: limit the reply field to 200 characters or fewer so in-game chat is not cut off or rejected.',
         'Respond with strict JSON only. No markdown. No extra keys.'
     ].filter(Boolean).join('\n\n');

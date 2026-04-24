@@ -30,6 +30,14 @@ function stripChatFormatting(text) {
     return String(text || '').replace(/§[0-9A-FK-OR]/gi, '');
 }
 
+function normalizeChatText(text) {
+    return String(text || '')
+        .replace(/\s+/g, ' ')
+        .replace(/§[0-9A-FK-OR]/gi, '')
+        .trim()
+        .toLowerCase();
+}
+
 function parsePlayerChatMessage(message) {
     let clean = stripChatFormatting(message).trim();
     clean = clean.replace(/^\[\d{1,2}:\d{2}:\d{2}\]\s*/i, '').trim();
@@ -128,14 +136,12 @@ export function parseBridgeResponse(response, expectStructured = false) {
                 const structuredActions = Array.isArray(parsed.actions)
                     ? parsed.actions.map(normalizeAction).filter(Boolean)
                     : [];
-                if (reply || structuredActions.length > 0) {
-                    return {
-                        chat: reply,
-                        commands,
-                        actions: structuredActions,
-                        structured: true,
-                    };
-                }
+                return {
+                    chat: reply,
+                    commands,
+                    actions: structuredActions,
+                    structured: true,
+                };
             }
         } catch {
             // fall back to COMMAND parsing below
@@ -234,6 +240,7 @@ export class BridgeAgent {
         this._lastStateSeq = null;
         this._pollIntervalMs = POLL_DEFAULT_MS;
         this._capabilities = null;
+        this._recentSentChats = [];
 
         // ── MindServer registration ────────────────────────────────────────────
         // respondFunc is called by serverProxy when the WebUI sends a message.
@@ -279,6 +286,21 @@ export class BridgeAgent {
 
         // Start the main loop
         this._runLoop();
+    }
+
+    _trackSentChat(message) {
+        const normalized = normalizeChatText(message);
+        if (!normalized) return;
+        this._recentSentChats.unshift(normalized);
+        if (this._recentSentChats.length > 32) {
+            this._recentSentChats.pop();
+        }
+    }
+
+    _isSelfSentChat(message) {
+        const normalized = normalizeChatText(message);
+        if (!normalized) return false;
+        return this._recentSentChats.includes(normalized);
     }
 
     /**
@@ -327,6 +349,9 @@ export class BridgeAgent {
                                 continue;
                             }
                         }
+                        if (this._isSelfSentChat(message)) {
+                            continue;
+                        }
 
                         const parsed = parsePlayerChatMessage(message);
                         if (parsed && isChatAllowed(parsed.from)) {
@@ -336,11 +361,13 @@ export class BridgeAgent {
                             }
                         } else if (!parsed) {
                             const stripped = stripChatFormatting(message);
-                            const mentionsBot = stripped.toLowerCase().includes(selfName);
-                            if (mentionsBot && isChatAllowed('player')) {
+                            const lower = stripped.toLowerCase();
+                            const appearsFromSelf = lower.startsWith(`${selfName}:`) || lower.startsWith(`<${selfName}>`);
+                            const mentionsBot = lower.includes(selfName);
+                            if (!appearsFromSelf && mentionsBot && isChatAllowed('player')) {
                                 this._inboundQueue.push({ source: 'player', message: stripped });
                             } else {
-                                // System or non-user chat; preserve for logs only.
+                                // System, self, or non-user chat; preserve for logs only.
                                 sendLogToUI(`${this.name}: system message: ${stripped}`);
                                 console.log(`${this.name} system chat event: ${message}`);
                                 this.history.add('system', stripped);
@@ -431,9 +458,11 @@ export class BridgeAgent {
 
         // Send the chat portion to the WebUI output panel and in-game chat if enabled.
         if (chat.trim()) {
-            sendOutputToServer(this.name, chat.trim());
+            const trimmedChat = chat.trim();
+            sendOutputToServer(this.name, trimmedChat);
             if (settings.chat_ingame === true) {
-                await this.bridge.sendCommand(`chat: ${chat.trim()}`);
+                this._trackSentChat(trimmedChat);
+                await this.bridge.sendCommand(`chat: ${trimmedChat}`);
             }
         }
 
