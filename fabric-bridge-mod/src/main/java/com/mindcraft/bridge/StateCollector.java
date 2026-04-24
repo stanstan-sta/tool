@@ -5,6 +5,8 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.client.world.ClientWorld;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
@@ -35,17 +37,45 @@ public class StateCollector {
      */
     public static void registerEvents() {
         // Listen for incoming chat messages and queue them for the Node.js agent.
+        // CHAT covers normal player chat, GAME covers overlay/system messages.
+        net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
+            while (chatQueue.size() >= MAX_CHAT_QUEUE) {
+                chatQueue.poll();
+            }
+            String senderName = null;
+            if (sender != null) {
+                try {
+                    java.lang.reflect.Method method = sender.getClass().getMethod("getName");
+                    Object nameObj = method.invoke(sender);
+                    if (nameObj != null) {
+                        senderName = nameObj.toString();
+                    }
+                } catch (Throwable ignored) {
+                    senderName = sender.toString();
+                }
+            }
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client != null ? client.player : null;
+            if (senderName != null && player != null) {
+                String selfName = player.getName().getString();
+                if (senderName.equals(selfName)) {
+                    return;
+                }
+            }
+            chatQueue.add(new ChatEvent("player", message.getString(), senderName));
+        });
+
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             while (chatQueue.size() >= MAX_CHAT_QUEUE) {
                 chatQueue.poll();
             }
             String type = overlay ? "system" : "player";
-            chatQueue.add(new ChatEvent(type, message.getString()));
+            chatQueue.add(new ChatEvent(type, message.getString(), null));
         });
     }
 
     /** Build and return the complete state as a JSON string. */
-    public static String collect(Long sinceSeq) {
+    public static String collect(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius) {
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity player = client.player;
 
@@ -57,6 +87,7 @@ public class StateCollector {
         sb.append("{");
 
         sb.append("\"connected\":true,");
+        sb.append("\"player_name\":\"").append(escape(player.getName().getString())).append("\",");
 
         // Position
         int x = (int) Math.floor(player.getX());
@@ -140,6 +171,10 @@ public class StateCollector {
         }
         sb.append("],");
 
+        if (includeSurfaceMap) {
+            appendSurfaceMap(sb, player, client.world, surfaceRadius);
+        }
+
         String stateHash = x + "|" + y + "|" + z + "|" + player.getHealth() + "|" +
                 player.getHungerManager().getFoodLevel() + "|" + dim + "|" + mode + "|" +
                 invSig + "|" + playersSig + "|" + entitiesSig;
@@ -182,6 +217,64 @@ public class StateCollector {
         return sb.toString();
     }
 
+    private static void appendSurfaceMap(StringBuilder sb, ClientPlayerEntity player, ClientWorld world, int radius) {
+        int centerX = (int) Math.floor(player.getX());
+        int centerY = (int) Math.floor(player.getY());
+        int centerZ = (int) Math.floor(player.getZ());
+        sb.append("\"surface_map\":{");
+        sb.append("\"center\":{");
+        sb.append("\"x\":").append(centerX).append(",");
+        sb.append("\"y\":").append(centerY).append(",");
+        sb.append("\"z\":").append(centerZ).append("},");
+        sb.append("\"radius\":").append(radius).append(",");
+        sb.append("\"cells\":[");
+
+        boolean firstCell = true;
+        for (int dz = -radius; dz <= radius; dz++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                if (!firstCell) sb.append(",");
+                firstCell = false;
+                int x = centerX + dx;
+                int z = centerZ + dz;
+                SurfaceCell cell = findTopSurfaceBlock(world, x, z, centerY + Math.min(radius, 32));
+                sb.append("{");
+                sb.append("\"x\":").append(cell.x).append(",");
+                sb.append("\"z\":").append(cell.z).append(",");
+                sb.append("\"y\":").append(cell.y).append(",");
+                sb.append("\"block\":\"").append(escape(cell.block)).append("\"");
+                sb.append("}");
+            }
+        }
+        sb.append("]},");
+    }
+
+    private static class SurfaceCell {
+        final int x;
+        final int y;
+        final int z;
+        final String block;
+
+        SurfaceCell(int x, int y, int z, String block) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.block = block;
+        }
+    }
+
+    private static SurfaceCell findTopSurfaceBlock(ClientWorld world, int x, int z, int startY) {
+        for (int y = startY; y >= 0; y--) {
+            BlockPos pos = new BlockPos(x, y, z);
+            if (world == null) break;
+            net.minecraft.block.BlockState state = world.getBlockState(pos);
+            if (state == null) continue;
+            if (!state.isAir()) {
+                return new SurfaceCell(x, y, z, state.getBlock().toString());
+            }
+        }
+        return new SurfaceCell(x, 0, z, "minecraft:air");
+    }
+
     /** Minimal JSON string escape. */
     private static String escape(String s) {
         return s.replace("\\", "\\\\")
@@ -193,14 +286,16 @@ public class StateCollector {
     private static class ChatEvent {
         final String type;
         final String message;
+        final String sender;
 
-        ChatEvent(String type, String message) {
+        ChatEvent(String type, String message, String sender) {
             this.type = type;
             this.message = message;
+            this.sender = sender;
         }
 
         String toJson() {
-            return "{\"type\":\"" + escape(type) + "\",\"message\":\"" + escape(message) + "\"}";
+            return "{\"type\":\"" + escape(type) + "\",\"message\":\"" + escape(message) + "\",\"sender\":" + (sender == null ? "null" : "\"" + escape(sender) + "\"") + "}";
         }
     }
 

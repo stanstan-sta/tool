@@ -27,7 +27,7 @@ const settings = {
     ],
 
     "load_memory": false, // load memory from previous session
-    "init_message": "say hi", // sends to all on spawn
+    "init_message": "say haiii in a shy way", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
@@ -47,6 +47,8 @@ const settings = {
     "launch_mode": "fabric_ui", // packet, fabric_ui, or fabric_headless. fabric_* starts BridgeAgent runtime.
     "bridge_mode": true, // when true, the agent connects to a Fabric Bridge Mod HTTP server instead of joining Minecraft directly via Mineflayer
     "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server (only used when bridge_mode is true)
+    "bridge_chat_whitelist": [], // list of player names allowed to trigger the bridge agent
+    "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
     "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all

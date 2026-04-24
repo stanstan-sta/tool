@@ -47,16 +47,16 @@ public class CommandExecutor {
                 String msg = command.substring(5).trim();
                 // sendChatMessage() was removed from ClientPlayerEntity in 1.21.11;
                 // use the network handler directly instead.
-                client.getNetworkHandler().sendChatMessage(msg);
-                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat: {}", msg);
+                client.getNetworkHandler().sendChatMessage(truncateChatMessage(msg));
+                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat: {}", truncateChatMessage(msg));
 
             } else {
                 // Everything else (including Baritone # commands) is sent as a
                 // chat message.  Baritone hooks ClientSendMessageEvents.ALLOW_CHAT
                 // and intercepts messages that start with its configured prefix (#).
                 // If Baritone is not installed the message goes to public chat.
-                client.getNetworkHandler().sendChatMessage(command);
-                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat/Baritone: {}", command);
+                client.getNetworkHandler().sendChatMessage(truncateChatMessage(command));
+                MindcraftBridgeMod.LOGGER.info("[Bridge] Chat/Baritone: {}", truncateChatMessage(command));
             }
         });
     }
@@ -82,6 +82,17 @@ public class CommandExecutor {
         }
         execute(mapped);
         return mapped;
+    }
+
+    private static String truncateChatMessage(String message) {
+        if (message == null) {
+            return "";
+        }
+        final int MAX_CHAT_LENGTH = 256;
+        if (message.length() <= MAX_CHAT_LENGTH) {
+            return message;
+        }
+        return message.substring(0, MAX_CHAT_LENGTH);
     }
 
     private static String mapTypedAction(
@@ -155,12 +166,12 @@ public class CommandExecutor {
                     if (name == null || name.isBlank()) continue;
                     if (!first) sb.append(",");
                     first = false;
-                    sb.append("\"").append(jsonEscape(name)).append("\"");
+                    sb.append("\"").append(BridgeHttpServer.jsonEscape(name)).append("\"");
                 }
             } else {
                 String text = commands.toString();
                 if (!text.isBlank()) {
-                    sb.append("\"").append(jsonEscape(text)).append("\"");
+                    sb.append("\"").append(BridgeHttpServer.jsonEscape(text)).append("\"");
                 }
             }
             sb.append("]");

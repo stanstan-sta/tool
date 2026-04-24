@@ -2,6 +2,7 @@ import { Prompter } from '../models/prompter.js';
 import { History } from '../agent/history.js';
 import { FabricBridge } from './fabric_bridge.js';
 import { buildBridgeSystemPrompt } from './bridge_prompt.js';
+import { buildBridgeTopographySystemMessage } from './topography.js';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import settings from '../agent/settings.js';
 
@@ -30,7 +31,10 @@ function stripChatFormatting(text) {
 }
 
 function parsePlayerChatMessage(message) {
-    const clean = stripChatFormatting(message).trim();
+    let clean = stripChatFormatting(message).trim();
+    clean = clean.replace(/^\[\d{1,2}:\d{2}:\d{2}\]\s*/i, '').trim();
+    clean = clean.replace(/^\[CHAT\]\s*/i, '').trim();
+    if (clean.toLowerCase().startsWith("[baritone]")) return null;
     const patterns = [
         /^<([^>]+)>\s*(.+)$/,
         /^\[.*?\]\s*<([^>]+)>\s*(.+)$/,
@@ -46,12 +50,17 @@ function parsePlayerChatMessage(message) {
     return null;
 }
 
-function isChatWhitelisted(playerName) {
+function isChatAllowed(playerName) {
+    const name = String(playerName || '').trim().toLowerCase();
     const whitelist = Array.isArray(settings.bridge_chat_whitelist)
-        ? settings.bridge_chat_whitelist.map(name => String(name || '').trim().toLowerCase())
+        ? settings.bridge_chat_whitelist.map(name => String(name || '').trim().toLowerCase()).filter(Boolean)
         : [];
-    if (!whitelist.length) return true;
-    return whitelist.includes(String(playerName || '').trim().toLowerCase());
+    const blacklist = Array.isArray(settings.bridge_chat_blacklist)
+        ? settings.bridge_chat_blacklist.map(name => String(name || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    if (blacklist.includes(name)) return false;
+    if (whitelist.length === 0) return true;
+    return whitelist.includes(name);
 }
 
 function normalizeAction(action) {
@@ -279,7 +288,10 @@ export class BridgeAgent {
         while (!this.stopped) {
             try {
                 // ── 1. Poll Fabric mod state ───────────────────────────────────
-                const state = await this.bridge.getState(this._lastStateSeq);
+                const state = await this.bridge.getState(this._lastStateSeq, {
+                    includeSurfaceMap: settings.use_textual_topography === true,
+                    surfaceRadius: settings.textual_topography_radius || 8
+                });
                 const nowReachable = Boolean(state && state.connected);
                 if (nowReachable && !this._bridgeReachable) {
                     this._bridgeReachable = true;
@@ -301,24 +313,28 @@ export class BridgeAgent {
                         ? state.chat_events
                         : (Array.isArray(state.chat) ? state.chat.map(msg => ({ type: 'player', message: msg })) : []);
 
+                    const selfName = String(state?.player_name || this.name || '').trim().toLowerCase();
                     for (const event of events) {
                         const message = String(event?.message || '');
                         if (!message) continue;
 
-                        if (String(event.type) === 'player') {
-                            const parsed = parsePlayerChatMessage(message);
-                            if (parsed) {
-                                if (parsed.from !== this.name && isChatWhitelisted(parsed.from)) {
-                                    this._inboundQueue.push({ source: parsed.from, message: parsed.text });
-                                }
-                            } else {
-                                // Fallback: preserve raw player text for system/analysis if parsing failed.
-                                this.history.add('system', stripChatFormatting(message));
+                        const parsed = parsePlayerChatMessage(message);
+                        if (parsed && isChatAllowed(parsed.from)) {
+                            const sender = String(parsed.from || '').trim();
+                            if (sender.toLowerCase() !== selfName) {
+                                this._inboundQueue.push({ source: sender, message: parsed.text });
                             }
-                        } else {
-                            // System messages are logged and preserved only transiently.
-                            sendLogToUI(`${this.name}: system message: ${stripChatFormatting(message)}`);
-                            console.log(`${this.name} system chat event: ${message}`);
+                        } else if (!parsed) {
+                            const stripped = stripChatFormatting(message);
+                            const mentionsBot = stripped.toLowerCase().includes(selfName);
+                            if (mentionsBot && isChatAllowed('player')) {
+                                this._inboundQueue.push({ source: 'player', message: stripped });
+                            } else {
+                                // System or non-user chat; preserve for logs only.
+                                sendLogToUI(`${this.name}: system message: ${stripped}`);
+                                console.log(`${this.name} system chat event: ${message}`);
+                                this.history.add('system', stripped);
+                            }
                         }
                     }
                 }
@@ -364,6 +380,14 @@ export class BridgeAgent {
 
         // ── 4. Build prompt and call LLM ──────────────────────────────────────
         const history = this.history.getHistory();
+        if (settings.use_textual_topography === true && state?.surface_map) {
+            history.push({
+                role: 'system',
+                content: buildBridgeTopographySystemMessage(state.surface_map, {
+                    format: settings.textual_topography_format || 'coordinate_list'
+                })
+            });
+        }
         const wantStructured = settings.bridge_structured_output === true;
         if (wantStructured) {
             history.push({
@@ -389,15 +413,18 @@ export class BridgeAgent {
 
         // ── 5. Parse COMMAND: lines ───────────────────────────────────────────
         const { chat: rawChat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
-        const suppressChat = actions.length > 0 && /^(no response needed|no reply|none|n\/a)$/i.test(rawChat.trim());
+        const suppressChat = /^(no response needed|no reply|none|n\/a)$/i.test(rawChat.trim());
         const chat = suppressChat ? '' : rawChat;
 
         // Record the full LLM response in history
         this.history.add(this.name, response);
 
-        // Send the chat portion to the WebUI output panel
+        // Send the chat portion to the WebUI output panel and in-game chat if enabled.
         if (chat.trim()) {
             sendOutputToServer(this.name, chat.trim());
+            if (settings.chat_ingame === true) {
+                await this.bridge.sendCommand(`chat: ${chat.trim()}`);
+            }
         }
 
         // ── 6. Execute each COMMAND: line via Fabric bridge ───────────────────

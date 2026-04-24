@@ -87,13 +87,19 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
         `cancel / c / stop — cancel the current task
 `;
 
+    const topographyDocs = settings.use_textual_topography
+        ? 'You have access to a nearby surface map of terrain. Use this map to plan navigation and building commands, and do not invent terrain that is not present in the map.'
+        : '';
+
     return [
         persona,
         factsSection,
         baritoneDocs,
+        topographyDocs,
         'When you want to execute a Baritone command, use a structured action with type "raw_command" and provider "baritone_chat" unless the action can be expressed as move/mine/follow/cancel.' +
         ' Example: {"reply":"Doing that now.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#goto ~ ~ ~"}]}. ' +
         'If the actions execute successfully and no user-facing response is needed, set reply to "no response needed" or leave it empty.',
+        'Keep chat reply text concise: limit the reply field to 200 characters or fewer so in-game chat is not cut off or rejected.',
         'Respond with strict JSON only. No markdown. No extra keys.'
     ].filter(Boolean).join('\n\n');
 }

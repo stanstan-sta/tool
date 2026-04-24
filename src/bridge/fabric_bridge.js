@@ -130,10 +130,14 @@ export class FabricBridge {
      * @property {string[]} nearby_players
      * @property {string[]} chat        messages received since last poll
      */
-    async getState(sinceSeq = null) {
+    async getState(sinceSeq = null, options = {}) {
         try {
-            const query = sinceSeq == null ? '' : `?since=${encodeURIComponent(String(sinceSeq))}`;
-            const res = await fetch(`${this.url}/state${query}`, {
+            const query = [];
+            if (sinceSeq != null) query.push(`since=${encodeURIComponent(String(sinceSeq))}`);
+            if (options.includeSurfaceMap === true) query.push('surface=true');
+            if (Number.isFinite(options.surfaceRadius)) query.push(`surface_radius=${encodeURIComponent(String(options.surfaceRadius))}`);
+            const suffix = query.length ? `?${query.join('&')}` : '';
+            const res = await fetch(`${this.url}/state${suffix}`, {
                 signal: AbortSignal.timeout(3000),
             });
             if (!res.ok) return null;

@@ -7,6 +7,8 @@ import {
     getBlockAtPosition,
     getFirstBlockAboveHead
 } from "./world.js";
+import { buildSurfaceMap, surfaceMapToText } from './topography.js';
+import settings from '../settings.js';
 import convoManager from '../conversation.js';
 
 export function getFullState(agent) {
@@ -67,6 +69,10 @@ export function getFullState(agent) {
             botPlayers: bots,
             entityTypes: []
         },
+        topography: {
+            surfaceMap: null,
+            text: null
+        },
         modes: {
             summary: bot?.modes?.getMiniDocs ? bot.modes.getMiniDocs() : null
         }
@@ -125,6 +131,20 @@ export function getFullState(agent) {
     state.inventory.equipment.chestplate = chestplate ? chestplate.name : null;
     state.inventory.equipment.leggings = leggings ? leggings.name : null;
     state.inventory.equipment.boots = boots ? boots.name : null;
+
+    if (settings.use_textual_topography) {
+        try {
+            const surfaceMap = buildSurfaceMap(bot, settings.textual_topography_radius || 8, {
+                heightPad: settings.textual_topography_height_pad || 32
+            });
+            state.topography.surfaceMap = surfaceMap;
+            state.topography.text = surfaceMap
+                ? surfaceMapToText(surfaceMap, { format: settings.textual_topography_format || 'coordinate_list' })
+                : 'Unavailable';
+        } catch {
+            state.topography.text = 'Unavailable';
+        }
+    }
 
     try {
         state.nearby.entityTypes = getNearbyEntityTypes(bot).filter(t => t !== 'player' && t !== 'item');

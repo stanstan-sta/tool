@@ -61,7 +61,9 @@ public class BridgeHttpServer {
         }
         String query = ex.getRequestURI().getRawQuery();
         Long since = extractQueryLong(query, "since");
-        String json = StateCollector.collect(since);
+        boolean includeSurface = extractQueryBoolean(query, "surface");
+        Integer surfaceRadius = extractQueryInt(query, "surface_radius");
+        String json = StateCollector.collect(since, includeSurface, surfaceRadius != null ? surfaceRadius : 8);
         respond(ex, 200, json);
     }
 
@@ -178,6 +180,25 @@ public class BridgeHttpServer {
             }
         }
         return null;
+    }
+
+    static Integer extractQueryInt(String query, String key) {
+        Long value = extractQueryLong(query, key);
+        return value == null ? null : value.intValue();
+    }
+
+    static boolean extractQueryBoolean(String query, String key) {
+        if (query == null || query.isBlank()) return false;
+        String[] parts = query.split("&");
+        for (String part : parts) {
+            String[] kv = part.split("=", 2);
+            if (key.equals(kv[0])) {
+                if (kv.length == 1 || kv[1].isBlank()) return true;
+                String decoded = URLDecoder.decode(kv[1], StandardCharsets.UTF_8).toLowerCase();
+                return decoded.equals("1") || decoded.equals("true") || decoded.equals("yes");
+            }
+        }
+        return false;
     }
 
     static String extractJsonObject(String json, String key) {
