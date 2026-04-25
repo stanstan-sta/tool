@@ -228,6 +228,7 @@ export class BridgeAgent {
 
         // ── Stubs for Prompter compatibility ──────────────────────────────────
         this.self_prompter = new BridgeSelfPrompter();
+        this.isBridgeAgent = true;
         this.blocked_actions = settings.blocked_actions || [];
         this.actions = { currentActionLabel: 'Idle' };
         this.npc = { constructions: null };

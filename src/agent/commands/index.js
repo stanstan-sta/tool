@@ -242,10 +242,11 @@ export function getCommandDocs(agent) {
         'BlockOrItemName':   'string',
         'boolean':           'bool'
     }
+    const sourceCommands = agent?.isBridgeAgent ? baritoneList : commandList;
     let docs = `\n*COMMAND DOCS\n You can use the following commands to perform actions and get information about the world. 
     Use the commands with the syntax: !commandName or !commandName("arg1", 1.2, ...) if the command takes arguments.\n
     Do not use codeblocks. Use double quotes for strings. Only use one command in each response, trailing commands and comments will be ignored.\n`;
-    for (let command of commandList) {
+    for (let command of sourceCommands) {
         if (agent.blocked_actions.includes(command.name)) {
             continue;
         }
@@ -302,7 +303,8 @@ export function getToolCallDocs(agent) {
         return docs + '*\n';
     }
 
-    for (let command of commandList) {
+    const sourceCommands = agent.isBridgeAgent ? baritoneList : commandList;
+    for (let command of sourceCommands) {
         if (agent.blocked_actions.includes(command.name)) {
             continue;
         }

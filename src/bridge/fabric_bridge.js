@@ -9,6 +9,7 @@
  * Supported command types:
  *   #goto x y z            — Baritone: navigate to coordinates
  *   #mine <count> <block> [secondary]  — Baritone: mine a block type
+ *   #find <block>          — Baritone: locate special blocks like containers or beds; not common blocks like wood or stone
  *   #follow player <name>  — Baritone: follow a player
  *   #cancel                — Baritone: cancel current task
  *   #explore               — Baritone: explore the world
