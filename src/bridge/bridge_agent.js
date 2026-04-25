@@ -92,9 +92,16 @@ function commandToTypedAction(cmd) {
     if (goto) {
         return { type: 'move', provider: 'baritone_chat', x: Number(goto[1]), y: Number(goto[2]), z: Number(goto[3]) };
     }
-    const mine = raw.match(/^#mine\s+([a-z0-9_:-]+)(?:\s+(\d+))?/i);
+    // #mine <count> <block> [secondary_block]
+    const mine = raw.match(/^#mine\s+(\d+)\s+([a-z0-9_:-]+(?:\s+[a-z0-9_:-]+)?)/i);
     if (mine) {
-        return { type: 'mine', provider: 'baritone_chat', target: mine[1], count: Number(mine[2] || 1) };
+        const parts = mine[2].split(/\s+/);
+        const target = parts[0];
+        const secondary = parts[1] || null;
+        const count = Number(mine[1]);
+        const action = { type: 'mine', provider: 'baritone_chat', target, count };
+        if (secondary) action.secondaryTarget = secondary;
+        return action;
     }
     const follow = raw.match(/^#follow\s+player\s+([^\s]+)$/i);
     if (follow) {

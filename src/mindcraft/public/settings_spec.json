@@ -142,9 +142,9 @@
         "type": "string",
 
 
-        "description": "Runtime mode. packet = Mineflayer packet bot, fabric_ui = Fabric bridge runtime with normal client UI, fabric_headless = Fabric bridge runtime tuned for lower render overhead.",
-        "default": "packet",
-        "options": ["packet", "fabric_ui", "fabric_headless"]
+        "description": "Runtime mode. fabric_ui = Fabric bridge runtime with normal client UI (recommended), fabric_headless = Fabric bridge runtime tuned for lower render overhead, packet = Mineflayer packet bot (legacy).",
+        "default": "fabric_ui",
+        "options": ["fabric_ui", "fabric_headless", "packet"]
     },
     "bridge_mode": {
         "type": "boolean",
