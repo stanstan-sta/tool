@@ -97,7 +97,7 @@ Available Baritone commands:
             factsSection,
             'Before responding, ask yourself:\n1. Is the user asking me to *do* something in Minecraft (move, mine, build, follow, etc.)?\n   a) Yes → Include the appropriate JSON action(s) in your response.\n   b) No → Just use {"reply":"..."} with no actions.',
             baritoneDocs,
-            'When you want to perform an action, use the JSON action type that matches the command:\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <block> [count] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- #cancel → {"type":"cancel"}\n- Everything else: {"type":"raw_command","command":"#your_command"}\n\nAlways use "provider":"baritone_chat" with every action.',
+            'When you want to perform an action, use the JSON action type that matches the command:\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <count> <block> [secondary_block] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- #cancel → {"type":"cancel"}\n- Everything else: {"type":"raw_command","command":"#your_command"}\n\nAlways use "provider":"baritone_chat" with every action.',
             topographyDocs,
             'Example with action: {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
             'Example only chat: {"reply":"Yeah, the weather is nice today."}',

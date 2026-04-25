@@ -8,7 +8,7 @@
  *
  * Supported command types:
  *   #goto x y z            — Baritone: navigate to coordinates
- *   #mine <block> <count>  — Baritone: mine a block type
+ *   #mine <count> <block> [secondary]  — Baritone: mine a block type
  *   #follow player <name>  — Baritone: follow a player
  *   #cancel                — Baritone: cancel current task
  *   #explore               — Baritone: explore the world

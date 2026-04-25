@@ -20,7 +20,11 @@ if not exist node_modules (
 )
 
 echo [start] Starting Mindcraft in Fabric bridge mode...
-echo [start] Open http://localhost:8080 in your browser for the live console.
+
+:: Read mindserver_port from settings.js dynamically
+for /f "usebackq delims=" %%i in (`node -e "import('./settings.js').then(m => console.log(m.default.mindserver_port))" 2^>nul`) do set MIND_PORT=%%i
+if "%MIND_PORT%"=="" set MIND_PORT=8080
+echo [start] Open http://localhost:%MIND_PORT% in your browser for the live console.
 echo.
 node main.js
 pause
