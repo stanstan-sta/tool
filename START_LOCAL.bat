@@ -28,8 +28,9 @@ echo [start] Open http://localhost:%MIND_PORT% in your browser for the live cons
 echo [start] Auto-restart enabled — bot will relaunch on crash/exit.
 echo.
 
-:loopecho.
+:loop
+node main.js
+echo.
 echo [start] Bot exited with code %ERRORLEVEL%. Restarting in 3 seconds...
 timeout /t 3 /nobreak >nul
 goto loop
-
