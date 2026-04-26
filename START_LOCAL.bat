@@ -25,7 +25,11 @@ echo [start] Starting Mindcraft in Fabric bridge mode...
 for /f "usebackq delims=" %%i in (`node -e "import('./settings.js').then(m => console.log(m.default.mindserver_port))" 2^>nul`) do set MIND_PORT=%%i
 if "%MIND_PORT%"=="" set MIND_PORT=8080
 echo [start] Open http://localhost:%MIND_PORT% in your browser for the live console.
+echo [start] Auto-restart enabled — bot will relaunch on crash/exit.
 echo.
-node main.js
-pause
+
+:loopecho.
+echo [start] Bot exited with code %ERRORLEVEL%. Restarting in 3 seconds...
+timeout /t 3 /nobreak >nul
+goto loop
 

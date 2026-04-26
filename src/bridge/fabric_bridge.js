@@ -78,6 +78,48 @@ export class FabricBridge {
     }
 
     /**
+     * Send a batch of typed actions to the Fabric client.
+     * Routes through the /batch endpoint which queues actions sequentially
+     * in the Fabric mod's TaskQueue, advancing on Baritone completion signals.
+     * @param {object[]} actions
+     * @returns {Promise<{success: boolean, queued?: number, error?: string}>}
+     */
+    async sendBatch(actions) {
+        try {
+            const res = await fetch(`${this.url}/batch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ actions }),
+                signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Send a batch of raw command strings.
+     * @param {string[]} commands
+     * @returns {Promise<{success: boolean, queued?: number, error?: string}>}
+     */
+    async sendBatchCommands(commands) {
+        try {
+            const res = await fetch(`${this.url}/batch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ commands }),
+                signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
      * Retrieve bridge/runtime capabilities.
      * @returns {Promise<object|null>}
      */
@@ -167,12 +209,24 @@ export class FabricBridge {
             .join(', ') || 'none';
         const dim = (state.dimension || 'overworld').replace('minecraft:', '');
 
-        return [
+        const lines = [
             `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}`,
             `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}`,
             `Inventory: ${inv}`,
             `Nearby players: ${nearby}`,
             `Nearby entities: ${nearbyEntities}`,
-        ].join('\n');
+        ];
+
+        // Include queue status if non-idle
+        if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {
+            const q = state.queue;
+            let queueLine = `Queue: ${q.status} | Pending: ${q.pending}`;
+            if (q.active) queueLine += ` | Active: ${q.active}`;
+            if (q.paused) queueLine += ` | PAUSED`;
+            if (q.lastFailure) queueLine += ` | Last failure: ${q.lastFailure}`;
+            lines.push(queueLine);
+        }
+
+        return lines.join('\n');
     }
 }

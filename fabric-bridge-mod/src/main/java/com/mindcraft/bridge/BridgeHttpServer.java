@@ -30,6 +30,7 @@ public class BridgeHttpServer {
         server.createContext("/state",   this::handleState);
         server.createContext("/command", this::handleCommand);
         server.createContext("/action", this::handleAction);
+        server.createContext("/batch", this::handleBatch);
         server.createContext("/capabilities", this::handleCapabilities);
         server.createContext("/commands", this::handleCommands);
 
@@ -80,8 +81,16 @@ public class BridgeHttpServer {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'command' field\"}");
                 return;
             }
-            CommandExecutor.execute(command);
-            respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
+            // Chat and message commands execute immediately — don't queue them.
+            if (command.startsWith("chat:") || command.startsWith("whisper:")) {
+                CommandExecutor.execute(command);
+                respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
+                return;
+            }
+            // Route Baritone/action commands through TaskQueue for sequential execution.
+            // When the queue is disabled, enqueue() falls back to direct execution.
+            int queued = TaskQueue.getInstance().enqueue(command);
+            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + ",\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
         }
     }
 
@@ -105,7 +114,72 @@ public class BridgeHttpServer {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Invalid typed action\"}");
                 return;
             }
-            respond(ex, 200, "{\"success\":true,\"output\":\"Action sent: " + jsonEscape(executed) + "\"}");
+            // Route through TaskQueue for consistent queuing behavior.
+            // The executed string is already a concrete command like "move: #goto x y z".
+            // Extract just the raw command part after the type prefix for the queue.
+            String rawCommand = executed;
+            int colonIdx = executed.indexOf(':');
+            if (colonIdx > 0) {
+                rawCommand = executed.substring(colonIdx + 1).trim();
+            }
+            int queued = TaskQueue.getInstance().enqueue(rawCommand);
+            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + ",\"output\":\"Action sent: " + jsonEscape(executed) + "\"}");
+        }
+    }
+
+    private void handleBatch(HttpExchange ex) throws IOException {
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        try (InputStream in = ex.getRequestBody()) {
+            String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+
+            // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
+            java.util.List<String> commands = new java.util.ArrayList<>();
+
+            // Try "actions" array first (typed actions)
+            String actionsArray = extractJsonArray(body, "actions");
+            if (actionsArray != null) {
+                // Parse each action object in the array to a concrete command string
+                String[] actionObjects = splitJsonArray(actionsArray);
+                for (String actionObj : actionObjects) {
+                    if (actionObj == null || actionObj.isBlank()) continue;
+                    String executed = CommandExecutor.executeTypedJson(actionObj);
+                    if (executed != null && !executed.isBlank()) {
+                        int colonIdx = executed.indexOf(':');
+                        String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
+                        commands.add(cmd);
+                    }
+                }
+            }
+
+            // Try "commands" array (raw command strings)
+            if (commands.isEmpty()) {
+                String cmdsArray = extractJsonArray(body, "commands");
+                if (cmdsArray != null) {
+                    String[] cmdElements = splitJsonArray(cmdsArray);
+                    for (String cmd : cmdElements) {
+                        if (cmd == null || cmd.isBlank()) continue;
+                        // Unwrap JSON string quotes if present
+                        String trimmed = cmd.trim();
+                        if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+                            trimmed = trimmed.substring(1, trimmed.length() - 1);
+                        }
+                        if (!trimmed.isBlank()) {
+                            commands.add(trimmed);
+                        }
+                    }
+                }
+            }
+
+            if (commands.isEmpty()) {
+                respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'actions' or 'commands' array\"}");
+                return;
+            }
+
+            int queued = TaskQueue.getInstance().enqueue(commands);
+            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + "}");
         }
     }
 
@@ -243,6 +317,72 @@ public class BridgeHttpServer {
         }
         if (end <= i) return null;
         return json.substring(i, end);
+    }
+
+    /**
+     * Extract a JSON array value for a given key.
+     * Returns the raw array text (including brackets), or null.
+     */
+    static String extractJsonArray(String json, String key) {
+        String search = "\"" + key + "\"";
+        int ki = json.indexOf(search);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + search.length());
+        if (colon < 0) return null;
+        int start = json.indexOf('[', colon + 1);
+        if (start < 0) return null;
+        int depth = 0;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '[') depth++;
+            else if (c == ']') {
+                depth--;
+                if (depth == 0) {
+                    return json.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Split a JSON array string into individual top-level elements.
+     * Handles nested objects and arrays.
+     */
+    static String[] splitJsonArray(String array) {
+        // Remove outer brackets
+        String inner = array.trim();
+        if (inner.startsWith("[") && inner.endsWith("]")) {
+            inner = inner.substring(1, inner.length() - 1).trim();
+        }
+        if (inner.isEmpty()) return new String[0];
+
+        java.util.List<String> elements = new java.util.ArrayList<>();
+        int depth = 0;
+        boolean inString = false;
+        int start = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '"' && (i == 0 || inner.charAt(i - 1) != '\\')) {
+                inString = !inString;
+            } else if (!inString) {
+                if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']') depth--;
+                else if (c == ',' && depth == 0) {
+                    String element = inner.substring(start, i).trim();
+                    if (!element.isEmpty()) {
+                        elements.add(element);
+                    }
+                    start = i + 1;
+                }
+            }
+        }
+        // Last element
+        String last = inner.substring(start).trim();
+        if (!last.isEmpty()) {
+            elements.add(last);
+        }
+        return elements.toArray(new String[0]);
     }
 
     /** Escape a string for embedding inside a JSON string value. */

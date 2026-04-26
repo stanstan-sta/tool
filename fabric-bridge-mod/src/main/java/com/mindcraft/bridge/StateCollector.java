@@ -89,6 +89,23 @@ public class StateCollector {
             if (content != null && recentSentChats.contains(content)) {
                 return;
             }
+            // Detect Baritone task-queue status messages and route to TaskQueue.
+            // The contract: Baritone logs "[Baritone] All queued tasks complete"
+            // on success and "[Baritone] Task failed: <label> - <outcome>" on failure.
+            if (content != null && content.startsWith("[Baritone]")) {
+                if (content.contains("All queued tasks complete")) {
+                    TaskQueue.getInstance().onBaritoneComplete();
+                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
+                } else if (content.startsWith("[Baritone] Task failed:")) {
+                    String reason = content.substring("[Baritone] Task failed:".length()).trim();
+                    TaskQueue.getInstance().onBaritoneFailed(reason);
+                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
+                } else {
+                    // Other [Baritone] messages — forward as info
+                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
+                }
+                return;
+            }
             String type = overlay ? "system" : "player";
             chatQueue.add(new ChatEvent(type, content, null));
         });
@@ -232,6 +249,20 @@ public class StateCollector {
         sb.append("\"chat_events\":").append(eventArray);
         sb.append(",\"seq\":").append(seq);
         sb.append(",\"unchanged\":false");
+
+        // Append task queue state
+        TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+        if (!"idle".equals(qs.status()) && !"disabled".equals(qs.status())) {
+            sb.append(",\"queue\":{");
+            sb.append("\"status\":\"").append(escape(qs.status())).append("\",");
+            sb.append("\"active\":").append(qs.active() == null ? "null" : "\"" + escape(qs.active()) + "\"").append(",");
+            sb.append("\"pending\":").append(qs.pending()).append(",");
+            sb.append("\"paused\":").append(qs.paused());
+            if (qs.lastFailure() != null) {
+                sb.append(",\"lastFailure\":\"").append(escape(qs.lastFailure())).append("\"");
+            }
+            sb.append("}");
+        }
 
         sb.append("}");
         return sb.toString();

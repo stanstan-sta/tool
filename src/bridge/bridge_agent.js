@@ -19,10 +19,31 @@ function extractJsonObjectCandidate(text) {
     if (!trimmed) return null;
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenced?.[1]) return fenced[1].trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try { JSON.parse(trimmed); return trimmed; } catch {}
+    }
+    // Try the first-{ to last-} span (handles clean single-object responses)
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
-    if (first >= 0 && last > first) return trimmed.slice(first, last + 1);
+    if (first >= 0 && last > first) {
+        const candidate = trimmed.slice(first, last + 1);
+        try { JSON.parse(candidate); return candidate; } catch {}
+    }
+    // Fall back: scan backwards from the end to find the *last* valid JSON object.
+    // This discards stray thinking text and duplicate concatenated objects.
+    let endIdx = trimmed.length;
+    while (endIdx > 0) {
+        const close = trimmed.lastIndexOf('}', endIdx - 1);
+        if (close < 0) break;
+        const open = trimmed.lastIndexOf('{', close);
+        if (open < 0) break;
+        const candidate = trimmed.slice(open, close + 1);
+        try {
+            JSON.parse(candidate);
+            return candidate;
+        } catch {}
+        endIdx = open;
+    }
     return null;
 }
 
@@ -350,6 +371,25 @@ export class BridgeAgent {
                         const message = String(event?.message || '');
                         if (!message) continue;
 
+                        const eventType = (event && event.type) ? String(event.type) : 'player';
+
+                        // Handle Baritone task queue status events
+                        if (eventType === 'baritone_queue') {
+                            console.log(`${this.name} queue event: ${message}`);
+                            this.history.add('system', `[Baritone] ${message}`);
+                            sendOutputToServer(this.name, `🔄 ${message}`);
+                            continue;
+                        }
+
+                        // Skip non-player messages (system overlays, game advancements, death
+                        // messages, join/leave notifications, etc.). Only process real player chat.
+                        if (eventType !== 'player') continue;
+                        const hasSender = !!(event && event.sender);
+                        if (!hasSender) {
+                            sendLogToUI(`${this.name}: ignoring non-player message: ${stripChatFormatting(message).trim()}`);
+                            continue;
+                        }
+
                         // If the Fabric mod provided an authoritative sender, skip messages
                         // that were sent by this client to avoid self-looping.
                         const senderField = (event && event.sender) ? String(event.sender).trim() : '';
@@ -484,37 +524,29 @@ export class BridgeAgent {
             }
         }
 
-        // ── 6. Execute each COMMAND: line via Fabric bridge ───────────────────
-        for (const action of actions) {
-            sendOutputToServer(this.name, `⚡ action:${action.type}`);
-            const result = action.type === 'raw_command'
-                ? await this.bridge.sendCommand(action.command || '')
-                : await this.bridge.sendAction(action);
-            if (result.output) {
-                this.history.add('system', `action:${action.type} → ${result.output}`);
-                sendOutputToServer(this.name, result.output);
-            } else if (!result.success) {
-                const errMsg = `Action failed (${action.type}): ${result.error || 'unknown error'}`;
+        // ── 6. Dispatch actions via batch queue ─────────────────────────────
+        if (actions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(actions);
+            if (batchResult.success) {
+                const queued = batchResult.queued || actions.length;
+                sendOutputToServer(this.name, `⚡ Queued ${queued} action(s) for sequential execution`);
+                this.history.add('system', `Queued ${queued} action(s). Queue will advance on Baritone completion signals.`);
+            } else {
+                const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
                 sendOutputToServer(this.name, `⚠️ ${errMsg}`);
             }
         }
 
-        for (const cmd of commands) {
-            sendOutputToServer(this.name, `⚡ ${cmd}`);
-            console.log(`${this.name} → Fabric: ${cmd}`);
-
-            const compatAction = commandToTypedAction(cmd);
-            const result = compatAction
-                ? await this.bridge.sendAction(compatAction)
-                : await this.bridge.sendCommand(cmd);
-
-            if (result.output) {
-                const resultMsg = `${cmd} → ${result.output}`;
-                this.history.add('system', resultMsg);
-                sendOutputToServer(this.name, result.output);
-            } else if (!result.success) {
-                const errMsg = `Command failed: ${result.error || 'unknown error'}`;
+        // Remaining raw commands (parsed from COMMAND: lines, not typed actions)
+        if (commands.length > 0) {
+            const batchResult = await this.bridge.sendBatchCommands(commands);
+            if (batchResult.success) {
+                const queued = batchResult.queued || commands.length;
+                sendOutputToServer(this.name, `⚡ Queued ${queued} command(s) for sequential execution`);
+                this.history.add('system', `Queued ${queued} command(s). Queue will advance on Baritone completion signals.`);
+            } else {
+                const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
                 sendOutputToServer(this.name, `⚠️ ${errMsg}`);
             }

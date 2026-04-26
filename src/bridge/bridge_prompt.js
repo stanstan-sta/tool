@@ -1,7 +1,7 @@
 export function buildBridgeSystemPrompt(settings, importantFacts = '') {
     const persona = settings.persona_preset === 'miku_nakano'
-        ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use the bridge actions when needed.'
-        : 'You are playing minecraft. You chat naturally, keep replies short in a shy way, and use the bridge actions when needed.';
+        ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use baritone actions when needed.'
+        : 'You are playing minecraft. You chat naturally, keep replies short in a shy way, and use baritone actions when needed.';
     const facts = importantFacts ? String(importantFacts).trim() : (settings.important_memory ? String(settings.important_memory).trim() : '');
     const factsSection = facts ? `Important facts:\n${facts}` : '';
 
@@ -97,11 +97,21 @@ Available Baritone commands:
             factsSection,
             'Before responding, ask yourself:\n1. Is the user asking me to *do* something in Minecraft (move, mine, build, follow, etc.)?\n   a) Yes → Include the appropriate JSON action(s) in your response.\n   b) No → Just use {"reply":"..."} with no actions.',
             baritoneDocs,
-            'When you want to perform an action, use the JSON action type that matches the command:\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <count> <block> [secondary_block] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- #cancel → {"type":"cancel"}\n- Everything else: {"type":"raw_command","command":"#your_command"}\n\nAlways use "provider":"baritone_chat" with every action.',
+            'When you want to perform an action, use ONLY these JSON action types (do NOT invent new types):\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <count> <block> [secondary_block] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- #sleep → {"type":"raw_command","command":"#sleep"}\n- #farm → {"type":"raw_command","command":"#farm"}\n- #cancel → {"type":"cancel"}\n- Any other command → {"type":"raw_command","command":"#your_command"}\n\nThe only valid type values are: "move", "mine", "follow", "cancel", "raw_command". Never invent types like "goToBed", "sleep", "bed", "farmBlock", etc. Use "raw_command" with a "#command" instead.\n\nAlways use "provider":"baritone_chat" with every action.',
             topographyDocs,
             'Example with action: {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
             'Example only chat: {"reply":"Yeah, the weather is nice today."}',
-            'Keep reply under 200 characters. Strict JSON only. No markdown. No extra text outside the JSON.'
+            'Keep reply under 200 characters. Strict JSON only. No markdown. No extra text outside the JSON.',
+            'TASK QUEUE SYSTEM:',
+            '- Your actions are queued sequentially. Only ONE action runs at a time.',
+            '- When queue.status is "executing", previous actions are still running. Wait for them to finish before issuing new actions unless you need to cancel.',
+            '- When queue.status is "paused", a task failed. The failure reason will appear in state. You can:',
+            '  • Retry: re-issue the same action',
+            '  • Skip: issue a different action (the failed one will be dropped)',
+            '  • Cancel all: issue {"type":"cancel"} to clear the entire queue',
+            '- When queue is "idle", you are free to issue new actions.',
+            '- #cancel clears ALL pending tasks — use carefully.',
+            '- You will see [Baritone] status messages in history — use them to track progress.'
         ].filter(Boolean).join('\n\n');
     }
 
