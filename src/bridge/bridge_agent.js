@@ -22,15 +22,12 @@ function extractJsonObjectCandidate(text) {
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
         try { JSON.parse(trimmed); return trimmed; } catch {}
     }
-    // Try the first-{ to last-} span (handles clean single-object responses)
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
     if (first >= 0 && last > first) {
         const candidate = trimmed.slice(first, last + 1);
         try { JSON.parse(candidate); return candidate; } catch {}
     }
-    // Fall back: scan backwards from the end to find the *last* valid JSON object.
-    // This discards stray thinking text and duplicate concatenated objects.
     let endIdx = trimmed.length;
     while (endIdx > 0) {
         const close = trimmed.lastIndexOf('}', endIdx - 1);
@@ -105,37 +102,8 @@ function normalizeAction(action) {
     return action;
 }
 
-function commandToTypedAction(cmd) {
-    const raw = String(cmd || '').trim();
-    const rawLower = raw.toLowerCase();
-    if (!raw) return null;
-    const goto = raw.match(/^#goto\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/i);
-    if (goto) {
-        return { type: 'move', provider: 'baritone_chat', x: Number(goto[1]), y: Number(goto[2]), z: Number(goto[3]) };
-    }
-    // #mine <count> <block> [secondary_block]
-    const mine = raw.match(/^#mine\s+(\d+)\s+([a-z0-9_:-]+(?:\s+[a-z0-9_:-]+)?)/i);
-    if (mine) {
-        const parts = mine[2].split(/\s+/);
-        const target = parts[0];
-        const secondary = parts[1] || null;
-        const count = Number(mine[1]);
-        const action = { type: 'mine', provider: 'baritone_chat', target, count };
-        if (secondary) action.secondaryTarget = secondary;
-        return action;
-    }
-    const follow = raw.match(/^#follow\s+player\s+([^\s]+)$/i);
-    if (follow) {
-        return { type: 'follow', provider: 'baritone_chat', target: follow[1] };
-    }
-    if (rawLower === '#cancel') {
-        return { type: 'cancel', provider: 'baritone_chat' };
-    }
-    return { type: 'raw_command', provider: 'baritone_chat', command: raw };
-}
-
 /**
- * Parse the LLM's response into a chat text portion and a list of COMMAND: lines.
+ * Parse the LLM's response into a chat text portion and a list of actions.
  *
  * Expected format (any ordering, COMMAND lines can appear multiple times):
  *   THOUGHT: <reasoning>
@@ -159,7 +127,6 @@ export function parseBridgeResponse(response, expectStructured = false) {
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                 const reply = typeof parsed.reply === 'string'
                     ? parsed.reply.trim()
-                    // Backward-compat: allow "chat" from older structured bridge prompts.
                     : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
                 const structuredActions = Array.isArray(parsed.actions)
                     ? parsed.actions.map(normalizeAction).filter(Boolean)
@@ -233,9 +200,9 @@ class BridgeSelfPrompter {
  * The agent:
  *  1. Polls the Fabric mod for world state and new chat messages.
  *  2. Injects state snapshots into the conversation history.
- *  3. Calls the Ollama/other LLM to decide what to do.
- *  4. Parses COMMAND: lines from the LLM response and forwards them to the mod.
- *  5. Records command results back into history for context.
+ *  3. Calls the LLM to decide what to do.
+ *  4. Parses actions from the LLM response and forwards them to the mod.
+ *  5. After queue completion, re-invokes the LLM to continue multi-step plans.
  */
 export class BridgeAgent {
     async start(load_mem = false, init_message = null) {
@@ -248,8 +215,6 @@ export class BridgeAgent {
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing bridge agent: ${this.name}`);
-        // Bridge mode should not use the normal bot prompt template with internal
-        // queries like $STATS / $INVENTORY. Use a bridge-specific prompt instead.
         this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '');
         // ── History ────────────────────────────────────────────────────────────
         this.history = new History(this);
@@ -263,6 +228,12 @@ export class BridgeAgent {
         this.last_sender = null;
         this.shut_up = false;
 
+        // ── Self-continuation state ───────────────────────────────────────────
+        this._lastHadActions = false;  // did the previous LLM response have actions?
+        this._pendingContinuation = false; // waiting for queue to drain before continuing
+        this._continuationSource = null; // original source (for continuation history)
+        this._lastState = null;  // most recent state snapshot
+
         // ── Fabric bridge HTTP client ──────────────────────────────────────────
         this.bridge = new FabricBridge(settings.bridge_url || 'http://localhost:8765');
         this._lastStateStr = '';
@@ -272,7 +243,6 @@ export class BridgeAgent {
         this._recentSentChats = [];
 
         // ── MindServer registration ────────────────────────────────────────────
-        // respondFunc is called by serverProxy when the WebUI sends a message.
         this.respondFunc = (from, msg) => {
             try {
                 if (msg) this._inboundQueue.push({ source: from, message: msg });
@@ -327,12 +297,42 @@ export class BridgeAgent {
     }
 
     _isSelfSentChat(message) {
-            const normalized = normalizeChatText(message);
-            if (!normalized || !this._recentSentChats.length) return false;
-            // Use substring matching: the echoed message may be wrapped in a
-            // player-name prefix like "<BotName> Hello" so exact-match won't work.
-            return this._recentSentChats.some(sent => normalized.includes(sent));
+        const normalized = normalizeChatText(message);
+        if (!normalized || !this._recentSentChats.length) return false;
+        return this._recentSentChats.some(sent => normalized.includes(sent));
+    }
+
+    /**
+     * Build a state summary string for injection into the LLM's context.
+     * Includes inventory, position, health, nearby entities, and queue status.
+     */
+    _buildStateContext(state) {
+        if (!state || !state.connected) return null;
+
+        const inv = (state.inventory || [])
+            .map(i => `${i.count}x ${i.item.replace('minecraft:', '')}`)
+            .join(', ') || 'empty';
+        const dim = (state.dimension || 'overworld').replace('minecraft:', '');
+        const nearby = (state.nearby_players || []).join(', ') || 'none';
+        const entities = (state.nearby_entities || [])
+            .slice(0, 5)
+            .map(e => `${e.type}@(${e.x},${e.y},${e.z})`)
+            .join(', ') || 'none';
+
+        let ctx = `CURRENT STATE:\n`;
+        ctx += `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}\n`;
+        ctx += `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}\n`;
+        ctx += `Inventory: ${inv}\n`;
+        ctx += `Nearby players: ${nearby}\n`;
+        ctx += `Nearby entities: ${entities}`;
+
+        // Include craftable items if available
+        if (state.craftable && Array.isArray(state.craftable) && state.craftable.length > 0) {
+            ctx += `\nCraftable: ${state.craftable.join(', ')}`;
         }
+
+        return ctx;
+    }
 
     /**
      * Main agent loop. Polls state, processes pending messages, calls LLM.
@@ -357,16 +357,17 @@ export class BridgeAgent {
                     this._lastStateSeq = state.seq;
                 }
 
-                if (state && state.connected && !state.unchanged) {
+                if (state && state.connected) {
                     const stateStr = FabricBridge.formatState(state);
                     this._lastStateStr = stateStr;
+                    this._lastState = state;
 
-                    // ── 2. Bubble up any chat messages received in-game ────────
+                    // ── 2. Process chat events ────────────────────────────────
                     const events = Array.isArray(state.chat_events)
                         ? state.chat_events
                         : (Array.isArray(state.chat) ? state.chat.map(msg => ({ type: 'player', message: msg })) : []);
 
-                                        const selfName = String(state?.player_name || this.name || '').trim().toLowerCase();
+                    const selfName = String(state?.player_name || this.name || '').trim().toLowerCase();
                     for (const event of events) {
                         const message = String(event?.message || '');
                         if (!message) continue;
@@ -378,11 +379,19 @@ export class BridgeAgent {
                             console.log(`${this.name} queue event: ${message}`);
                             this.history.add('system', `[Baritone] ${message}`);
                             sendOutputToServer(this.name, `🔄 ${message}`);
+
+                            // Detect queue draining → idle transition for self-continuation
+                            if (this._pendingContinuation && message.includes('All queued tasks complete')) {
+                                this._pendingContinuation = false;
+                                // Schedule continuation after a short delay to let state settle
+                                setTimeout(() => {
+                                    if (!this.stopped) this._continuePlan();
+                                }, 500);
+                            }
                             continue;
                         }
 
-                        // Skip non-player messages (system overlays, game advancements, death
-                        // messages, join/leave notifications, etc.). Only process real player chat.
+                        // Skip non-player messages
                         if (eventType !== 'player') continue;
                         const hasSender = !!(event && event.sender);
                         if (!hasSender) {
@@ -390,22 +399,16 @@ export class BridgeAgent {
                             continue;
                         }
 
-                        // If the Fabric mod provided an authoritative sender, skip messages
-                        // that were sent by this client to avoid self-looping.
+                        // Skip self-sent messages
                         const senderField = (event && event.sender) ? String(event.sender).trim() : '';
                         if (senderField) {
                             if (senderField.toLowerCase() === selfName) {
-                                // Drop self-generated chat — never enqueue.
                                 continue;
                             }
                         }
-                        // Check against the recently-sent chat buffer (substring match
-                        // because the mod may echo back "<Bot> Hello" not just "Hello").
                         if (this._isSelfSentChat(message)) {
                             continue;
                         }
-                        // Broad sanity check: if the raw message starts with the bot's
-                        // own name in angle brackets, skip it even if senderField was missing.
                         const strippedLower = stripChatFormatting(message).trim().toLowerCase();
                         if (selfName && strippedLower.startsWith('<' + selfName + '>')) {
                             continue;
@@ -425,7 +428,6 @@ export class BridgeAgent {
                             if (!appearsFromSelf && mentionsBot && isChatAllowed('player')) {
                                 this._inboundQueue.push({ source: 'player', message: stripped });
                             } else {
-                                // System, self, or non-user chat; preserve for logs only.
                                 sendLogToUI(`${this.name}: system message: ${stripped}`);
                                 console.log(`${this.name} system chat event: ${message}`);
                                 this.history.add('system', stripped);
@@ -440,9 +442,15 @@ export class BridgeAgent {
                     console.log(`${this.name} handling message from ${source}: ${message}`);
                     await this._handleMessage(source, message, state);
 
-                    // Tight loop while there's a response to work on
                     this._pollIntervalMs = POLL_MIN_MS;
                     continue;
+                }
+
+                // ── 4. Self-continuation check ─────────────────────────────────
+                // If there are no pending incoming messages but a continuation was
+                // triggered by queue completion, handle it.
+                if (this._pendingContinuation && !this._inboundQueue.length) {
+                    // Already handled in baritone_queue event above via setTimeout
                 }
 
                 if (state?.unchanged) {
@@ -460,6 +468,117 @@ export class BridgeAgent {
     }
 
     /**
+     * Called after Baritone completes a batch of actions.
+     * If the previous LLM response had actions, re-invoke the LLM with
+     * updated state so it can continue the plan.
+     */
+    async _continuePlan() {
+        if (!this._lastHadActions || !this._lastState) return;
+
+        this._lastHadActions = false;
+
+        // Give Baritone a moment to settle
+        await new Promise(r => setTimeout(r, 800));
+
+        // Get fresh state
+        const state = await this.bridge.getState();
+        if (!state || !state.connected) return;
+
+        this._lastState = state;
+
+        // Check if queue is truly idle now
+        if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {
+            // Queue still busy — wait for next baritone_queue event
+            this._pendingContinuation = true;
+            return;
+        }
+
+        // Inject updated state into history
+        const stateContext = this._buildStateContext(state);
+        if (stateContext) {
+            this.history.add('system', stateContext);
+        }
+
+        // Build prompt and call LLM (use same logic as _handleMessage but
+        // with a continuation source instead of a player message)
+        const history = this.history.getHistory();
+        if (settings.use_textual_topography === true && state?.surface_map) {
+            history.push({
+                role: 'system',
+                content: buildBridgeTopographySystemMessage(state.surface_map, {
+                    format: settings.textual_topography_format || 'coordinate_list'
+                })
+            });
+        }
+        const wantStructured = settings.bridge_structured_output === true;
+        if (wantStructured) {
+            history.push({
+                role: 'system',
+                content: buildBridgeSystemPrompt(settings, this.history.memory),
+            });
+        }
+
+        let response;
+        try {
+            response = await this.prompter.promptConvo(history);
+        } catch (err) {
+            console.error('LLM error in continuation:', err);
+            return;
+        }
+
+        if (!response || response.trim().length === 0) return;
+        console.log(`${this.name} continuation LLM response: ${response}`);
+
+        // Parse and dispatch
+        const { chat, commands, actions } = parseBridgeResponse(response, wantStructured);
+        const suppressChat = /^(no response needed|no reply|none|n\/a)$/i.test(chat.trim());
+        const chatText = suppressChat ? '' : chat;
+
+        this.history.add(this.name, response);
+
+        if (chatText.trim()) {
+            const trimmedChat = chatText.trim();
+            sendOutputToServer(this.name, trimmedChat);
+            if (settings.chat_ingame === true) {
+                this._trackSentChat(trimmedChat);
+                await this.bridge.sendCommand(`chat: ${trimmedChat}`);
+            }
+        }
+
+        if (actions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(actions);
+            if (batchResult.success) {
+                this._lastHadActions = true;
+                this._pendingContinuation = true;
+                const queued = batchResult.queued || actions.length;
+                sendOutputToServer(this.name, `⚡ Queued ${queued} action(s) for sequential execution`);
+                this.history.add('system', `Queued ${queued} action(s). Queue will advance on Baritone completion signals.`);
+            } else {
+                const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+            }
+        }
+
+        if (commands.length > 0) {
+            const batchResult = await this.bridge.sendBatchCommands(commands);
+            if (batchResult.success) {
+                this._lastHadActions = true;
+                this._pendingContinuation = true;
+                const queued = batchResult.queued || commands.length;
+                sendOutputToServer(this.name, `⚡ Queued ${queued} command(s) for sequential execution`);
+                this.history.add('system', `Queued ${queued} command(s). Queue will advance on Baritone completion signals.`);
+            } else {
+                const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+            }
+        }
+
+        this.history.save();
+    }
+
+    /**
      * Handle a single incoming message — call LLM, execute commands, record results.
      * @param {string} source
      * @param {string} message
@@ -473,7 +592,15 @@ export class BridgeAgent {
             this.history.add(source, message);
         }
 
-        // ── 4. Build prompt and call LLM ──────────────────────────────────────
+        // ── Inject current state into history before LLM call ───────────────
+        if (state && state.connected) {
+            const stateContext = this._buildStateContext(state);
+            if (stateContext) {
+                this.history.add('system', stateContext);
+            }
+        }
+
+        // ── Build prompt and call LLM ──────────────────────────────────────
         const history = this.history.getHistory();
         if (settings.use_textual_topography === true && state?.surface_map) {
             history.push({
@@ -506,7 +633,7 @@ export class BridgeAgent {
 
         console.log(`${this.name} LLM response: ${response}`);
 
-        // ── 5. Parse COMMAND: lines ───────────────────────────────────────────
+        // ── Parse response ─────────────────────────────────────────────────
         const { chat: rawChat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
         const suppressChat = /^(no response needed|no reply|none|n\/a)$/i.test(rawChat.trim());
         const chat = suppressChat ? '' : rawChat;
@@ -524,10 +651,13 @@ export class BridgeAgent {
             }
         }
 
-        // ── 6. Dispatch actions via batch queue ─────────────────────────────
+        // ── Dispatch actions via batch queue ───────────────────────────────
         if (actions.length > 0) {
             const batchResult = await this.bridge.sendBatch(actions);
             if (batchResult.success) {
+                this._lastHadActions = true;
+                this._pendingContinuation = true;
+                this._continuationSource = source;
                 const queued = batchResult.queued || actions.length;
                 sendOutputToServer(this.name, `⚡ Queued ${queued} action(s) for sequential execution`);
                 this.history.add('system', `Queued ${queued} action(s). Queue will advance on Baritone completion signals.`);
@@ -542,6 +672,8 @@ export class BridgeAgent {
         if (commands.length > 0) {
             const batchResult = await this.bridge.sendBatchCommands(commands);
             if (batchResult.success) {
+                this._lastHadActions = true;
+                this._pendingContinuation = true;
                 const queued = batchResult.queued || commands.length;
                 sendOutputToServer(this.name, `⚡ Queued ${queued} command(s) for sequential execution`);
                 this.history.add('system', `Queued ${queued} command(s). Queue will advance on Baritone completion signals.`);

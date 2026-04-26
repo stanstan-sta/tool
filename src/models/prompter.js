@@ -232,7 +232,9 @@ export class Prompter {
         let current_msg_time = this.most_recent_msg_time;
 
         // Use native tool calling when the underlying model supports it.
-        const useNativeTools = !!this.chat_model.constructor.supportsTools;
+        // Skip tool schemas for bridge agents — they use structured JSON output,
+        // not function calling, and Mineflayer tool schemas are useless without a bot.
+        const useNativeTools = !this.agent.isBridgeAgent && !!this.chat_model.constructor.supportsTools;
         const tools = useNativeTools ? getToolSchemas(this.agent) : null;
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations

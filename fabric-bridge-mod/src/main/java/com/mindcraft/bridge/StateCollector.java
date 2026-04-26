@@ -165,6 +165,11 @@ public class StateCollector {
         }
         sb.append("],");
 
+        // Craftable items based on current inventory
+        sb.append("\"craftable\":");
+        appendCraftable(sb, inv);
+        sb.append(",");
+
         // Nearby players (within 64 blocks)
         StringBuilder playersSig = new StringBuilder();
         sb.append("\"nearby_players\":[");
@@ -348,6 +353,115 @@ public class StateCollector {
         String toJson() {
             return "{\"type\":\"" + escape(type) + "\",\"message\":\"" + escape(message) + "\",\"sender\":" + (sender == null ? "null" : "\"" + escape(sender) + "\"") + "}";
         }
+    }
+
+    /**
+     * Append craftable items to the JSON builder based on current inventory.
+     * Uses simple pattern matching — no RecipeManager needed.
+     */
+    private static void appendCraftable(StringBuilder sb, PlayerInventory inv) {
+        sb.append("[");
+        boolean first = true;
+
+        // Check each known craftable item
+        boolean hasLog = hasItemMatching(inv, id -> id.endsWith("_log") || id.endsWith("_stem") || id.endsWith("_hyphae"));
+        boolean hasPlank = hasItemMatching(inv, id -> id.endsWith("_planks"));
+        boolean hasStick = hasItemNamed(inv, "minecraft:stick");
+        int plankCount = countItemMatching(inv, id -> id.endsWith("_planks"));
+        int stickCount = countPlanksEquivalent(inv);
+
+        if (hasLog) {
+            // Can make planks from any log
+            String woodType = findWoodType(inv);
+            String planksName = woodType != null ? woodType + "_planks" : "planks";
+            appendItem(sb, planksName, first);
+            first = false;
+        }
+
+        if (hasPlank || hasLog) {
+            appendItem(sb, "stick", first);
+            first = false;
+        }
+
+        if (plankCount >= 4 || (hasLog && hasPlank)) {
+            appendItem(sb, "crafting_table", first);
+            first = false;
+        }
+
+        // Wooden tools (need planks + sticks, or enough planks to make sticks)
+        if (plankCount + stickCount >= 3) {
+            appendItem(sb, "wooden_pickaxe", first); first = false;
+            appendItem(sb, "wooden_axe", first); first = false;
+        }
+        if (plankCount + stickCount >= 2) {
+            appendItem(sb, "wooden_shovel", first); first = false;
+            appendItem(sb, "wooden_sword", first); first = false;
+            appendItem(sb, "wooden_hoe", first); first = false;
+        }
+
+        sb.append("]");
+    }
+
+    private static void appendItem(StringBuilder sb, String name, boolean first) {
+        if (!first) sb.append(",");
+        sb.append("\"").append(name).append("\"");
+    }
+
+    private static boolean hasItemMatching(PlayerInventory inv, java.util.function.Predicate<String> predicate) {
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isEmpty() && predicate.test(stack.getItem().toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasItemNamed(PlayerInventory inv, String exactId) {
+        return hasItemMatching(inv, id -> id.equals(exactId));
+    }
+
+    private static int countItemMatching(PlayerInventory inv, java.util.function.Predicate<String> predicate) {
+        int count = 0;
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isEmpty() && predicate.test(stack.getItem().toString())) {
+                count += stack.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static int countPlanksEquivalent(PlayerInventory inv) {
+        int total = 0;
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            String id = stack.getItem().toString();
+            if (id.equals("minecraft:stick")) {
+                total += stack.getCount() * 2; // 2 planks = 4 sticks → 1 plank = 2 stick equivalent
+            } else if (id.endsWith("_planks")) {
+                total += stack.getCount();
+            } else if (id.endsWith("_log") || id.endsWith("_stem") || id.endsWith("_hyphae")) {
+                total += stack.getCount() * 4; // 1 log = 4 planks
+            }
+        }
+        return total;
+    }
+
+    private static String findWoodType(PlayerInventory inv) {
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            String id = stack.getItem().toString();
+            if (id.endsWith("_planks")) {
+                return id.substring("minecraft:".length()).replace("_planks", "");
+            }
+            if (id.endsWith("_log")) {
+                return id.substring("minecraft:".length()).replace("_log", "");
+            }
+        }
+        return null;
     }
 
     private static String round(double v) {
