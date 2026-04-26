@@ -1,5 +1,7 @@
 package com.mindcraft.bridge;
 
+import net.minecraft.client.MinecraftClient;
+
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -14,6 +16,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Integration contract with Baritone (other workspace):
  *   Success → Baritone logs "[Baritone] All queued tasks complete"
  *   Failure → Baritone logs "[Baritone] Task failed: <label> - <outcome>"
+ *
+ * Post-Baritone actions: some operations (like crafting) need Java code to
+ * run after Baritone finishes (e.g. interacting with a container GUI).
+ * Use {@link #setPostAction(Runnable)} to schedule such a callback.
  */
 public class TaskQueue {
 
@@ -29,6 +35,7 @@ public class TaskQueue {
     private volatile boolean paused = false;
     private volatile String lastFailureReason = null;
     private volatile boolean enabled = true; // toggle via settings
+    private volatile Runnable postBaritoneAction = null;
 
     private TaskQueue() {}
 
@@ -79,14 +86,45 @@ public class TaskQueue {
     }
 
     /**
+     * Schedule a Runnable to execute on the Minecraft thread after the
+     * currently-active Baritone command completes successfully.
+     * Only one post-action can be pending at a time.
+     */
+    public void setPostAction(Runnable action) {
+        this.postBaritoneAction = action;
+    }
+
+    /**
      * Called when Baritone signals successful completion of the active command.
      * Advances the queue to the next pending command.
+     * If a post-action was scheduled, it executes first on the MC thread.
      */
     public void onBaritoneComplete() {
+        final Runnable action = postBaritoneAction;
+        postBaritoneAction = null;
         activeCommand = null;
         paused = false;
         lastFailureReason = null;
-        if (!pending.isEmpty()) {
+
+        if (action != null) {
+            // Run the post-Baritone action on the Minecraft main thread.
+            // This is where GUI interactions (crafting, container ops) happen.
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client != null) {
+                client.execute(() -> {
+                    try {
+                        action.run();
+                    } catch (Exception e) {
+                        System.err.println("[TaskQueue] Post-Baritone action failed: " + e.getMessage());
+                        e.printStackTrace();
+                    }
+                    // After post-action, advance queue if idle
+                    if (activeCommand == null && !paused && !pending.isEmpty()) {
+                        dispatchNext();
+                    }
+                });
+            }
+        } else if (!pending.isEmpty()) {
             dispatchNext();
         }
     }
@@ -98,6 +136,7 @@ public class TaskQueue {
     public void onBaritoneFailed(String reason) {
         lastFailureReason = reason;
         paused = true;
+        postBaritoneAction = null; // discard any pending post-action
         // Do NOT clear activeCommand — the agent may want to retry it.
     }
 
@@ -107,6 +146,7 @@ public class TaskQueue {
         activeCommand = null;
         paused = false;
         lastFailureReason = null;
+        postBaritoneAction = null;
         CommandExecutor.execute("#cancel");
     }
 
@@ -128,6 +168,7 @@ public class TaskQueue {
         activeCommand = null;
         paused = false;
         lastFailureReason = null;
+        postBaritoneAction = null;
         if (!pending.isEmpty()) {
             dispatchNext();
         }
