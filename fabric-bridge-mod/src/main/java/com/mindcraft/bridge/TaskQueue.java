@@ -110,23 +110,28 @@ public class TaskQueue {
         chatDebug("[Bridge] DEBUG: onBaritoneComplete  action=" + (action != null ? "present" : "null"));
 
         if (action != null) {
-            // Run the post-Baritone action on the Minecraft main thread.
-            // This is where GUI interactions (crafting, container ops) happen.
+            // Run the post-Baritone action on a daemon thread so that
+            // Thread.sleep() calls (needed for GUI timing) don't freeze
+            // the game's render thread.
             MinecraftClient client = MinecraftClient.getInstance();
             if (client != null) {
-                client.execute(() -> {
-                    chatDebug("[Bridge] DEBUG: executing post-action on MC thread...");
+                Thread worker = new Thread(() -> {
+                    chatDebug("[Bridge] DEBUG: executing post-action on worker thread...");
                     try {
                         action.run();
                     } catch (Exception e) {
                         System.err.println("[TaskQueue] Post-Baritone action failed: " + e.getMessage());
                         e.printStackTrace();
                     }
-                    // After post-action, advance queue if idle
-                    if (activeCommand == null && !paused && !pending.isEmpty()) {
-                        dispatchNext();
-                    }
-                });
+                    // After post-action, advance queue if idle (schedule on main thread)
+                    client.execute(() -> {
+                        if (activeCommand == null && !paused && !pending.isEmpty()) {
+                            dispatchNext();
+                        }
+                    });
+                }, "mindcraft-craft-worker");
+                worker.setDaemon(true);
+                worker.start();
             } else {
                 chatDebug("[Bridge] DEBUG: client is null — cannot execute post-action");
             }

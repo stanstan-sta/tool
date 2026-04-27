@@ -286,10 +286,10 @@ public class CommandExecutor {
             gs(4, lst("*_planks")), gs(5, lst("*_planks"))
         ), 1));
 
-        // Torch (coal + planks -> 4)
+        // Torch (coal + stick -> 4)
         db.put("torch", new RecipeData("torch", lst(
             gs(1, lst("minecraft:coal","minecraft:charcoal")),
-            gs(5, lst("*_planks"))
+            gs(4, lst("minecraft:stick"))
         ), 4));
 
         // Furnace (cobblestone ring -> 1)
@@ -299,8 +299,11 @@ public class CommandExecutor {
             gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:cobblestone")), gs(9, lst("minecraft:cobblestone"))
         ), 1));
 
-        // White Wool (string -> 1)
-        db.put("white_wool", new RecipeData("white_wool", lst(gs(1, lst("minecraft:string"))), 1));
+        // White Wool (4 string in 2x2 -> 1)
+        db.put("white_wool", new RecipeData("white_wool", lst(
+            gs(1, lst("minecraft:string")), gs(2, lst("minecraft:string")),
+            gs(4, lst("minecraft:string")), gs(5, lst("minecraft:string"))
+        ), 1));
 
         // Colored Wool (dye + white_wool -> 1)
         for (String c : lst("orange","magenta","light_blue","yellow","lime","pink","gray","light_gray","cyan","purple","blue","brown","green","red","black")) {
@@ -322,25 +325,25 @@ public class CommandExecutor {
             gs(7, lst("*_planks")), gs(8, lst("*_planks")), gs(9, lst("*_planks"))
         ), 1));
 
-        // Compass (4 iron + 1 redstone -> 1)
+        // Compass (4 iron + 1 redstone in cross pattern -> 1)
         db.put("compass", new RecipeData("compass", lst(
-            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
-            gs(5, lst("minecraft:redstone")),
-            gs(7, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+            gs(2, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:redstone")), gs(6, lst("minecraft:iron_ingot")),
+            gs(8, lst("minecraft:iron_ingot"))
         ), 1));
 
-        // Clock (4 gold + 1 redstone -> 1)
+        // Clock (4 gold + 1 redstone in cross pattern -> 1)
         db.put("clock", new RecipeData("clock", lst(
-            gs(1, lst("minecraft:gold_ingot")), gs(3, lst("minecraft:gold_ingot")),
-            gs(5, lst("minecraft:redstone")),
-            gs(7, lst("minecraft:gold_ingot")), gs(9, lst("minecraft:gold_ingot"))
+            gs(2, lst("minecraft:gold_ingot")),
+            gs(4, lst("minecraft:gold_ingot")), gs(5, lst("minecraft:redstone")), gs(6, lst("minecraft:gold_ingot")),
+            gs(8, lst("minecraft:gold_ingot"))
         ), 1));
 
         // Fishing Rod (3 sticks + 2 string -> 1)
         db.put("fishing_rod", new RecipeData("fishing_rod", lst(
-            gs(2, lst("*_planks")), gs(4, lst("*_planks")),
-            gs(5, lst("minecraft:string")),
-            gs(8, lst("*_planks")), gs(9, lst("minecraft:string"))
+            gs(3, lst("minecraft:stick")),
+            gs(5, lst("minecraft:stick")), gs(6, lst("minecraft:string")),
+            gs(7, lst("minecraft:stick")), gs(9, lst("minecraft:string"))
         ), 1));
 
         // Cake (3 milk + 2 sugar + 1 egg + 3 wheat -> 1)
@@ -350,11 +353,11 @@ public class CommandExecutor {
             gs(7, lst("minecraft:wheat")), gs(8, lst("minecraft:wheat")), gs(9, lst("minecraft:wheat"))
         ), 1));
 
-        // Golden Apple (8 gold nuggets + apple -> 1)
+        // Golden Apple (8 gold ingots + apple -> 1)
         db.put("golden_apple", new RecipeData("golden_apple", lst(
-            gs(1, lst("minecraft:gold_nugget")), gs(2, lst("minecraft:gold_nugget")), gs(3, lst("minecraft:gold_nugget")),
-            gs(4, lst("minecraft:gold_nugget")), gs(5, lst("minecraft:apple")), gs(6, lst("minecraft:gold_nugget")),
-            gs(7, lst("minecraft:gold_nugget")), gs(8, lst("minecraft:gold_nugget")), gs(9, lst("minecraft:gold_nugget"))
+            gs(1, lst("minecraft:gold_ingot")), gs(2, lst("minecraft:gold_ingot")), gs(3, lst("minecraft:gold_ingot")),
+            gs(4, lst("minecraft:gold_ingot")), gs(5, lst("minecraft:apple")), gs(6, lst("minecraft:gold_ingot")),
+            gs(7, lst("minecraft:gold_ingot")), gs(8, lst("minecraft:gold_ingot")), gs(9, lst("minecraft:gold_ingot"))
         ), 1));
 
         // Paper (3 sugar cane -> 3)
@@ -371,7 +374,7 @@ public class CommandExecutor {
         db.put("purple_banner", new RecipeData("purple_banner", lst(
             gs(1, lst("minecraft:purple_wool")), gs(2, lst("minecraft:purple_wool")), gs(3, lst("minecraft:purple_wool")),
             gs(4, lst("minecraft:purple_wool")), gs(5, lst("minecraft:purple_wool")), gs(6, lst("minecraft:purple_wool")),
-            gs(8, lst("*_planks"))
+            gs(8, lst("minecraft:stick"))
         ), 1));
 
         // Lectern (3 slabs + 1 bookshelf -> 1)
@@ -384,21 +387,21 @@ public class CommandExecutor {
 
         // Crossbow (3 sticks + 2 string + 1 iron + 1 tripwire -> 1)
         db.put("crossbow", new RecipeData("crossbow", lst(
-            gs(2, lst("*_planks")), gs(4, lst("*_planks")), gs(5, lst("minecraft:iron_ingot")),
+            gs(2, lst("minecraft:stick")), gs(4, lst("minecraft:stick")), gs(5, lst("minecraft:iron_ingot")),
             gs(6, lst("minecraft:tripwire_hook")), gs(8, lst("minecraft:string")), gs(9, lst("minecraft:string"))
         ), 1));
 
-        // Activator Rail (6 iron + 1 stick + 1 redstone_torch -> 6)
+        // Activator Rail (6 iron + 2 sticks + 1 redstone_torch -> 6)
         db.put("activator_rail", new RecipeData("activator_rail", lst(
             gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:redstone_torch")), gs(3, lst("minecraft:iron_ingot")),
-            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("*_planks")), gs(6, lst("minecraft:iron_ingot")),
-            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("*_planks")), gs(9, lst("minecraft:iron_ingot"))
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:stick")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("minecraft:stick")), gs(9, lst("minecraft:iron_ingot"))
         ), 6));
 
         // Rail (6 iron + 1 stick -> 16)
         db.put("rail", new RecipeData("rail", lst(
             gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
-            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("*_planks")), gs(6, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:stick")), gs(6, lst("minecraft:iron_ingot")),
             gs(7, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
         ), 16));
 
@@ -426,12 +429,11 @@ public class CommandExecutor {
             ), 2));
         }
 
-        // Fences (6 planks -> 3)
+        // Fences (4 planks + 2 sticks -> 3)
         for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
             db.put(w + "_fence", new RecipeData(w + "_fence", lst(
-                gs(1, lst(w+"_planks")), gs(2, lst(w+"_planks")),
-                gs(4, lst(w+"_planks")), gs(5, lst(w+"_planks")),
-                gs(7, lst(w+"_planks")), gs(8, lst(w+"_planks"))
+                gs(1, lst(w+"_planks")), gs(2, lst("minecraft:stick")), gs(3, lst(w+"_planks")),
+                gs(4, lst(w+"_planks")), gs(5, lst("minecraft:stick")), gs(6, lst(w+"_planks"))
             ), 3));
         }
 
