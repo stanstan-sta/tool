@@ -4,7 +4,7 @@ const settings = {
     "bridge_url": "http://localhost:8765", // URL of the Fabric Bridge Mod HTTP server
     "bridge_chat_whitelist": [], // list of player names allowed to trigger the bridge agent
     "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
-    "bridge_structured_output": true, // request structured JSON replies for bridge runtime and execute only parsed actions
+    "bridge_structured_output": false, // request structured JSON replies for bridge runtime and execute only parsed actions
     "bridge_queue_enabled": true, // enable sequential task queue: actions execute one at a time, advancing on Baritone completion signals. disable for old fire-and-forget behavior
 
     "auto_open_ui": true, // opens UI in browser on startup

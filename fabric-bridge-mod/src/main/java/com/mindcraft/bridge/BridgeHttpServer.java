@@ -109,11 +109,26 @@ public class BridgeHttpServer {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'action' field\"}");
                 return;
             }
+
+            // Check type before executing — craft actions are self-executing
+            String actionType = extractJsonString(actionJson, "type");
+            boolean isSelfExecuting = "craft".equals(actionType);
+
             String executed = CommandExecutor.executeTypedJson(actionJson);
             if (executed == null || executed.isBlank()) {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Invalid typed action\"}");
                 return;
             }
+
+            // Craft actions are self-executing: executeCraftAction() directly
+            // sends #task interact and registers a post-Baritone callback.
+            // Its return value is a human-readable description, NOT a command.
+            // Don't enqueue the description as a command.
+            if (isSelfExecuting) {
+                respond(ex, 200, "{\"success\":true,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                return;
+            }
+
             // Route through TaskQueue for consistent queuing behavior.
             // The executed string is already a concrete command like "move: #goto x y z".
             // Extract just the raw command part after the type prefix for the queue.
@@ -137,25 +152,44 @@ public class BridgeHttpServer {
 
             // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
             java.util.List<String> commands = new java.util.ArrayList<>();
+            boolean hadActionsArray = false;
+            int selfExecutingCount = 0;
 
             // Try "actions" array first (typed actions)
             String actionsArray = extractJsonArray(body, "actions");
             if (actionsArray != null) {
+                hadActionsArray = true;
                 // Parse each action object in the array to a concrete command string
                 String[] actionObjects = splitJsonArray(actionsArray);
                 for (String actionObj : actionObjects) {
                     if (actionObj == null || actionObj.isBlank()) continue;
+                    // Extract the action type BEFORE executing, so we know
+                    // whether the result is self-executing (craft) or just a
+                    // description string that should NOT be queued.
+                    String actionType = extractJsonString(actionObj, "type");
+                    boolean isSelfExecuting = "craft".equals(actionType);
+
                     String executed = CommandExecutor.executeTypedJson(actionObj);
-                    if (executed != null && !executed.isBlank()) {
-                        int colonIdx = executed.indexOf(':');
-                        String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
-                        commands.add(cmd);
+                    if (executed == null || executed.isBlank()) continue;
+
+                    // Craft actions are self-executing: executeCraftAction() directly
+                    // sends #task interact and registers a post-Baritone callback.
+                    // Its return value is a human-readable description, NOT a command.
+                    // Adding it to the queue would inject a garbage command that
+                    // Baritone can't parse (e.g. "opening crafting table at...").
+                    if (isSelfExecuting) {
+                        selfExecutingCount++;
+                        continue;
                     }
+
+                    int colonIdx = executed.indexOf(':');
+                    String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
+                    commands.add(cmd);
                 }
             }
 
             // Try "commands" array (raw command strings)
-            if (commands.isEmpty()) {
+            if (commands.isEmpty() && !hadActionsArray) {
                 String cmdsArray = extractJsonArray(body, "commands");
                 if (cmdsArray != null) {
                     String[] cmdElements = splitJsonArray(cmdsArray);
@@ -171,6 +205,13 @@ public class BridgeHttpServer {
                         }
                     }
                 }
+            }
+
+            // If we had only self-executing actions (e.g. craft-only batch),
+            // they've already been handled — return success.
+            if (commands.isEmpty() && hadActionsArray && selfExecutingCount > 0) {
+                respond(ex, 200, "{\"success\":true,\"self_executed\":" + selfExecutingCount + "}");
+                return;
             }
 
             if (commands.isEmpty()) {

@@ -5,113 +5,81 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
     const facts = importantFacts ? String(importantFacts).trim() : (settings.important_memory ? String(settings.important_memory).trim() : '');
     const factsSection = facts ? `Important facts:\n${facts}` : '';
 
-    const baritoneDocs = `You can control your player using these actions. Use them like a player would — don't narrate what you're doing, just include the action in the JSON:
+    const outputFormat = settings.bridge_structured_output
+        ? [
+            'OUTPUT FORMAT: Your ENTIRE response must be a SINGLE JSON object. No text before it. No text after it. No markdown fences.',
+            '',
+            'If you need to perform actions:',
+            '  {"reply":"<short message>","actions":[<action1>,<action2>,...]}',
+            '',
+            'If you only need to chat:',
+            '  {"reply":"<your message>"}',
+          ].join('\n')
+        : [
+            'RESPONSE FORMAT:',
+            'Your ENTIRE response must be exactly one JSON object. Nothing else.',
+            '',
+            'With actions:  {"reply":"<short msg>","actions":[{...},{...}]}',
+            'Chat only:     {"reply":"<your message>"}',
+            '',
+            'Do NOT put reasoning, numbered steps, or extra text outside the {}.',
+          ].join('\n');
 
-Available Baritone commands:
-` +
-        `help — show available commands and usage
-` +
-        `set / modified / mod / baritone / modifiedsettings — change Baritone or modified settings
-` +
-        `goal — manage Baritone goals
-` +
-        `goto — navigate to coordinates by using #goto x y z
-` +
-        `proc — process or print internal pathfinding state
-` +
-        `eta — show estimated time of arrival for current task
-` +
-        `build — use Baritone to build or place blocks
-` +
-        `litematica — interact with Litematica schematics if available
-` +
-        `axis — lock movement to an axis
-` +
-        `forcecancel — forcefully cancel the current task
-` +
-        `gc — perform garbage collection or cleanup tasks
-` +
-        `invert — invert the current path or direction
-` +
-        `tunnel — dig a tunnel along the current direction
-` +
-        `render — update the pathfinding or debug render state
-` +
-        `farm — mine ALL farmable crops like wheat, carrots, potatoes, nether wart, etc. and replant them; use #farm 
-` +
-        `follow — follow a player or entity; use #follow player <name>. For example #follow player Chengeration will follow Chengeration around.
-` +
-        `pickup — collect dropped items along the path
-` +
-        `explorefilter — explore while filtering target blocks
-` +
-        `reloadall — reload all Baritone configs and caches
-` +
-        `saveall — save all Baritone settings or data
-` +
-        `explore — explore the world automatically
-` +
-        `blacklist — blacklist blocks, items, or coordinates
-` +
-        `find — search for blocks, entities, or locations. This is a planning/info command and may be multi-step rather than a direct move. When looking for something at home, first plan to go home or to the base name, locate chests/barrels nearby, then use #task chest <x> <y> <z> withdraw <item> [count|all|max] if the item is inside, and finally reply Done.
-` +
-        `mine — mine a specified block type. Use #mine <count> <block_type> [secondary_block_type], e.g. #mine 1 diamond_ore deepslate_diamond_ore
-` +
-        `click — click a block or entity
-` +
-        `surface — reach the surface from underground
-` +
-        `thisway — guide the bot in the current direction
-` +
-        `waypoints — manage Baritone waypoints
-` +
-        `sethome — set or teleport to home location using #sethome [name], which must be set first before using #home [name].
-` +
-        `sleep — find the nearest available bed, path to it, and automatically go to sleep.
-` +
-        `task — manage the current task plan. Supports subcommands:
-` +
-        `  #task status — show the currently running task plan, plan label, overall status, and per-step progress.
-` +
-        `  #task cancel — cancel the active task plan immediately.
-` +
-        `  #task interact <x> <y> <z> — start a path/interact task on the given block position.
-` +
-        `  #task chest <x> <y> <z> <withdraw|deposit> <item> [count|all|max] — start a container transfer task on the target chest, withdrawing or depositing the given item.
-` +
-        `pause / p / paws — pause current Baritone activity
-` +
-        `resume / r / unpause — resume paused Baritone activity
-` +
-        `paused — query whether the current task is paused
-` +
-        `cancel / c / stop — cancel the current task
-`;
+    const actionTypes = [
+            'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
+            '',
+            '  {"type":"move",         "x":<int>,"y":<int>,"z":<int>}       — walk to coordinates',
+            '  {"type":"mine",         "target":"<block>","count":<int>}    — mine blocks',
+            '  {"type":"follow",       "target":"<player_name>"}            — follow a player',
+            '  {"type":"craft",        "item":"<item_name>","count":<int>}  — craft using nearest table',
+            '  {"type":"cancel"}                                            — cancel all queued actions',
+            '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
+            '',
+            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>',
+            '  #task interact <x> <y> <z>, #task chest <x> <y> <z> withdraw <item> <count>',
+            '',
+            'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
+            'Never invent new types. For anything else, use raw_command with the # prefix.',
+          ].join('\n');
+
+    const taskQueueRules = [
+            'TASK QUEUE:',
+            '- Actions run one at a time. The next starts only after the previous finishes.',
+            '- While queue is "executing" → wait for it to become "idle" before sending more actions.',
+            '- Queue "paused" = a task failed. You can retry, skip (send a new action), or cancel all.',
+            '- Queue "idle" → free to send actions.',
+            '- "cancel" action clears all pending tasks.',
+            '- [Baritone] messages in history show task progress — use them to track completion.',
+          ].join('\n');
+
+    const craftingRules = [
+            'CRAFTING RULES:',
+            '- {"type":"craft","item":"stick","count":4} tells the bridge to find the nearest crafting table within 32 blocks, walk to it, open it, fill the recipe, and take the result. You do NOT need to open the GUI yourself.',
+            '- If chat shows "[Bridge] No crafting table found...", craft a crafting_table from 4 planks, place it on the ground, THEN retry the craft action (the bridge will now see the placed table).',
+            '- If chat shows "[Bridge] Crafting table is in your inventory but not placed...", place the table on the ground first, THEN retry the craft action.',
+            '- Watch for "[Bridge] Found crafting table at X Y Z" → "[Bridge] Crafting table opened." → "[Bridge] Crafting complete: Nx item" in chat to confirm success.',
+            '- If ingredients are missing, the bridge will report that too. Make sure you have the right materials before crafting.',
+          ].join('\n');
 
     const topographyDocs = settings.use_textual_topography
-            ? 'You have a map of nearby terrain. Use it to plan navigation and building — don\'t make up terrain that isn\'t there.'
+            ? 'You have a map of nearby terrain. Use it to plan navigation — don\'t make up terrain that isn\'t there.'
             : '';
 
-        return [
-            persona,
-            factsSection,
-            'Before responding, ask yourself:\n1. Is the user asking me to *do* something in Minecraft (move, mine, build, follow, etc.)?\n   a) Yes → Include the appropriate JSON action(s) in your response.\n   b) No → Just use {"reply":"..."} with no actions.',
-            baritoneDocs,
-'When you want to perform an action, use ONLY these JSON action types (do NOT invent new types):\n\n- #goto x y z → {"type":"move","x":x,"y":y,"z":z}\n- #mine <count> <block> [secondary_block] → {"type":"mine","target":"<block>","count":count}\n- #follow player <name> → {"type":"follow","target":"<name>"}\n- Craft an item → {"type":"craft","item":"<item_name>","count":<n>} (automatically finds a crafting table, opens it, and crafts the item)\n- #sleep → {"type":"raw_command","command":"#sleep"}\n- #farm → {"type":"raw_command","command":"#farm"}\n- #cancel → {"type":"cancel"}\n- Any other command → {"type":"raw_command","command":"#your_command"}\n\nThe only valid type values are: "move", "mine", "follow", "cancel", "craft", "raw_command". Never invent types like "goToBed", "sleep", "bed", "farmBlock", etc. Use "raw_command" with a "#command" instead.\n\nAlways use "provider":"baritone_chat" with every action.',
-            topographyDocs,
-            'Example with action: {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
-            'Example only chat: {"reply":"Yeah, the weather is nice today."}',
-            'Keep reply under 200 characters. Strict JSON only. No markdown. No extra text outside the JSON.',
-            'TASK QUEUE SYSTEM:',
-            '- Your actions are queued sequentially. Only ONE action runs at a time.',
-            '- When queue.status is "executing", previous actions are still running. Wait for them to finish before issuing new actions unless you need to cancel.',
-            '- When queue.status is "paused", a task failed. The failure reason will appear in state. You can:',
-            '  • Retry: re-issue the same action',
-            '  • Skip: issue a different action (the failed one will be dropped)',
-            '  • Cancel all: issue {"type":"cancel"} to clear the entire queue',
-            '- When queue is "idle", you are free to issue new actions.',
-            '- #cancel clears ALL pending tasks — use carefully.',
-            '- You will see [Baritone] status messages in history — use them to track progress.'
-        ].filter(Boolean).join('\n\n');
-    }
+    const examples = [
+            'EXAMPLES:',
+            'Chat only:  {"reply":"Yeah, the weather is nice today."}',
+            'With move:  {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
+            'With craft: {"reply":"Let me craft that.","actions":[{"type":"craft","provider":"baritone_chat","item":"stick","count":4}]}',
+          ].join('\n');
 
+    return [
+        persona,
+        factsSection,
+        outputFormat,
+        actionTypes,
+        taskQueueRules,
+        craftingRules,
+        topographyDocs,
+        examples,
+    ].filter(Boolean).join('\n\n');
+}

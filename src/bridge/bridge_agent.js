@@ -44,6 +44,51 @@ function extractJsonObjectCandidate(text) {
     return null;
 }
 
+/**
+ * Extract all valid JSON objects from a text response.
+ * Handles models that emit multiple separate {…} objects.
+ * @param {string} text
+ * @returns {Array<object>}
+ */
+function extractAllJsonObjects(text) {
+    const results = [];
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return results;
+
+    // First, try extracting from a code fence
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const source = fenced?.[1] ? fenced[1].trim() : trimmed;
+
+    // Scan character by character for balanced {…} pairs
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+        if (ch === '{' && depth === 0) {
+            start = i;
+            depth = 1;
+        } else if (ch === '{' && depth > 0) {
+            depth++;
+        } else if (ch === '}' && depth > 0) {
+            depth--;
+            if (depth === 0 && start >= 0) {
+                const candidate = source.slice(start, i + 1);
+                try {
+                    const parsed = JSON.parse(candidate);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        results.push(parsed);
+                    }
+                } catch {
+                    // skip unbalanced/broken objects
+                }
+                start = -1;
+            }
+        }
+    }
+
+    return results;
+}
+
 function stripChatFormatting(text) {
     return String(text || '').replace(/§[0-9A-FK-OR]/gi, '');
 }
@@ -120,26 +165,66 @@ export function parseBridgeResponse(response, expectStructured = false) {
     const actions = [];
     const chatLines = [];
 
-    const jsonCandidate = extractJsonObjectCandidate(response);
-    if (jsonCandidate) {
-        try {
-            const parsed = JSON.parse(jsonCandidate);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                const reply = typeof parsed.reply === 'string'
-                    ? parsed.reply.trim()
-                    : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
-                const structuredActions = Array.isArray(parsed.actions)
-                    ? parsed.actions.map(normalizeAction).filter(Boolean)
-                    : [];
+    // ── Try extracting ALL JSON objects from the response ──────────────────
+    // Small models often emit separate {"reply":"..."} and {"type":"craft",...}
+    // objects.  Scan for every {…} pair and try to merge them.
+    const jsonObjects = extractAllJsonObjects(response);
+    if (jsonObjects.length > 0) {
+        // If we found 2+ objects, try to assemble reply + actions from them.
+        if (jsonObjects.length >= 2) {
+            let mergedReply = '';
+            const mergedActions = [];
+            for (const obj of jsonObjects) {
+                if (typeof obj.reply === 'string') mergedReply = obj.reply.trim();
+                if (typeof obj.chat === 'string' && !mergedReply) mergedReply = obj.chat.trim();
+                if (Array.isArray(obj.actions)) {
+                    for (const a of obj.actions) {
+                        const na = normalizeAction(a);
+                        if (na) mergedActions.push(na);
+                    }
+                }
+                // Lone action object (has type, no reply/actions)
+                if (obj.type && !obj.reply && !obj.actions) {
+                    const na = normalizeAction(obj);
+                    if (na) mergedActions.push(na);
+                }
+            }
+            if (mergedActions.length > 0 || mergedReply) {
                 return {
-                    chat: reply,
+                    chat: mergedReply,
                     commands,
-                    actions: structuredActions,
+                    actions: mergedActions,
                     structured: true,
                 };
             }
-        } catch {
-            // fall back to COMMAND parsing below
+        }
+
+        // Single object — process normally
+        const parsed = jsonObjects[0];
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            // Lone action object (has type, no reply/actions array)
+            if (parsed.type && !parsed.reply && !parsed.actions) {
+                const na = normalizeAction(parsed);
+                return {
+                    chat: '',
+                    commands,
+                    actions: na ? [na] : [],
+                    structured: true,
+                };
+            }
+            // Normal structured response
+            const reply = typeof parsed.reply === 'string'
+                ? parsed.reply.trim()
+                : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
+            const structuredActions = Array.isArray(parsed.actions)
+                ? parsed.actions.map(normalizeAction).filter(Boolean)
+                : [];
+            return {
+                chat: reply,
+                commands,
+                actions: structuredActions,
+                structured: true,
+            };
         }
     }
 

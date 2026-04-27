@@ -43,6 +43,16 @@ public class StateCollector {
         recentSentChats.add(message);
     }
 
+    private static void routeBaritoneToTaskQueue(String content) {
+        if (content == null || !content.startsWith("[Baritone]")) return;
+        if (content.contains("All queued tasks complete")) {
+            TaskQueue.getInstance().onBaritoneComplete();
+        } else if (content.startsWith("[Baritone] Task failed:")) {
+            String reason = content.substring("[Baritone] Task failed:".length()).trim();
+            TaskQueue.getInstance().onBaritoneFailed(reason);
+        }
+    }
+
     /**
      * Register the Fabric chat-receive event listener.
      * Called once from {@link MindcraftBridgeMod#onInitializeClient()}.
@@ -54,6 +64,16 @@ public class StateCollector {
             while (chatQueue.size() >= MAX_CHAT_QUEUE) {
                 chatQueue.poll();
             }
+            String content = message.getString();
+
+            // Route Baritone status messages even when they come through the CHAT channel
+            // (some Baritone builds emit them as player chat rather than system overlay).
+            if (content != null && content.startsWith("[Baritone]")) {
+                routeBaritoneToTaskQueue(content);
+                chatQueue.add(new ChatEvent("baritone_queue", content, null));
+                return;
+            }
+
             String senderName = null;
             if (sender != null) {
                 try {
@@ -93,17 +113,8 @@ public class StateCollector {
             // The contract: Baritone logs "[Baritone] All queued tasks complete"
             // on success and "[Baritone] Task failed: <label> - <outcome>" on failure.
             if (content != null && content.startsWith("[Baritone]")) {
-                if (content.contains("All queued tasks complete")) {
-                    TaskQueue.getInstance().onBaritoneComplete();
-                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
-                } else if (content.startsWith("[Baritone] Task failed:")) {
-                    String reason = content.substring("[Baritone] Task failed:".length()).trim();
-                    TaskQueue.getInstance().onBaritoneFailed(reason);
-                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
-                } else {
-                    // Other [Baritone] messages — forward as info
-                    chatQueue.add(new ChatEvent("baritone_queue", content, null));
-                }
+                routeBaritoneToTaskQueue(content);
+                chatQueue.add(new ChatEvent("baritone_queue", content, null));
                 return;
             }
             String type = overlay ? "system" : "player";
@@ -158,7 +169,7 @@ public class StateCollector {
             if (stack.isEmpty()) continue;
             if (!firstItem) sb.append(",");
             firstItem = false;
-            String itemId = stack.getItem().toString(); // "minecraft:oak_log"
+            String itemId = getItemId(stack); // e.g. "minecraft:oak_log"
             invSig.append(i).append(':').append(itemId).append(':').append(stack.getCount()).append(';');
             sb.append(String.format("{\"slot\":%d,\"item\":\"%s\",\"count\":%d}",
                     i, escape(itemId), stack.getCount()));
@@ -325,7 +336,7 @@ public class StateCollector {
             net.minecraft.block.BlockState state = world.getBlockState(pos);
             if (state == null) continue;
             if (!state.isAir()) {
-                return new SurfaceCell(x, y, z, state.getBlock().toString());
+                return new SurfaceCell(x, y, z, getBlockId(state.getBlock()));
             }
         }
         return new SurfaceCell(x, 0, z, "minecraft:air");
@@ -410,7 +421,7 @@ public class StateCollector {
     private static boolean hasItemMatching(PlayerInventory inv, java.util.function.Predicate<String> predicate) {
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty() && predicate.test(stack.getItem().toString())) {
+            if (!stack.isEmpty() && predicate.test(getItemId(stack))) {
                 return true;
             }
         }
@@ -425,7 +436,7 @@ public class StateCollector {
         int count = 0;
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty() && predicate.test(stack.getItem().toString())) {
+            if (!stack.isEmpty() && predicate.test(getItemId(stack))) {
                 count += stack.getCount();
             }
         }
@@ -437,7 +448,7 @@ public class StateCollector {
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
             if (stack.isEmpty()) continue;
-            String id = stack.getItem().toString();
+            String id = getItemId(stack);
             if (id.equals("minecraft:stick")) {
                 total += stack.getCount() * 2; // 2 planks = 4 sticks → 1 plank = 2 stick equivalent
             } else if (id.endsWith("_planks")) {
@@ -453,7 +464,7 @@ public class StateCollector {
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
             if (stack.isEmpty()) continue;
-            String id = stack.getItem().toString();
+            String id = getItemId(stack);
             if (id.endsWith("_planks")) {
                 return id.substring("minecraft:".length()).replace("_planks", "");
             }
@@ -466,5 +477,26 @@ public class StateCollector {
 
     private static String round(double v) {
         return String.format(Locale.ROOT, "%.2f", v);
+    }
+
+    // ─── ID helpers ──────────────────────────────────────────────────────────
+
+    /** Strip Item{} wrapper from Item.toString() so "Item{minecraft:stick}" → "minecraft:stick". */
+    private static String getItemId(ItemStack stack) {
+        if (stack.isEmpty()) return "";
+        String s = stack.getItem().toString();
+        if (s.startsWith("Item{") && s.endsWith("}")) {
+            return s.substring(5, s.length() - 1);
+        }
+        return s;
+    }
+
+    /** Strip Block{} wrapper from Block.toString() so "Block{minecraft:oak_log}" → "minecraft:oak_log". */
+    private static String getBlockId(net.minecraft.block.Block block) {
+        String s = block.toString();
+        if (s.startsWith("Block{") && s.endsWith("}")) {
+            return s.substring(6, s.length() - 1);
+        }
+        return s;
     }
 }
