@@ -12,6 +12,8 @@ import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
+import java.util.*;
+
 /**
  * Executes Minecraft commands and typed actions on the client.
  * Called by {@link BridgeHttpServer} on the /command and /action endpoints.
@@ -20,10 +22,6 @@ public class CommandExecutor {
 
     private CommandExecutor() {}
 
-    /**
-     * Execute a raw Minecraft command via the client's command handler.
-     * Runs on the Minecraft main thread.
-     */
     public static void execute(String command) {
         if (command == null || command.isBlank()) return;
         MinecraftClient client = MinecraftClient.getInstance();
@@ -34,11 +32,6 @@ public class CommandExecutor {
                 sendChat(client, message);
             }
         } else if (command.startsWith("#")) {
-            // Baritone commands (e.g. #task interact, #goto, #mine, #cancel)
-            // MUST be sent as chat messages, NOT as slash commands.
-            // Sending them via sendChatCommand() causes the server to reject
-            // them as unknown commands (e.g. "/task interact" is not a real
-            // Minecraft command — it needs to reach Baritone's chat parser).
             final String msg = command.trim();
             client.execute(() -> {
                 if (client.player != null && client.player.networkHandler != null) {
@@ -55,64 +48,37 @@ public class CommandExecutor {
         }
     }
 
-    /**
-     * Execute a typed action (JSON-structured action).
-     * Returns a human-readable description of what was sent, or null on failure.
-     * For "craft" actions, this enqueues a #task interact command to open the
-     * crafting table and sets a post-Baritone action that does the actual crafting
-     * via window clicks once the container is open.
-     */
     public static String executeTypedJson(String actionJson) {
         if (actionJson == null || actionJson.isBlank()) return null;
-
-        // Parse minimal fields from the action JSON without a full JSON library.
         String type = extractJsonString(actionJson, "type");
         if (type == null || type.isBlank()) return null;
-
-        // ── Craft action: two-phase orchestration ─────────────────────────
         if ("craft".equals(type)) {
             return executeCraftAction(actionJson);
         }
-
         String command = extractRawBaritoneCommand(actionJson, type);
         if (command != null) {
             execute(command);
             return type + ": " + command;
         }
-
-        // Fallback: try "command" field
         String rawCmd = extractJsonString(actionJson, "command");
         if (rawCmd != null && !rawCmd.isBlank()) {
             execute(rawCmd);
             return type + ": " + rawCmd;
         }
-
         return type;
     }
 
-    /**
-     * Handle the "craft" typed action.
-     *
-     * All crafting uses the crafting table (3×3 grid) via Baritone: find the
-     * nearest crafting table, tell Baritone to interact with it via
-     * #task interact <x> <y> <z>, then register a post-Baritone callback
-     * that fills the 3×3 grid and takes the result once the GUI is open.
-     *
-     * 2×2 inventory crafting was attempted and found unreliable: clickSlot
-     * on PlayerScreenHandler without a visible GUI does not sync cursor
-     * state with the server correctly. All recipes go through the 3×3 table.
-     */
+    // ─── Craft action orchestration ──────────────────────────────────────────
+
     private static String executeCraftAction(String actionJson) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) {
             return "craft: not connected";
         }
-
         String itemName = extractJsonString(actionJson, "item");
         if (itemName == null || itemName.isBlank()) {
             return "craft: missing 'item' field";
         }
-
         String countStr = extractJsonPrimitive(actionJson, "count");
         int count = 1;
         if (countStr != null && !countStr.isBlank()) {
@@ -120,77 +86,58 @@ public class CommandExecutor {
         }
         if (count < 1) count = 1;
 
-        // Find nearest crafting table
         client.player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Searching for crafting table..."),
-                false);
+                net.minecraft.text.Text.literal("[Bridge] Searching for crafting table..."), false);
         final BlockPos tablePos = findNearestBlock(client.world, client.player,
                 "minecraft:crafting_table", 32);
 
         if (tablePos == null) {
             boolean hasTableItem = hasItemInInventory(client.player, "minecraft:crafting_table");
             if (!hasTableItem) {
-                // Send chat message so the LLM sees this error in next /state poll
-                client.player.sendMessage(
-                        net.minecraft.text.Text.literal("[Bridge] No crafting table found. You need a crafting table to craft items. Craft one from 4 planks first."),
-                        false);
-                return "craft: no crafting table in inventory or within 32 blocks. You need a crafting table to craft items.";
+                String msg = "[Bridge] No crafting table found. You need a crafting table to craft items. Craft one from 4 planks first.";
+                client.player.sendMessage(net.minecraft.text.Text.literal(msg), false);
+                return "craft: no crafting table in inventory or within 32 blocks.";
             }
-            client.player.sendMessage(
-                    net.minecraft.text.Text.literal("[Bridge] Crafting table is in your inventory but not placed. Place it first, then retry crafting."),
-                    false);
-            return "craft: crafting table found in inventory but not placed. Place it first, then retry.";
+            client.player.sendMessage(net.minecraft.text.Text.literal(
+                    "[Bridge] Crafting table is in your inventory but not placed. Place it first, then retry crafting."), false);
+            return "craft: crafting table found in inventory but not placed.";
         }
 
-        client.player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Found crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()),
-                false);
+        client.player.sendMessage(net.minecraft.text.Text.literal(
+                "[Bridge] Found crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()), false);
 
         final String targetItem = itemName;
         final int targetCount = count;
-
-        // Register the post-Baritone crafting callback
         TaskQueue.getInstance().setPostAction(() -> craftPostAction(targetItem, targetCount));
 
-        // Send #task interact to open the crafting table
         String interactCmd = "#task interact " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ();
         execute(interactCmd);
         return "craft: opening crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()
                 + " — will craft " + targetCount + "x " + targetItem + " on completion";
     }
 
-    /**
-     * Post-Baritone callback: runs after #task interact completes.
-     * At this point the crafting table should be open (CraftingScreenHandler).
-     */
     private static void craftPostAction(String itemName, int count) {
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity player = client.player;
         ClientPlayerInteractionManager im = client.interactionManager;
         if (player == null || im == null) return;
 
-        // Wait up to 1 second for CraftingScreenHandler to appear (server packet race)
         ScreenHandler screen = null;
         for (int wait = 0; wait < 20; wait++) {
             screen = player.currentScreenHandler;
             if (screen instanceof CraftingScreenHandler) break;
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            sleep(50);
         }
-
         if (!(screen instanceof CraftingScreenHandler)) {
-            player.sendMessage(
-                    net.minecraft.text.Text.literal("[Bridge] Crafting failed: crafting table did not open."),
-                    false);
+            player.sendMessage(net.minecraft.text.Text.literal(
+                    "[Bridge] Crafting failed: crafting table did not open."), false);
             return;
         }
 
-        player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Crafting table opened. Starting craft of " + count + "x " + itemName + "..."),
-                false);
+        player.sendMessage(net.minecraft.text.Text.literal(
+                "[Bridge] Crafting table opened. Starting craft of " + count + "x " + itemName + "..."), false);
 
         int syncId = screen.syncId;
-
-        // Build item identifier
         Identifier itemId = itemName.contains(":")
                 ? Identifier.tryParse(itemName)
                 : Identifier.of("minecraft", itemName);
@@ -199,11 +146,21 @@ public class CommandExecutor {
             return;
         }
 
+        String itemKey = itemId.toString();
+        if (itemKey.startsWith("minecraft:")) {
+            itemKey = itemKey.substring(10);
+        }
+        RecipeData recipe = RECIPE_DATABASE.get(itemKey);
+        if (recipe == null) {
+            player.sendMessage(net.minecraft.text.Text.literal(
+                    "[Bridge] No recipe found for " + itemName + " in recipe database."), false);
+            return;
+        }
+
         int craftedTotal = 0;
         int maxAttempts = Math.min(count, 64);
 
         for (int attempt = 0; attempt < maxAttempts && craftedTotal < count; attempt++) {
-            // Re-verify crafting table is open
             if (!(player.currentScreenHandler instanceof CraftingScreenHandler)) {
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] Table closed. Crafted " + craftedTotal + "x " + itemName), false);
@@ -212,214 +169,318 @@ public class CommandExecutor {
             screen = player.currentScreenHandler;
             syncId = screen.syncId;
 
-            // Try to fill the grid manually
-            boolean filled = tryFillGridFromInventory(player, im, screen, syncId, itemId);
+            boolean filled = fillGridFromRecipe(player, im, screen, syncId, recipe);
             if (!filled) {
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] Failed to fill recipe for " + itemName + ". Crafted " + craftedTotal + "x."), false);
                 break;
             }
-            player.sendMessage(net.minecraft.text.Text.literal(
-                    "[Bridge] Recipe filled, taking result..."), false);
+            sleep(120);
 
-            // Small delay for server to process
-            try { Thread.sleep(120); } catch (InterruptedException ignored) {}
-
-            // Re-verify screen is still open
-            if (!(player.currentScreenHandler instanceof CraftingScreenHandler)) {
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Table closed mid-craft. Crafted " + craftedTotal + "x " + itemName), false);
-                return;
-            }
-            screen = player.currentScreenHandler;
-            syncId = screen.syncId;
-
-            // Take result from output slot (slot 0 in CraftingScreenHandler)
             int resultCount = takeCraftingResult(player, im, screen, syncId, itemId);
             if (resultCount > 0) {
                 craftedTotal += resultCount;
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Took result (" + resultCount + "). Total crafted: " + craftedTotal + "x " + itemName), false);
             } else {
-                // Output slot empty — ingredients consumed but no result?
-                // Recipe might not match; stop.
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] No result in output slot. Stopping."), false);
                 break;
             }
         }
-
-        // Close the crafting table
         player.closeHandledScreen();
         player.sendMessage(net.minecraft.text.Text.literal(
                 "[Bridge] Crafting complete: " + craftedTotal + "x " + itemName), false);
     }
 
-    /**
-     * Try to fill the crafting grid with the ingredients needed for targetItem.
-     * Returns true if ingredients were placed.
-     */
-    private static boolean tryFillGridFromInventory(ClientPlayerEntity player,
-                                                     ClientPlayerInteractionManager im,
-                                                     ScreenHandler screen,
-                                                     int syncId,
-                                                     Identifier targetId) {
-        String targetName = targetId.toString();
-        player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Attempting recipe for " + targetName + "..."),
-                false);
-        if (targetName.equals("minecraft:stick")) {
-            return fillStickRecipe(player, im, screen, syncId);
-        } else if (targetName.equals("minecraft:crafting_table")) {
-            return fillCraftingTableRecipe(player, im, screen, syncId);
-        } else if (targetName.endsWith("_planks")) {
-            return fillPlanksRecipe(player, im, screen, syncId, targetName);
+    private static boolean fillGridFromRecipe(ClientPlayerEntity player,
+                                               ClientPlayerInteractionManager im,
+                                               ScreenHandler screen,
+                                               int syncId,
+                                               RecipeData recipe) {
+        PlayerInventory inv = player.getInventory();
+        for (GridSlot slot : recipe.slots) {
+            boolean found = false;
+            for (int invSlot = 0; invSlot < 36; invSlot++) {
+                ItemStack stack = inv.getStack(invSlot);
+                if (stack.isEmpty()) continue;
+                String stackId = getItemId(stack);
+                if (matchesItemId(stackId, slot.ingredientPatterns)) {
+                    int screenInvSlot = invSlotToScreenSlot(invSlot);
+                    im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
+                    sleep(60);
+                    im.clickSlot(syncId, slot.gridIndex, 1, SlotActionType.PICKUP, player);
+                    sleep(60);
+                    im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
+                    sleep(60);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                player.sendMessage(net.minecraft.text.Text.literal(
+                        "[Bridge] Missing ingredient for slot " + slot.gridIndex + " in " + recipe.output
+                        + ". Try: " + String.join(", ", slot.ingredientPatterns)), false);
+                return false;
+            }
         }
+        return true;
+    }
 
-        player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Unknown recipe for " + targetName + ". Use recipe book or craft manually."),
-                false);
+    private static boolean matchesItemId(String itemId, List<String> patterns) {
+        for (String pattern : patterns) {
+            if (pattern.startsWith("*") && itemId.endsWith(pattern.substring(1))) return true;
+            if (itemId.equals(pattern)) return true;
+            String stripped = itemId;
+            if (stripped.startsWith("minecraft:")) stripped = stripped.substring(10);
+            if (stripped.equals(pattern)) return true;
+            if (pattern.startsWith("*") && stripped.endsWith(pattern.substring(1))) return true;
+        }
         return false;
     }
 
-    private static boolean fillStickRecipe(ClientPlayerEntity player, ClientPlayerInteractionManager im,
-                                            ScreenHandler screen, int syncId) {
-        // 2 planks → 4 sticks. Place planks vertically (slots 1, 5)
-        int plankSlot = findItemInInventory(player.getInventory(), item -> item.endsWith("_planks"));
-        if (plankSlot < 0) {
-            player.sendMessage(net.minecraft.text.Text.literal("[Bridge] No planks found for stick recipe."), false);
-            return false;
+    // ─── Recipe Database ─────────────────────────────────────────────────────
+
+    private static class GridSlot {
+        final int gridIndex;
+        final List<String> ingredientPatterns;
+        GridSlot(int gridIndex, List<String> ingredientPatterns) {
+            this.gridIndex = gridIndex;
+            this.ingredientPatterns = ingredientPatterns;
         }
-        int screenInvSlot = invSlotToScreenSlot(plankSlot);
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        im.clickSlot(syncId, 1, 1, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        im.clickSlot(syncId, 5, 1, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        player.sendMessage(net.minecraft.text.Text.literal("[Bridge] Filled stick recipe."), false);
-        return true;
     }
 
-    private static boolean fillCraftingTableRecipe(ClientPlayerEntity player, ClientPlayerInteractionManager im,
-                                                    ScreenHandler screen, int syncId) {
-        // 4 planks → 1 crafting table. Fill 2x2 (slots 1,2,4,5)
-        int plankSlot = findItemInInventory(player.getInventory(), item -> item.endsWith("_planks"));
-        if (plankSlot < 0) {
-            player.sendMessage(net.minecraft.text.Text.literal("[Bridge] No planks found for crafting table recipe."), false);
-            return false;
+    private static class RecipeData {
+        final String output;
+        final List<GridSlot> slots;
+        @SuppressWarnings("unused")
+        final int outputCount;
+        RecipeData(String output, List<GridSlot> slots, int outputCount) {
+            this.output = output;
+            this.slots = slots;
+            this.outputCount = outputCount;
         }
-        int screenInvSlot = invSlotToScreenSlot(plankSlot);
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        int[] gridSlots = {1, 2, 4, 5};
-        for (int gs : gridSlots) {
-            im.clickSlot(syncId, gs, 1, SlotActionType.PICKUP, player);
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        }
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        player.sendMessage(net.minecraft.text.Text.literal("[Bridge] Filled crafting table recipe."), false);
-        return true;
     }
 
-    private static boolean fillPlanksRecipe(ClientPlayerEntity player, ClientPlayerInteractionManager im,
-                                             ScreenHandler screen, int syncId, String targetName) {
-        // 1 log → 4 planks. Place log in slot 1.
-        PlayerInventory inv = player.getInventory();
-        String logType = targetName.replace("_planks", "_log");
-        int logSlot = findItemByExactName(inv, logType);
-        if (logSlot < 0) {
-            logType = "minecraft:stripped_" + targetName.substring("minecraft:".length()).replace("_planks", "_log");
-            logSlot = findItemByExactName(inv, logType);
+    private static GridSlot gs(int idx, List<String> pat) { return new GridSlot(idx, pat); }
+
+    @SafeVarargs
+    private static <T> List<T> lst(T... items) { return Arrays.asList(items); }
+
+    private static final Map<String, RecipeData> RECIPE_DATABASE = buildRecipeDatabase();
+
+    private static Map<String, RecipeData> buildRecipeDatabase() {
+        Map<String, RecipeData> db = new HashMap<>();
+
+        // Planks (1 log -> 4)
+        for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
+            db.put(w + "_planks", new RecipeData(w + "_planks", lst(gs(1, lst("*_log"))), 4));
         }
-        if (logSlot < 0) {
-            logSlot = findItemInInventory(inv, item -> item.endsWith("_log"));
+
+        // Stick (2 planks vertical -> 4)
+        db.put("stick", new RecipeData("stick", lst(
+            gs(1, lst("*_planks")), gs(5, lst("*_planks"))
+        ), 4));
+
+        // Crafting Table (4 planks in 2x2 -> 1)
+        db.put("crafting_table", new RecipeData("crafting_table", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(5, lst("*_planks"))
+        ), 1));
+
+        // Torch (coal + planks -> 4)
+        db.put("torch", new RecipeData("torch", lst(
+            gs(1, lst("minecraft:coal","minecraft:charcoal")),
+            gs(5, lst("*_planks"))
+        ), 4));
+
+        // Furnace (cobblestone ring -> 1)
+        db.put("furnace", new RecipeData("furnace", lst(
+            gs(1, lst("minecraft:cobblestone")), gs(2, lst("minecraft:cobblestone")), gs(3, lst("minecraft:cobblestone")),
+            gs(4, lst("minecraft:cobblestone")), gs(6, lst("minecraft:cobblestone")),
+            gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:cobblestone")), gs(9, lst("minecraft:cobblestone"))
+        ), 1));
+
+        // White Wool (string -> 1)
+        db.put("white_wool", new RecipeData("white_wool", lst(gs(1, lst("minecraft:string"))), 1));
+
+        // Colored Wool (dye + white_wool -> 1)
+        for (String c : lst("orange","magenta","light_blue","yellow","lime","pink","gray","light_gray","cyan","purple","blue","brown","green","red","black")) {
+            db.put(c + "_wool", new RecipeData(c + "_wool", lst(
+                gs(1, lst(c + "_dye")), gs(5, lst("minecraft:white_wool"))
+            ), 1));
         }
-        if (logSlot < 0) {
-            player.sendMessage(net.minecraft.text.Text.literal("[Bridge] No log found for planks recipe."), false);
-            return false;
+
+        // Book (3 paper Z + leather -> 1)
+        db.put("book", new RecipeData("book", lst(
+            gs(1, lst("minecraft:paper")), gs(5, lst("minecraft:paper")),
+            gs(6, lst("minecraft:leather")), gs(9, lst("minecraft:paper"))
+        ), 1));
+
+        // Bookshelf (6 planks + 3 books -> 1)
+        db.put("bookshelf", new RecipeData("bookshelf", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("minecraft:book")), gs(5, lst("minecraft:book")), gs(6, lst("minecraft:book")),
+            gs(7, lst("*_planks")), gs(8, lst("*_planks")), gs(9, lst("*_planks"))
+        ), 1));
+
+        // Compass (4 iron + 1 redstone -> 1)
+        db.put("compass", new RecipeData("compass", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(5, lst("minecraft:redstone")),
+            gs(7, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // Clock (4 gold + 1 redstone -> 1)
+        db.put("clock", new RecipeData("clock", lst(
+            gs(1, lst("minecraft:gold_ingot")), gs(3, lst("minecraft:gold_ingot")),
+            gs(5, lst("minecraft:redstone")),
+            gs(7, lst("minecraft:gold_ingot")), gs(9, lst("minecraft:gold_ingot"))
+        ), 1));
+
+        // Fishing Rod (3 sticks + 2 string -> 1)
+        db.put("fishing_rod", new RecipeData("fishing_rod", lst(
+            gs(2, lst("*_planks")), gs(4, lst("*_planks")),
+            gs(5, lst("minecraft:string")),
+            gs(8, lst("*_planks")), gs(9, lst("minecraft:string"))
+        ), 1));
+
+        // Cake (3 milk + 2 sugar + 1 egg + 3 wheat -> 1)
+        db.put("cake", new RecipeData("cake", lst(
+            gs(1, lst("minecraft:milk_bucket")), gs(2, lst("minecraft:milk_bucket")), gs(3, lst("minecraft:milk_bucket")),
+            gs(4, lst("minecraft:sugar")), gs(5, lst("minecraft:egg")), gs(6, lst("minecraft:sugar")),
+            gs(7, lst("minecraft:wheat")), gs(8, lst("minecraft:wheat")), gs(9, lst("minecraft:wheat"))
+        ), 1));
+
+        // Golden Apple (8 gold nuggets + apple -> 1)
+        db.put("golden_apple", new RecipeData("golden_apple", lst(
+            gs(1, lst("minecraft:gold_nugget")), gs(2, lst("minecraft:gold_nugget")), gs(3, lst("minecraft:gold_nugget")),
+            gs(4, lst("minecraft:gold_nugget")), gs(5, lst("minecraft:apple")), gs(6, lst("minecraft:gold_nugget")),
+            gs(7, lst("minecraft:gold_nugget")), gs(8, lst("minecraft:gold_nugget")), gs(9, lst("minecraft:gold_nugget"))
+        ), 1));
+
+        // Paper (3 sugar cane -> 3)
+        db.put("paper", new RecipeData("paper", lst(
+            gs(1, lst("minecraft:sugar_cane")), gs(2, lst("minecraft:sugar_cane")), gs(3, lst("minecraft:sugar_cane"))
+        ), 3));
+
+        // Firework Rocket (1 paper + 1 gunpowder -> 3)
+        db.put("firework_rocket", new RecipeData("firework_rocket", lst(
+            gs(1, lst("minecraft:paper")), gs(5, lst("minecraft:gunpowder"))
+        ), 3));
+
+        // Purple Banner (6 purple_wool + 1 stick -> 1)
+        db.put("purple_banner", new RecipeData("purple_banner", lst(
+            gs(1, lst("minecraft:purple_wool")), gs(2, lst("minecraft:purple_wool")), gs(3, lst("minecraft:purple_wool")),
+            gs(4, lst("minecraft:purple_wool")), gs(5, lst("minecraft:purple_wool")), gs(6, lst("minecraft:purple_wool")),
+            gs(8, lst("*_planks"))
+        ), 1));
+
+        // Lectern (3 slabs + 1 bookshelf -> 1)
+        db.put("lectern", new RecipeData("lectern", lst(
+            gs(1, lst("minecraft:oak_slab","minecraft:spruce_slab","minecraft:birch_slab","*_slab")),
+            gs(2, lst("minecraft:oak_slab","minecraft:spruce_slab","minecraft:birch_slab","*_slab")),
+            gs(3, lst("minecraft:oak_slab","minecraft:spruce_slab","minecraft:birch_slab","*_slab")),
+            gs(5, lst("minecraft:bookshelf"))
+        ), 1));
+
+        // Crossbow (3 sticks + 2 string + 1 iron + 1 tripwire -> 1)
+        db.put("crossbow", new RecipeData("crossbow", lst(
+            gs(2, lst("*_planks")), gs(4, lst("*_planks")), gs(5, lst("minecraft:iron_ingot")),
+            gs(6, lst("minecraft:tripwire_hook")), gs(8, lst("minecraft:string")), gs(9, lst("minecraft:string"))
+        ), 1));
+
+        // Activator Rail (6 iron + 1 stick + 1 redstone_torch -> 6)
+        db.put("activator_rail", new RecipeData("activator_rail", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:redstone_torch")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("*_planks")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("*_planks")), gs(9, lst("minecraft:iron_ingot"))
+        ), 6));
+
+        // Rail (6 iron + 1 stick -> 16)
+        db.put("rail", new RecipeData("rail", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("*_planks")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 16));
+
+        // Chest (8 planks ring -> 1)
+        db.put("chest", new RecipeData("chest", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(6, lst("*_planks")),
+            gs(7, lst("*_planks")), gs(8, lst("*_planks")), gs(9, lst("*_planks"))
+        ), 1));
+
+        // Doors (6 planks -> 3)
+        for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
+            db.put(w + "_door", new RecipeData(w + "_door", lst(
+                gs(1, lst(w+"_planks")), gs(2, lst(w+"_planks")),
+                gs(4, lst(w+"_planks")), gs(5, lst(w+"_planks")),
+                gs(7, lst(w+"_planks")), gs(8, lst(w+"_planks"))
+            ), 3));
         }
-        int screenInvSlot = invSlotToScreenSlot(logSlot);
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        im.clickSlot(syncId, 1, 1, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-        player.sendMessage(net.minecraft.text.Text.literal("[Bridge] Filled planks recipe."), false);
-        return true;
+
+        // Trapdoors (4 planks -> 2)
+        for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
+            db.put(w + "_trapdoor", new RecipeData(w + "_trapdoor", lst(
+                gs(1, lst(w+"_planks")), gs(2, lst(w+"_planks")),
+                gs(4, lst(w+"_planks")), gs(5, lst(w+"_planks"))
+            ), 2));
+        }
+
+        // Fences (6 planks -> 3)
+        for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
+            db.put(w + "_fence", new RecipeData(w + "_fence", lst(
+                gs(1, lst(w+"_planks")), gs(2, lst(w+"_planks")),
+                gs(4, lst(w+"_planks")), gs(5, lst(w+"_planks")),
+                gs(7, lst(w+"_planks")), gs(8, lst(w+"_planks"))
+            ), 3));
+        }
+
+        // Stonecutter (3 stone + 1 iron -> 1)
+        db.put("stonecutter", new RecipeData("stonecutter", lst(
+            gs(2, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:stone")), gs(5, lst("minecraft:stone")), gs(6, lst("minecraft:stone"))
+        ), 1));
+
+        // Shears (2 iron ingots diagonal -> 1)
+        db.put("shears", new RecipeData("shears", lst(
+            gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // Bucket (3 iron ingots V -> 1)
+        db.put("bucket", new RecipeData("bucket", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // Flint and Steel (1 iron + 1 flint -> 1)
+        db.put("flint_and_steel", new RecipeData("flint_and_steel", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:flint"))
+        ), 1));
+
+        return db;
     }
 
-    // ─── Inventory utilities ─────────────────────────────────────────────────
+    // ─── Take crafting result ────────────────────────────────────────────────
 
-    @FunctionalInterface
-    private interface ItemPredicate {
-        boolean matches(String itemId);
-    }
-
-    private static int findItemInInventory(PlayerInventory inv, ItemPredicate pred) {
-        for (int i = 0; i < 36; i++) {
-            ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty()) {
-                if (pred.matches(getItemId(stack))) return i;
-            }
-        }
-        return -1;
-    }
-
-    private static int findItemByExactName(PlayerInventory inv, String exactId) {
-        for (int i = 0; i < 36; i++) {
-            ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty() && getItemId(stack).equals(exactId)) return i;
-        }
-        return -1;
-    }
-
-    /**
-     * Take the crafted result from the output slot and place it in inventory.
-     * Returns the number of items taken, or 0 on failure.
-     */
-    private static int takeCraftingResult(ClientPlayerEntity player, ClientPlayerInteractionManager im, ScreenHandler screen,
-                                               int syncId, Identifier expectedItem) {
+    private static int takeCraftingResult(ClientPlayerEntity player, ClientPlayerInteractionManager im,
+                                           ScreenHandler screen, int syncId, Identifier expectedItem) {
         var resultSlot = screen.getSlot(0);
-        if (resultSlot == null || !resultSlot.hasStack()) {
-            player.sendMessage(net.minecraft.text.Text.literal("[Bridge] Result slot empty."), false);
-            return 0;
-        }
-
+        if (resultSlot == null || !resultSlot.hasStack()) return 0;
         ItemStack resultStack = resultSlot.getStack();
-        if (resultStack.isEmpty()
-                || !getItemId(resultStack).equals(expectedItem.toString())) {
-            player.sendMessage(net.minecraft.text.Text.literal(
-                "[Bridge] Result mismatch: expected " + expectedItem + ", got " + getItemId(resultStack)), false);
-            return 0;
-        }
-
+        if (resultStack.isEmpty() || !getItemId(resultStack).equals(expectedItem.toString())) return 0;
         int count = resultStack.getCount();
-
-        // Shift-click the result to move it to inventory (quick move)
         im.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, player);
-        try { Thread.sleep(80); } catch (InterruptedException ignored) {}
-
+        sleep(80);
         return count;
     }
 
     // ─── Block scanning ─────────────────────────────────────────────────────
 
-    /**
-     * Find the nearest block of a given type within range.
-     * Scans loaded chunk blocks.
-     */
     static BlockPos findNearestBlock(ClientWorld world, ClientPlayerEntity player,
                                      String blockId, int range) {
         BlockPos playerPos = player.getBlockPos();
         BlockPos.Mutable mutable = new BlockPos.Mutable();
         BlockPos nearest = null;
         double nearestDistSq = Double.MAX_VALUE;
-
         for (int dx = -range; dx <= range; dx++) {
             for (int dy = -range; dy <= range; dy++) {
                 for (int dz = -range; dz <= range; dz++) {
@@ -439,45 +500,37 @@ public class CommandExecutor {
         return nearest;
     }
 
-    /**
-     * Check if the player has at least one of the given item in their inventory.
-     */
     private static boolean hasItemInInventory(ClientPlayerEntity player, String itemId) {
         PlayerInventory inv = player.getInventory();
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
-            if (!stack.isEmpty() && getItemId(stack).equals(itemId)) {
-                return true;
-            }
+            if (!stack.isEmpty() && getItemId(stack).equals(itemId)) return true;
         }
         return false;
     }
 
     // ─── ID helpers ──────────────────────────────────────────────────────────
 
-    /** Strip Item{} wrapper from Item.toString() so "Item{minecraft:stick}" → "minecraft:stick". */
     private static String getItemId(ItemStack stack) {
         if (stack.isEmpty()) return "";
         String s = stack.getItem().toString();
-        if (s.startsWith("Item{") && s.endsWith("}")) {
-            return s.substring(5, s.length() - 1);
-        }
+        if (s.startsWith("Item{") && s.endsWith("}")) return s.substring(5, s.length() - 1);
         return s;
     }
 
-    /** Strip Block{} wrapper from Block.toString() so "Block{minecraft:oak_log}" → "minecraft:oak_log". */
     private static String getBlockId(net.minecraft.block.Block block) {
         String s = block.toString();
-        if (s.startsWith("Block{") && s.endsWith("}")) {
-            return s.substring(6, s.length() - 1);
-        }
+        if (s.startsWith("Block{") && s.endsWith("}")) return s.substring(6, s.length() - 1);
         return s;
     }
 
-    /** Convert PlayerInventory slot index (0-35) to CraftingScreenHandler slot index. */
     private static int invSlotToScreenSlot(int invSlot) {
-        if (invSlot < 9) return 37 + invSlot;  // hotbar  → slots 37-45
-        return 10 + (invSlot - 9);              // main inv → slots 10-36
+        if (invSlot < 9) return 37 + invSlot;
+        return 10 + (invSlot - 9);
+    }
+
+    private static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
     }
 
     // ─── Capabilities / commands JSON ────────────────────────────────────────
@@ -503,18 +556,10 @@ public class CommandExecutor {
             + "]";
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Raw command helpers
-    // ──────────────────────────────────────────────────────────────────────────
-
     private static void sendChat(MinecraftClient client, String message) {
         ClientPlayerEntity player = client.player;
         if (player == null) return;
-
-        // Track sent messages so StateCollector can filter echo
         StateCollector.trackSentChat(message);
-
-        // Send via chat message packet
         client.execute(() -> {
             if (client.player != null && client.player.networkHandler != null) {
                 client.player.networkHandler.sendChatMessage(message);
@@ -522,18 +567,13 @@ public class CommandExecutor {
         });
     }
 
-    /**
-     * Convert a typed action into a Baritone chat command if applicable.
-     */
     private static String extractRawBaritoneCommand(String json, String type) {
         switch (type) {
             case "move": {
                 String x = extractJsonPrimitive(json, "x");
                 String y = extractJsonPrimitive(json, "y");
                 String z = extractJsonPrimitive(json, "z");
-                if (x != null && y != null && z != null) {
-                    return "#goto " + x + " " + y + " " + z;
-                }
+                if (x != null && y != null && z != null) return "#goto " + x + " " + y + " " + z;
                 return null;
             }
             case "mine": {
@@ -551,18 +591,13 @@ public class CommandExecutor {
                 if (target != null) return "#follow player " + target;
                 return null;
             }
-            case "cancel":
-                return "#cancel";
-            case "raw_command":
-                return extractJsonString(json, "command");
-            default:
-                return null;
+            case "cancel": return "#cancel";
+            case "raw_command": return extractJsonString(json, "command");
+            default: return null;
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // JSON extraction helpers (no external dependencies)
-    // ──────────────────────────────────────────────────────────────────────────
+    // ─── JSON extraction helpers ─────────────────────────────────────────────
 
     private static String extractJsonString(String json, String key) {
         String search = "\"" + key + "\"";
@@ -596,9 +631,7 @@ public class CommandExecutor {
         int i = colon + 1;
         while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
         if (i >= json.length()) return null;
-        if (json.charAt(i) == '"') {
-            return extractJsonString(json, key);
-        }
+        if (json.charAt(i) == '"') return extractJsonString(json, key);
         int end = i;
         while (end < json.length()) {
             char c = json.charAt(end);

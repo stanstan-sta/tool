@@ -92,6 +92,7 @@ public class TaskQueue {
      */
     public void setPostAction(Runnable action) {
         this.postBaritoneAction = action;
+        chatDebug("[Bridge] DEBUG: setPostAction called — action " + (action != null ? "present" : "null"));
     }
 
     /**
@@ -106,12 +107,15 @@ public class TaskQueue {
         paused = false;
         lastFailureReason = null;
 
+        chatDebug("[Bridge] DEBUG: onBaritoneComplete  action=" + (action != null ? "present" : "null"));
+
         if (action != null) {
             // Run the post-Baritone action on the Minecraft main thread.
             // This is where GUI interactions (crafting, container ops) happen.
             MinecraftClient client = MinecraftClient.getInstance();
             if (client != null) {
                 client.execute(() -> {
+                    chatDebug("[Bridge] DEBUG: executing post-action on MC thread...");
                     try {
                         action.run();
                     } catch (Exception e) {
@@ -123,9 +127,13 @@ public class TaskQueue {
                         dispatchNext();
                     }
                 });
+            } else {
+                chatDebug("[Bridge] DEBUG: client is null — cannot execute post-action");
             }
         } else if (!pending.isEmpty()) {
             dispatchNext();
+        } else {
+            chatDebug("[Bridge] DEBUG: no post-action and no pending commands");
         }
     }
 
@@ -134,6 +142,7 @@ public class TaskQueue {
      * Pauses the queue so the agent can decide to retry, skip, or cancel.
      */
     public void onBaritoneFailed(String reason) {
+        chatDebug("[Bridge] DEBUG: onBaritoneFailed — " + reason);
         lastFailureReason = reason;
         paused = true;
         postBaritoneAction = null; // discard any pending post-action
@@ -225,5 +234,18 @@ public class TaskQueue {
             activeCommand = next;
             CommandExecutor.execute(next);
         }
+    }
+
+    private static void chatDebug(String msg) {
+        try {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client != null && client.player != null) {
+                client.execute(() -> {
+                    if (client.player != null) {
+                        client.player.sendMessage(net.minecraft.text.Text.literal(msg), false);
+                    }
+                });
+            }
+        } catch (Throwable ignored) {}
     }
 }
