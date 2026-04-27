@@ -75,6 +75,7 @@ public class CommandExecutor {
         if (client.player == null || client.world == null) {
             return "craft: not connected";
         }
+        // Parse item/count from the JSON on the HTTP thread (safe — pure string ops)
         String itemName = extractJsonString(actionJson, "item");
         if (itemName == null || itemName.isBlank()) {
             return "craft: missing 'item' field";
@@ -86,34 +87,63 @@ public class CommandExecutor {
         }
         if (count < 1) count = 1;
 
-        client.player.sendMessage(
-                net.minecraft.text.Text.literal("[Bridge] Searching for crafting table..."), false);
-        final BlockPos tablePos = findNearestBlock(client.world, client.player,
-                "minecraft:crafting_table", 32);
-
-        if (tablePos == null) {
-            boolean hasTableItem = hasItemInInventory(client.player, "minecraft:crafting_table");
-            if (!hasTableItem) {
-                String msg = "[Bridge] No crafting table found. You need a crafting table to craft items. Craft one from 4 planks first.";
-                client.player.sendMessage(net.minecraft.text.Text.literal(msg), false);
-                return "craft: no crafting table in inventory or within 32 blocks.";
-            }
-            client.player.sendMessage(net.minecraft.text.Text.literal(
-                    "[Bridge] Crafting table is in your inventory but not placed. Place it first, then retry crafting."), false);
-            return "craft: crafting table found in inventory but not placed.";
-        }
-
-        client.player.sendMessage(net.minecraft.text.Text.literal(
-                "[Bridge] Found crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()), false);
-
+        // Schedule all Minecraft-state-dependent work on the render thread.
+        // The HTTP thread blocks on the future (typically <50ms until next tick).
         final String targetItem = itemName;
         final int targetCount = count;
-        TaskQueue.getInstance().setPostAction(() -> craftPostAction(targetItem, targetCount));
+        java.util.concurrent.CompletableFuture<String> future = new java.util.concurrent.CompletableFuture<>();
 
-        String interactCmd = "#task interact " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ();
-        execute(interactCmd);
-        return "craft: opening crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()
-                + " — will craft " + targetCount + "x " + targetItem + " on completion";
+        client.execute(() -> {
+            try {
+                ClientPlayerEntity player = client.player;
+                if (player == null || client.world == null) {
+                    future.complete("craft: not connected");
+                    return;
+                }
+
+                player.sendMessage(
+                        net.minecraft.text.Text.literal("[Bridge] Searching for crafting table..."), false);
+                final BlockPos tablePos = findNearestBlock(client.world, player,
+                        "minecraft:crafting_table", 32);
+
+                if (tablePos == null) {
+                    boolean hasTableItem = hasItemInInventory(player, "minecraft:crafting_table");
+                    if (!hasTableItem) {
+                        String msg = "[Bridge] No crafting table found. You need a crafting table to craft items. Craft one from 4 planks first.";
+                        player.sendMessage(net.minecraft.text.Text.literal(msg), false);
+                        future.complete("craft: no crafting table in inventory or within 32 blocks.");
+                        return;
+                    }
+                    player.sendMessage(net.minecraft.text.Text.literal(
+                            "[Bridge] Crafting table is in your inventory but not placed. Place it first, then retry crafting."), false);
+                    future.complete("craft: crafting table found in inventory but not placed.");
+                    return;
+                }
+
+                player.sendMessage(net.minecraft.text.Text.literal(
+                        "[Bridge] Found crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()), false);
+
+                // Register the post-Baritone callback BEFORE enqueueing so it's
+                // in place by the time Baritone could possibly complete.
+                TaskQueue.getInstance().setPostAction(() -> craftPostAction(targetItem, targetCount));
+
+                // Route through TaskQueue so activeCommand is properly tracked
+                // and the completion signal triggers the post-action at the right time.
+                String interactCmd = "#task interact " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ();
+                TaskQueue.getInstance().enqueue(interactCmd);
+
+                future.complete("craft: opening crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()
+                        + " — will craft " + targetCount + "x " + targetItem + " on completion");
+            } catch (Exception e) {
+                future.complete("craft: error — " + e.getMessage());
+            }
+        });
+
+        try {
+            return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "craft: timeout waiting for render thread — " + e.getMessage();
+        }
     }
 
     private static void craftPostAction(String itemName, int count) {
