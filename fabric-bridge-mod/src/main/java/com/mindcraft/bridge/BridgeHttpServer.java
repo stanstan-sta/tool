@@ -121,7 +121,7 @@ public class BridgeHttpServer {
             }
 
             // Craft actions are self-executing: executeCraftAction() directly
-            // sends #task interact and registers a post-Baritone callback.
+            // sends #craft and registers a post-Baritone callback.
             // Its return value is a human-readable description, NOT a command.
             // Don't enqueue the description as a command.
             if (isSelfExecuting) {
@@ -151,76 +151,86 @@ public class BridgeHttpServer {
             String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
 
             // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
-            java.util.List<String> commands = new java.util.ArrayList<>();
+            java.util.List<String> deferredNonCraft = new java.util.ArrayList<>();
+            java.util.List<String> deferredCraftActions = new java.util.ArrayList<>();
+            int totalQueued = 0;
             boolean hadActionsArray = false;
-            int selfExecutingCount = 0;
+            boolean cancelRequested = false;
 
             // Try "actions" array first (typed actions)
             String actionsArray = extractJsonArray(body, "actions");
             if (actionsArray != null) {
                 hadActionsArray = true;
-                // Parse each action object in the array to a concrete command string
                 String[] actionObjects = splitJsonArray(actionsArray);
+
+                // PASS 1: Collect non-craft commands. We DON'T execute anything
+                // yet — just parse type and extract the command string.
                 for (String actionObj : actionObjects) {
                     if (actionObj == null || actionObj.isBlank()) continue;
-                    // Extract the action type BEFORE executing, so we know
-                    // whether the result is self-executing (craft) or just a
-                    // description string that should NOT be queued.
                     String actionType = extractJsonString(actionObj, "type");
-                    boolean isSelfExecuting = "craft".equals(actionType);
-
-                    String executed = CommandExecutor.executeTypedJson(actionObj);
-                    if (executed == null || executed.isBlank()) continue;
-
-                    // Craft actions are self-executing: executeCraftAction() directly
-                    // sends #task interact and registers a post-Baritone callback.
-                    // Its return value is a human-readable description, NOT a command.
-                    // Adding it to the queue would inject a garbage command that
-                    // Baritone can't parse (e.g. "opening crafting table at...").
-                    if (isSelfExecuting) {
-                        selfExecutingCount++;
+                    if ("cancel".equals(actionType)) {
+                        TaskQueue.getInstance().cancelAll();
+                        cancelRequested = true;
+                        break;
+                    }
+                    if ("craft".equals(actionType)) {
+                        deferredCraftActions.add(actionObj);
                         continue;
                     }
-
+                    // Non-craft: executeTypedJson to get the command string
+                    String executed = CommandExecutor.executeTypedJson(actionObj);
+                    if (executed == null || executed.isBlank()) continue;
                     int colonIdx = executed.indexOf(':');
                     String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
-                    commands.add(cmd);
+                    deferredNonCraft.add(cmd);
+                }
+
+                if (cancelRequested) {
+                    respond(ex, 200, "{\"success\":true,\"cancelled\":true,\"queued\":0}");
+                    return;
+                }
+
+                // Enqueue all non-craft commands first, in array order
+                if (!deferredNonCraft.isEmpty()) {
+                    totalQueued += TaskQueue.getInstance().enqueue(deferredNonCraft);
+                }
+
+                // PASS 2: Execute craft actions. They self-enqueue their
+                // #task interact commands AFTER the non-craft batch above.
+                for (String craftActionJson : deferredCraftActions) {
+                    CommandExecutor.executeTypedJson(craftActionJson);
+                    totalQueued++;
                 }
             }
 
             // Try "commands" array (raw command strings)
-            if (commands.isEmpty() && !hadActionsArray) {
+            if (!hadActionsArray) {
                 String cmdsArray = extractJsonArray(body, "commands");
                 if (cmdsArray != null) {
+                    java.util.List<String> rawCommands = new java.util.ArrayList<>();
                     String[] cmdElements = splitJsonArray(cmdsArray);
                     for (String cmd : cmdElements) {
                         if (cmd == null || cmd.isBlank()) continue;
-                        // Unwrap JSON string quotes if present
                         String trimmed = cmd.trim();
                         if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
                             trimmed = trimmed.substring(1, trimmed.length() - 1);
                         }
                         if (!trimmed.isBlank()) {
-                            commands.add(trimmed);
+                            rawCommands.add(trimmed);
                         }
+                    }
+                    if (!rawCommands.isEmpty()) {
+                        totalQueued += TaskQueue.getInstance().enqueue(rawCommands);
                     }
                 }
             }
 
-            // If we had only self-executing actions (e.g. craft-only batch),
-            // they've already been handled — return success.
-            if (commands.isEmpty() && hadActionsArray && selfExecutingCount > 0) {
-                respond(ex, 200, "{\"success\":true,\"self_executed\":" + selfExecutingCount + "}");
-                return;
-            }
-
-            if (commands.isEmpty()) {
+            if (totalQueued == 0 && !hadActionsArray) {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'actions' or 'commands' array\"}");
                 return;
             }
 
-            int queued = TaskQueue.getInstance().enqueue(commands);
-            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + "}");
+            respond(ex, 200, "{\"success\":true,\"queued\":" + totalQueued + "}");
         }
     }
 

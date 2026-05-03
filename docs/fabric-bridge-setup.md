@@ -90,8 +90,9 @@ brew install --cask temurin@21
 3. Launch Minecraft once with the Fabric profile to create the mods folder
 
 #### Step 3 — Install Baritone for Fabric
-1. Download the latest Baritone Fabric build from https://github.com/cabaletta/baritone/releases
-   - Look for `baritone-unoptimized-fabric-*.jar`
+1. Use the modified Baritone checkout that works with this bridge.
+  - On Windows, the forked source tree you referenced is `F:\Baritone_Dev\baritone`.
+  - Build or copy the matching Fabric jar from that fork.
 2. Place it in `~/Library/Application Support/minecraft/mods/`
 
 #### Step 4 — Build and install the Mindcraft Bridge Mod

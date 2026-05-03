@@ -35,8 +35,8 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '  {"type":"cancel"}                                            — cancel all queued actions',
             '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
             '',
-            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>',
-            '  #task interact <x> <y> <z>, #task chest <x> <y> <z> withdraw <item> <count>',
+            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+            '  #craft, #mine <block> <count>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
             '',
             'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
             'Never invent new types. For anything else, use raw_command with the # prefix.',
@@ -44,7 +44,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
 
     const taskQueueRules = [
             'TASK QUEUE:',
-            '- Actions run one at a time. The next starts only after the previous finishes.',
+            '- You can send multiple actions in one response — they queue and run sequentially.',
             '- While queue is "executing" → wait for it to become "idle" before sending more actions.',
             '- Queue "paused" = a task failed. You can retry, skip (send a new action), or cancel all.',
             '- Queue "idle" → free to send actions.',
@@ -70,6 +70,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             'Chat only:  {"reply":"Yeah, the weather is nice today."}',
             'With move:  {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
             'With craft: {"reply":"Let me craft that.","actions":[{"type":"craft","provider":"baritone_chat","item":"stick","count":4}]}',
+            'With batch: {"reply":"Let me get iron.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#mine iron_ore 5"},{"type":"raw_command","provider":"baritone_chat","command":"#task smelt iron_ore"}]}',
           ].join('\n');
 
     return [

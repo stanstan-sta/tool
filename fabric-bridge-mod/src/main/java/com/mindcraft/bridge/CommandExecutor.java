@@ -34,15 +34,23 @@ public class CommandExecutor {
         } else if (command.startsWith("#")) {
             final String msg = command.trim();
             client.execute(() -> {
-                if (client.player != null && client.player.networkHandler != null) {
-                    client.player.networkHandler.sendChatMessage(msg);
+                boolean executed = executeBaritoneCommand(msg);
+                net.minecraft.client.network.ClientPlayerEntity player = client.player;
+                if (!executed && player != null && player.networkHandler != null) {
+                    // Fallback to sending chat command without '#' if reflection fails
+                    if (msg.startsWith("#")) {
+                        // For 1.19+, sendChatMessage directly bypasses interceptors. 
+                        // Baritone hooks might miss it if sent directly here, hence we try reflection first.
+                        player.networkHandler.sendChatMessage(msg);
+                    }
                 }
             });
         } else {
             final String cmd = command.startsWith("/") ? command.substring(1) : command;
             client.execute(() -> {
-                if (client.player != null && client.player.networkHandler != null) {
-                    client.player.networkHandler.sendChatCommand(cmd);
+                net.minecraft.client.network.ClientPlayerEntity player = client.player;
+                if (player != null && player.networkHandler != null) {
+                    player.networkHandler.sendChatCommand(cmd);
                 }
             });
         }
@@ -57,25 +65,23 @@ public class CommandExecutor {
         }
         String command = extractRawBaritoneCommand(actionJson, type);
         if (command != null) {
-            execute(command);
             return type + ": " + command;
         }
         String rawCmd = extractJsonString(actionJson, "command");
         if (rawCmd != null && !rawCmd.isBlank()) {
-            execute(rawCmd);
             return type + ": " + rawCmd;
         }
         return type;
     }
 
-    // ─── Craft action orchestration ──────────────────────────────────────────
+    // â”€â”€â”€ Craft action orchestration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static String executeCraftAction(String actionJson) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) {
             return "craft: not connected";
         }
-        // Parse item/count from the JSON on the HTTP thread (safe — pure string ops)
+        // Parse item/count from the JSON on the HTTP thread (safe â€” pure string ops)
         String itemName = extractJsonString(actionJson, "item");
         if (itemName == null || itemName.isBlank()) {
             return "craft: missing 'item' field";
@@ -101,48 +107,36 @@ public class CommandExecutor {
                     return;
                 }
 
-                player.sendMessage(
-                        net.minecraft.text.Text.literal("[Bridge] Searching for crafting table..."), false);
-                final BlockPos tablePos = findNearestBlock(client.world, player,
-                        "minecraft:crafting_table", 32);
-
-                if (tablePos == null) {
-                    boolean hasTableItem = hasItemInInventory(player, "minecraft:crafting_table");
-                    if (!hasTableItem) {
-                        String msg = "[Bridge] No crafting table found. You need a crafting table to craft items. Craft one from 4 planks first.";
-                        player.sendMessage(net.minecraft.text.Text.literal(msg), false);
-                        future.complete("craft: no crafting table in inventory or within 32 blocks.");
-                        return;
-                    }
-                    player.sendMessage(net.minecraft.text.Text.literal(
-                            "[Bridge] Crafting table is in your inventory but not placed. Place it first, then retry crafting."), false);
-                    future.complete("craft: crafting table found in inventory but not placed.");
+                Identifier itemId = targetItem.contains(":")
+                        ? Identifier.tryParse(targetItem)
+                        : Identifier.of("minecraft", targetItem);
+                if (itemId == null) {
+                    future.complete("craft: invalid item " + targetItem);
+                    return;
+                }
+                String itemKey = itemId.toString();
+                if (itemKey.startsWith("minecraft:")) {
+                    itemKey = itemKey.substring(10);
+                }
+                if (!RECIPE_DATABASE.containsKey(itemKey)) {
+                    future.complete("craft: no recipe found for " + targetItem);
                     return;
                 }
 
                 player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Found crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()), false);
-
-                // Register the post-Baritone callback BEFORE enqueueing so it's
-                // in place by the time Baritone could possibly complete.
-                TaskQueue.getInstance().setPostAction(() -> craftPostAction(targetItem, targetCount));
-
-                // Route through TaskQueue so activeCommand is properly tracked
-                // and the completion signal triggers the post-action at the right time.
-                String interactCmd = "#task interact " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ();
-                TaskQueue.getInstance().enqueue(interactCmd);
-
-                future.complete("craft: opening crafting table at " + tablePos.getX() + " " + tablePos.getY() + " " + tablePos.getZ()
-                        + " — will craft " + targetCount + "x " + targetItem + " on completion");
+                        "[Bridge] Opening nearest crafting table with #craft..."), false);
+                TaskQueue.getInstance().enqueueWithCallback("#craft",
+                        () -> craftPostAction(targetItem, targetCount));
+                future.complete("craft: queued #craft; will craft " + targetCount + "x " + targetItem + " after table opens");
             } catch (Exception e) {
-                future.complete("craft: error — " + e.getMessage());
+                future.complete("craft: error â€” " + e.getMessage());
             }
         });
 
         try {
             return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
         } catch (Exception e) {
-            return "craft: timeout waiting for render thread — " + e.getMessage();
+            return "craft: timeout waiting for render thread â€” " + e.getMessage();
         }
     }
 
@@ -267,7 +261,7 @@ public class CommandExecutor {
         return false;
     }
 
-    // ─── Recipe Database ─────────────────────────────────────────────────────
+    // â”€â”€â”€ Recipe Database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static class GridSlot {
         final int gridIndex;
@@ -491,7 +485,7 @@ public class CommandExecutor {
         return db;
     }
 
-    // ─── Take crafting result ────────────────────────────────────────────────
+    // â”€â”€â”€ Take crafting result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static int takeCraftingResult(ClientPlayerEntity player, ClientPlayerInteractionManager im,
                                            ScreenHandler screen, int syncId, Identifier expectedItem) {
@@ -505,7 +499,7 @@ public class CommandExecutor {
         return count;
     }
 
-    // ─── Block scanning ─────────────────────────────────────────────────────
+    // â”€â”€â”€ Block scanning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     static BlockPos findNearestBlock(ClientWorld world, ClientPlayerEntity player,
                                      String blockId, int range) {
@@ -541,7 +535,7 @@ public class CommandExecutor {
         return false;
     }
 
-    // ─── ID helpers ──────────────────────────────────────────────────────────
+    // â”€â”€â”€ ID helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static String getItemId(ItemStack stack) {
         if (stack.isEmpty()) return "";
@@ -565,7 +559,7 @@ public class CommandExecutor {
         try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
     }
 
-    // ─── Capabilities / commands JSON ────────────────────────────────────────
+    // â”€â”€â”€ Capabilities / commands JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public static String capabilitiesJson() {
         return "{"
@@ -580,7 +574,7 @@ public class CommandExecutor {
     public static String discoverCommandsJson() {
         return "["
             + "\"#goto x y z\","
-            + "\"#task interact x y z\","
+            + "\"#craft\","
             + "\"#mine count block\","
             + "\"#follow player <name>\","
             + "\"#cancel\","
@@ -593,10 +587,32 @@ public class CommandExecutor {
         if (player == null) return;
         StateCollector.trackSentChat(message);
         client.execute(() -> {
-            if (client.player != null && client.player.networkHandler != null) {
-                client.player.networkHandler.sendChatMessage(message);
+            ClientPlayerEntity p = client.player;
+            if (p != null && p.networkHandler != null) {
+                p.networkHandler.sendChatMessage(message);
             }
         });
+    }
+
+    private static boolean executeBaritoneCommand(String command) {
+        try {
+            // Strip leading '#' if we are calling the command manager directly, 
+            // wait, does ICommandManager.execute expect prefix?
+            // "execute" typically takes the command WITHOUT the prefix, e.g. "mine iron_ore"
+            String cmdToExecute = command;
+            if (cmdToExecute.startsWith("#")) {
+                cmdToExecute = cmdToExecute.substring(1);
+            }
+            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = apiClass.getMethod("getProvider").invoke(null);
+            Object primary = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object cmdManager = primary.getClass().getMethod("getCommandManager").invoke(primary);
+            Boolean result = (Boolean) cmdManager.getClass().getMethod("execute", String.class).invoke(cmdManager, cmdToExecute);
+            return result != null && result;
+        } catch (Exception e) {
+            System.err.println("[Mindcraft Bridge] Failed to execute baritone command via API: " + e.getMessage());
+            return false;
+        }
     }
 
     private static String extractRawBaritoneCommand(String json, String type) {
@@ -629,7 +645,7 @@ public class CommandExecutor {
         }
     }
 
-    // ─── JSON extraction helpers ─────────────────────────────────────────────
+    // â”€â”€â”€ JSON extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static String extractJsonString(String json, String key) {
         String search = "\"" + key + "\"";

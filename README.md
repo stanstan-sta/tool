@@ -104,7 +104,7 @@ The Minecraft **Fabric client is launched separately** (Prism Launcher / Minecra
    ./gradlew build
    ```
 2. Copy the generated `mindcraft-bridge-*.jar` to your Fabric `mods/` folder.
-3. Install Baritone Fabric jar in the same `mods/` folder.
+3. Install the modified Baritone Fabric jar that this bridge works with in the same `mods/` folder.
 4. Launch Minecraft with your Fabric profile first.
 5. In this repo, enable Fabric runtime in `settings.js`:
    ```js

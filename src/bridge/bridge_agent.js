@@ -154,7 +154,7 @@ function normalizeAction(action) {
  *   THOUGHT: <reasoning>
  *   PLAN: <goal>
  *   COMMAND: #goto 100 64 -200
- *   COMMAND: #mine iron_ore 16
+ *   COMMAND: #mine 16 iron_ore
  *
  * Lines that are not THOUGHT/PLAN/COMMAND are treated as chat text.
  * @param {string} response
