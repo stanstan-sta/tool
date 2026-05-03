@@ -346,6 +346,8 @@ The `model` field can be a string or an object. A model object must specify an `
 
 `model` is used for chat, `code_model` is used for newAction coding, `vision_model` is used for image interpretation, `embedding` is used to embed text for example selection, and `speak_model` is used for voice synthesis. `model` will be used by default for all other models if not specified. Not all APIs support embeddings, vision, or voice synthesis.
 
+OpenRouter defaults to `openai/gpt-4o-mini` when no model is specified. When using OpenRouter, keep the provider namespace in the model name, for example `openai/gpt-4o-mini` or `anthropic/claude-3.5-sonnet`.
+
 All apis have default models and urls, so those fields are optional. The `params` field is optional and can be used to specify additional parameters for the model. It accepts any key-value pairs supported by the api. Is not supported for embedding models.
 
 ## Embedding Models

@@ -1,41 +1,54 @@
 import OpenAIApi from 'openai';
-import { getKey, hasKey } from '../utils/keys.js';
+import { getKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
+import { toolCallToCommand } from '../agent/commands/index.js';
 
 export class OpenRouter {
     static prefix = 'openrouter';
-    constructor(model_name, url) {
-        this.model_name = model_name;
+    static supportsTools = true;
+    static supportsStructuredOutput = true;
 
-        let config = {};
-        config.baseURL = url || 'https://openrouter.ai/api/v1';
+    constructor(model_name, url, params) {
+        this.model_name = model_name;
+        this.params = params || {};
+        this.url = url || 'https://openrouter.ai/api/v1';
+
+        const config = {
+            baseURL: this.url,
+        };
 
         const apiKey = getKey('OPENROUTER_API_KEY');
         if (!apiKey) {
             console.error('Error: OPENROUTER_API_KEY not found. Make sure it is set properly.');
         }
 
-        // Pass the API key to OpenAI compatible Api
-        config.apiKey = apiKey; 
+        config.apiKey = apiKey;
 
         this.openai = new OpenAIApi(config);
     }
 
-    async sendRequest(turns, systemMessage, stop_seq='*') {
-        let messages = [{ role: 'system', content: systemMessage }, ...turns];
-        messages = strictFormat(messages);
+    resolveModelName(defaultModel = 'openai/gpt-4o-mini') {
+        return this.model_name || defaultModel;
+    }
 
-        // Choose a valid model from openrouter.ai (for example, "openai/gpt-4o")
+    async sendRequest(turns, systemMessage, tools = null, stop_seq = '***') {
+        const messages = strictFormat([{ role: 'system', content: systemMessage }, ...turns]);
+        const model = this.resolveModelName();
+
         const pack = {
-            model: this.model_name,
+            model,
             messages,
-            stop: stop_seq
+            ...(tools && tools.length > 0 ? { tools } : { stop: stop_seq }),
+            ...(this.params || {})
         };
+        if (model.includes('o1') || model.includes('o3') || model.includes('5')) {
+            delete pack.stop;
+        }
 
         let res = null;
         try {
             console.log('Awaiting openrouter api response...');
-            let completion = await this.openai.chat.completions.create(pack);
+            const completion = await this.openai.chat.completions.create(pack);
             if (!completion?.choices?.[0]) {
                 console.error('No completion or choices returned:', completion);
                 return 'No response received.';
@@ -44,11 +57,63 @@ export class OpenRouter {
                 throw new Error('Context length exceeded');
             }
             console.log('Received.');
-            res = completion.choices[0].message.content;
+
+            const choice = completion.choices[0];
+            if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+                const toolCall = choice.message.tool_calls[0];
+                const funcName = toolCall.function.name;
+                let funcArgs = null;
+                try {
+                    funcArgs = typeof toolCall.function.arguments === 'string'
+                        ? JSON.parse(toolCall.function.arguments)
+                        : (toolCall.function.arguments || {});
+                } catch (err) {
+                    console.warn('Failed to parse OpenRouter tool call arguments:', err);
+                }
+                const cmdStr = funcArgs && typeof funcArgs === 'object' ? toolCallToCommand(funcName, funcArgs) : null;
+                const textContent = choice.message.content?.trim() || '';
+                const fallbackText = (() => {
+                    if (typeof funcArgs === 'string') return funcArgs.trim();
+                    if (funcArgs && typeof funcArgs === 'object') {
+                        if (Array.isArray(funcArgs.actions) || funcArgs.command) {
+                            return JSON.stringify(funcArgs);
+                        }
+                        if (typeof funcArgs.reply === 'string') return funcArgs.reply.trim();
+                        if (typeof funcArgs.text === 'string') return funcArgs.text.trim();
+                        if (typeof funcArgs.content === 'string') return funcArgs.content.trim();
+                        const stringValues = Object.values(funcArgs).filter(v => typeof v === 'string');
+                        if (stringValues.length > 0) return stringValues.join(' ').trim();
+                    }
+                    return null;
+                })();
+
+                if (cmdStr) {
+                    res = textContent ? `${textContent} ${cmdStr}` : cmdStr;
+                } else if (fallbackText) {
+                    res = textContent ? `${textContent} ${fallbackText}` : fallbackText;
+                } else {
+                    console.warn(`OpenRouter returned unknown tool call: ${funcName}`);
+                    res = textContent || 'No response data from OpenRouter.';
+                }
+            } else {
+                res = choice.message.content;
+            }
+
+            if (res && res.includes('</think>')) {
+                if (!res.includes('<think>')) res = '<think>' + res;
+                res = res.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+            }
         } catch (err) {
-            console.error('Error while awaiting response:', err);
-            // If the error indicates a context-length problem, we can slice the turns array, etc.
-            res = 'My brain disconnected, try again.';
+            if ((err.message === 'Context length exceeded' || err.code === 'context_length_exceeded') && turns.length > 1) {
+                console.log('Context length exceeded, trying again with shorter context.');
+                return await this.sendRequest(turns.slice(1), systemMessage, tools, stop_seq);
+            } else if (err.message?.includes('image_url')) {
+                console.log(err);
+                res = 'Vision is only supported by certain models.';
+            } else {
+                console.error('Error while awaiting response:', err);
+                res = err.message || 'My brain disconnected, try again.';
+            }
         }
         return res;
     }
@@ -67,7 +132,7 @@ export class OpenRouter {
                 }
             ]
         });
-        
+
         return this.sendRequest(imageMessages, systemMessage);
     }
 

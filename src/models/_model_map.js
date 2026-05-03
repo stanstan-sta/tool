@@ -7,7 +7,7 @@ const __dirname = path.dirname(__filename);
 
 // Dynamically discover model classes in this directory.
 // Each model class must export a static `prefix` string.
-const apiMap = await (async () => {
+export const apiMap = await (async () => {
     const map = {};
     const files = (await fs.readdir(__dirname))
         .filter(f => f.endsWith('.js') && f !== '_model_map.js' && f !== 'prompter.js');

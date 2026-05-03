@@ -258,6 +258,20 @@ export function createMindServer(host_public = false, port = 8080) {
         });
     });
 
+    app.get('/api/model_prefixes', async (req, res) => {
+        try {
+            const { apiMap } = await import('../models/_model_map.js');
+            const prefixes = Object.keys(apiMap);
+            // Also include common known APIs that don't require a prefix
+            const knownSemantic = ['openai', 'anthropic', 'google', 'xai', 'mistral', 'deepseek', 'qwen'];
+            const allApis = [...new Set([...prefixes, ...knownSemantic])].sort();
+            res.json(allApis);
+        } catch (err) {
+            console.error('Failed to load model prefixes:', err);
+            res.status(500).json({ error: 'Failed to load model prefixes' });
+        }
+    });
+
     app.get('/api/debug_stats', async (req, res) => {
         const stats = {
             models: [],

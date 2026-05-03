@@ -539,9 +539,16 @@
                         </div>
                         <div class="profile-fields collapsed" id="profileFields">
                             <div class="profile-field-row">
+                                <label for="profileApiProvider">API Provider</label>
+                                <select id="profileApiProvider" onchange="onProfileApiChanged()">
+                                    <option value="">(auto-detect from model)</option>
+                                </select>
+                                <div class="field-hint">Select an API provider. Leaving it as "auto-detect" will allow the system to infer the API from the model name.</div>
+                            </div>
+                            <div class="profile-field-row">
                                 <label for="profileModel">Model</label>
-                                <input type="text" id="profileModel" placeholder='e.g. ollama/qwen2.5:7b or gpt-4o' oninput="onAgentSettingsChanged()">
-                                <div class="field-hint">Ollama: <code>ollama/&lt;model&gt;</code> &nbsp;|&nbsp; OpenAI: <code>gpt-4o</code> &nbsp;|&nbsp; Claude: <code>claude-3-5-sonnet-20241022</code></div>
+                                <input type="text" id="profileModel" placeholder='e.g. gpt-4o or claude-3-5-sonnet-20241022' oninput="onProfileModelChanged()">
+                                <div class="field-hint" id="profileModelHint">Enter the model name. It will be prefixed with the selected API (e.g. <code>openrouter/gpt-4o</code>).</div>
                             </div>
                             <div class="profile-field-row">
                                 <label for="profilePersonality">Personality / Character Description</label>
@@ -977,10 +984,34 @@
             const modelInput = document.getElementById('profileModel');
             const personalityInput = document.getElementById('profilePersonality');
             const conversingInput = document.getElementById('profileConversing');
-            if (modelInput) {
-                const modelVal = profile.model;
-                modelInput.value = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
-            }
+            const apiSelect = document.getElementById('profileApiProvider');
+
+            // Populate API dropdown from backend
+            populateApiDropdown().then(() => {
+                if (modelInput) {
+                    const modelVal = profile.model;
+                    const modelStr = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
+                    // Try to detect the API prefix from the model string
+                    if (modelStr && apiSelect) {
+                        const slashIdx = modelStr.indexOf('/');
+                        if (slashIdx > 0) {
+                            const prefix = modelStr.substring(0, slashIdx);
+                            // Check if this prefix exists in the dropdown
+                            const found = Array.from(apiSelect.options).some(opt => opt.value === prefix);
+                            if (found) {
+                                apiSelect.value = prefix;
+                                modelInput.value = modelStr.substring(slashIdx + 1);
+                            } else {
+                                modelInput.value = modelStr;
+                            }
+                        } else {
+                            modelInput.value = modelStr;
+                        }
+                    }
+                    updateModelHint();
+                }
+            });
+
             if (personalityInput) personalityInput.value = profile.personality || '';
             if (conversingInput) conversingInput.value = profile.conversing || '';
 
@@ -1016,9 +1047,11 @@
                 newSettings[key] = val;
             });
             // Read profile editor fields
+            const api = getSelectedApiPrefix();
             const modelRaw = (document.getElementById('profileModel') || {}).value || '';
-            try { newSettings.profile.model = JSON.parse(modelRaw); }
-            catch { newSettings.profile.model = modelRaw || baseProfile.model; }
+            const effectiveModel = api ? `${api}/${modelRaw}` : modelRaw;
+            try { newSettings.profile.model = JSON.parse(effectiveModel); }
+            catch { newSettings.profile.model = effectiveModel || baseProfile.model; }
             const personality = (document.getElementById('profilePersonality') || {}).value;
             if (personality !== undefined) newSettings.profile.personality = personality;
             const conversing = (document.getElementById('profileConversing') || {}).value;
@@ -1042,6 +1075,16 @@
             if (modelA !== modelB) return false;
             if ((ap.personality || '') !== (bp.personality || '')) return false;
             if ((ap.conversing || '') !== (bp.conversing || '')) return false;
+            // Compare API provider
+            const apiA = getSelectedApiPrefix();
+            // Reconstruct what the original API selection would be for b
+            const origModelB = bp.model || '';
+            let origApiB = '';
+            const origSlash = typeof origModelB === 'string' ? origModelB.indexOf('/') : -1;
+            if (origSlash > 0) {
+                origApiB = origModelB.substring(0, origSlash);
+            }
+            if (apiA !== origApiB) return false;
             return true;
         }
 
@@ -1053,6 +1096,54 @@
             toggle.textContent = collapsed ? '▼ expand' : '▲ collapse';
         }
         window.toggleProfileSection = toggleProfileSection;
+
+        // ── API Provider dropdown helpers ──────────────────────────
+        async function populateApiDropdown() {
+            const select = document.getElementById('profileApiProvider');
+            if (!select || select.options.length > 1) return; // already populated
+            try {
+                const res = await fetch('/api/model_prefixes');
+                if (!res.ok) return;
+                const prefixes = await res.json();
+                prefixes.forEach(api => {
+                    const opt = document.createElement('option');
+                    opt.value = api;
+                    opt.textContent = api;
+                    select.appendChild(opt);
+                });
+            } catch (e) {
+                console.warn('Failed to load API prefixes:', e);
+            }
+        }
+
+        function getSelectedApiPrefix() {
+            const select = document.getElementById('profileApiProvider');
+            return (select && select.value) ? select.value : '';
+        }
+
+        function updateModelHint() {
+            const hint = document.getElementById('profileModelHint');
+            if (!hint) return;
+            const api = getSelectedApiPrefix();
+            const modelEl = document.getElementById('profileModel');
+            const modelName = modelEl ? modelEl.value.trim() : '';
+            if (api) {
+                const full = modelName ? `${api}/${modelName}` : `${api}/<model>`;
+                hint.innerHTML = `Will be sent as <code>${full}</code>.`;
+            } else {
+                hint.innerHTML = 'Enter the model name. For prefixed APIs, select a provider above (e.g. <code>openrouter/gpt-4o</code>).';
+            }
+        }
+
+        function onProfileApiChanged() {
+            updateModelHint();
+            onAgentSettingsChanged();
+        }
+
+        function onProfileModelChanged() {
+            updateModelHint();
+            onAgentSettingsChanged();
+        }
 
         function onAgentSettingsChanged() {
             if (!originalAgentSettings) { applyBtn.disabled = true; return; }
