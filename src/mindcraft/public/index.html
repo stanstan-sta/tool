@@ -489,6 +489,7 @@
     <div class="page-footer">
         <div>
             <button id="openCreateAgentBtn" class="start-btn">New Agent</button>
+            <button id="openApiKeysBtn" class="neutral-btn" style="margin-left:8px;">🔑 API Keys</button>
         </div>
         <div style="display:flex; gap:12px;">
             <button class="stop-btn" onclick="disconnectAllAgents()">Disconnect All Agents</button>
@@ -597,6 +598,27 @@
                     <button id="deleteSelectedMemoryBtn" class="stop-btn">Delete Selected</button>
                     <button id="clearImportantMemoryBtn" class="neutral-btn">Clear All</button>
                     <button id="saveImportantMemoryBtn" class="start-btn">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Keys Modal -->
+    <div id="apiKeysModal" class="modal-backdrop" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 style="margin:0;">🔑 API Keys</h2>
+                <button id="closeApiKeysBtn" class="modal-close-btn">Close</button>
+            </div>
+            <div class="modal-body">
+                <p style="color:#aaa;font-size:0.85em;margin-top:0;">Keys are stored in <code>keys.json</code> (gitignored). Only masked values are shown — keys are never returned in plain text.</p>
+                <div id="apiKeysList" style="margin-top:12px;"></div>
+                <div id="apiKeysStatus" style="margin-top:8px;font-size:0.85em;"></div>
+            </div>
+            <div class="modal-footer">
+                <div class="footer-left">Set your API keys for the providers you use.</div>
+                <div class="footer-actions">
+                    <button id="saveApiKeysBtn" class="start-btn">Save Keys</button>
                 </div>
             </div>
         </div>
@@ -1480,6 +1502,98 @@
         }
         fetchDebugStats();
         setInterval(fetchDebugStats, 5000);
+
+        // ── API Keys Modal ───────────────────────────────────────
+        const apiKeysModal = document.getElementById('apiKeysModal');
+        const apiKeysList = document.getElementById('apiKeysList');
+        const apiKeysStatus = document.getElementById('apiKeysStatus');
+
+        document.getElementById('openApiKeysBtn').addEventListener('click', () => {
+            loadApiKeys();
+            apiKeysModal.style.display = 'flex';
+        });
+
+        document.getElementById('closeApiKeysBtn').addEventListener('click', () => {
+            apiKeysModal.style.display = 'none';
+        });
+
+        async function loadApiKeys() {
+            apiKeysList.innerHTML = 'Loading...';
+            apiKeysStatus.textContent = '';
+            try {
+                const res = await fetch('/api/keys');
+                if (!res.ok) throw new Error('Failed to load keys');
+                const data = await res.json();
+                apiKeysList.innerHTML = '';
+                const sorted = Object.keys(data).sort();
+                sorted.forEach(keyName => {
+                    const info = data[keyName];
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 8px;background:#3a3a3a;border-radius:4px;';
+
+                    const label = document.createElement('span');
+                    label.textContent = keyName;
+                    label.style.cssText = 'flex:0 0 240px;font-size:0.85em;color:#ccc;font-family:monospace;';
+
+                    const input = document.createElement('input');
+                    input.type = 'password';
+                    input.id = `apikey-input-${keyName}`;
+                    input.placeholder = info.set ? '(unchanged)' : 'Enter key...';
+                    input.style.cssText = 'flex:1;background:#262626;border:1px solid #555;color:#e0e0e0;border-radius:4px;padding:4px 8px;font-size:0.85em;';
+
+                    const status = document.createElement('span');
+                    status.style.cssText = 'flex:0 0 200px;font-size:0.8em;';
+                    if (info.set) {
+                        status.textContent = `✅ ${info.mask}`;
+                        status.style.color = '#4CAF50';
+                    } else {
+                        status.textContent = '❌ not set';
+                        status.style.color = '#f44336';
+                    }
+
+                    row.appendChild(label);
+                    row.appendChild(input);
+                    row.appendChild(status);
+                    apiKeysList.appendChild(row);
+                });
+            } catch (e) {
+                apiKeysList.innerHTML = '<span style="color:#f44336;">Failed to load keys</span>';
+            }
+        }
+
+        document.getElementById('saveApiKeysBtn').addEventListener('click', async () => {
+            const updates = {};
+            const inputs = apiKeysList.querySelectorAll('input[type="password"]');
+            inputs.forEach(input => {
+                const keyName = input.id.replace('apikey-input-', '');
+                const val = input.value.trim();
+                if (val) updates[keyName] = val;
+            });
+            if (Object.keys(updates).length === 0) {
+                apiKeysStatus.textContent = 'No changes to save.';
+                apiKeysStatus.style.color = '#aaa';
+                return;
+            }
+            apiKeysStatus.textContent = 'Saving...';
+            apiKeysStatus.style.color = '#aaa';
+            try {
+                const res = await fetch('/api/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updates)
+                });
+                if (!res.ok) throw new Error('Save failed');
+                apiKeysStatus.textContent = '✅ Keys saved successfully!';
+                apiKeysStatus.style.color = '#4CAF50';
+                // Clear all password inputs
+                inputs.forEach(i => { i.value = ''; });
+                // Reload to show updated masks
+                setTimeout(loadApiKeys, 800);
+            } catch (e) {
+                apiKeysStatus.textContent = '❌ Failed to save keys.';
+                apiKeysStatus.style.color = '#f44336';
+            }
+        });
     </script>
 </body>
 </html> 

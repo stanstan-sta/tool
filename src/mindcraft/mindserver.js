@@ -258,6 +258,70 @@ export function createMindServer(host_public = false, port = 8080) {
         });
     });
 
+    app.get('/api/keys', async (req, res) => {
+        try {
+            const keysPath = path.join(__dirname, '../../keys.json');
+            const examplePath = path.join(__dirname, '../../keys.example.json');
+            let keys = {};
+            let exampleKeys = {};
+            try {
+                const data = readFileSync(keysPath, 'utf8');
+                keys = JSON.parse(data);
+            } catch (e) { /* keys.json may not exist yet */ }
+            try {
+                const data = readFileSync(examplePath, 'utf8');
+                exampleKeys = JSON.parse(data);
+            } catch (e) { /* no example either */ }
+
+            const result = {};
+            for (const k of Object.keys(exampleKeys)) {
+                const val = keys[k];
+                if (val && typeof val === 'string' && val.length > 0) {
+                    const mask = val.length > 8 ? val.substring(0, 4) + '...' + val.substring(val.length - 4) : '***';
+                    result[k] = { set: true, mask };
+                } else {
+                    result[k] = { set: false, mask: null };
+                }
+            }
+            // Include any extra keys not in example
+            for (const k of Object.keys(keys)) {
+                if (!result[k]) {
+                    const val = keys[k];
+                    const mask = val.length > 8 ? val.substring(0, 4) + '...' + val.substring(val.length - 4) : '***';
+                    result[k] = { set: true, mask };
+                }
+            }
+            res.json(result);
+        } catch (err) {
+            console.error('Failed to load keys:', err);
+            res.status(500).json({ error: 'Failed to load keys' });
+        }
+    });
+
+    app.post('/api/keys', express.json(), async (req, res) => {
+        try {
+            const keysPath = path.join(__dirname, '../../keys.json');
+            let keys = {};
+            try {
+                const data = readFileSync(keysPath, 'utf8');
+                keys = JSON.parse(data);
+            } catch (e) { /* may not exist */ }
+            const updates = req.body;
+            for (const [k, v] of Object.entries(updates)) {
+                if (typeof v === 'string' && v.length > 0) {
+                    keys[k] = v;
+                } else {
+                    delete keys[k];
+                }
+            }
+            writeFileSync(keysPath, JSON.stringify(keys, null, 4), 'utf8');
+            res.json({ success: true });
+        } catch (err) {
+            console.error('Failed to save keys:', err);
+            res.status(500).json({ error: 'Failed to save keys' });
+        }
+    });
+
     app.get('/api/model_prefixes', async (req, res) => {
         try {
             const { apiMap } = await import('../models/_model_map.js');
