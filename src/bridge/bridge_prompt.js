@@ -36,8 +36,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
             '',
             'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
-            '  #craft, #mine <block> <count>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-            '',
+            '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
             'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
             'Never invent new types. For anything else, use raw_command with the # prefix.',
           ].join('\n');
@@ -54,11 +53,9 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
 
     const craftingRules = [
             'CRAFTING RULES:',
-            '- {"type":"craft","item":"stick","count":4} tells the bridge to find the nearest crafting table within 32 blocks, walk to it, open it, fill the recipe, and take the result. You do NOT need to open the GUI yourself.',
-            '- If chat shows "[Bridge] No crafting table found...", craft a crafting_table from 4 planks, place it on the ground, THEN retry the craft action (the bridge will now see the placed table).',
-            '- If chat shows "[Bridge] Crafting table is in your inventory but not placed...", place the table on the ground first, THEN retry the craft action.',
-            '- Watch for "[Bridge] Found crafting table at X Y Z" → "[Bridge] Crafting table opened." → "[Bridge] Crafting complete: Nx item" in chat to confirm success.',
-            '- If ingredients are missing, the bridge will report that too. Make sure you have the right materials before crafting.',
+            '- Crafting is fully automatic. Send a craft action and the bridge finds the nearest crafting table, walks to it, opens it, fills the recipe, and extracts the result.',
+            '- If no crafting table is nearby, the bridge will ask you to place one. If ingredients are missing, it will tell you what is needed.',
+            '- Use {"type":"craft","item":"<name>","count":<N>} e.g. {"type":"craft","item":"stick","count":16}. The item name must match a recipe in the database (planks, sticks, crafting_table, torches, furnaces, basic tools, doors, fences, chests, etc.).',
           ].join('\n');
 
     const topographyDocs = settings.use_textual_topography
