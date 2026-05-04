@@ -44,11 +44,12 @@ public class StateCollector {
     }
 
     private static void routeBaritoneToTaskQueue(String content) {
-        if (content == null || !content.startsWith("[Baritone]")) return;
-        if (content.contains("All queued tasks complete")) {
+        String clean = stripChatFormatting(content);
+        if (clean == null || !clean.contains("[Baritone]")) return;
+        if (clean.contains("All queued tasks complete")) {
             TaskQueue.getInstance().onBaritoneComplete();
-        } else if (content.startsWith("[Baritone] Task failed:")) {
-            String reason = content.substring("[Baritone] Task failed:".length()).trim();
+        } else if (clean.contains("Task failed:")) {
+            String reason = clean.substring(clean.indexOf("Task failed:") + "Task failed:".length()).trim();
             TaskQueue.getInstance().onBaritoneFailed(reason);
         }
     }
@@ -68,9 +69,10 @@ public class StateCollector {
 
             // Route Baritone status messages even when they come through the CHAT channel
             // (some Baritone builds emit them as player chat rather than system overlay).
-            if (content != null && content.startsWith("[Baritone]")) {
-                routeBaritoneToTaskQueue(content);
-                chatQueue.add(new ChatEvent("baritone_queue", content, null));
+            String cleanContent = stripChatFormatting(content);
+            if (cleanContent != null && cleanContent.contains("[Baritone]")) {
+                routeBaritoneToTaskQueue(cleanContent);
+                chatQueue.add(new ChatEvent("baritone_queue", cleanContent, null));
                 return;
             }
 
@@ -112,9 +114,10 @@ public class StateCollector {
             // Detect Baritone task-queue status messages and route to TaskQueue.
             // The contract: Baritone logs "[Baritone] All queued tasks complete"
             // on success and "[Baritone] Task failed: <label> - <outcome>" on failure.
-            if (content != null && content.startsWith("[Baritone]")) {
-                routeBaritoneToTaskQueue(content);
-                chatQueue.add(new ChatEvent("baritone_queue", content, null));
+            String cleanContent = stripChatFormatting(content);
+            if (cleanContent != null && cleanContent.contains("[Baritone]")) {
+                routeBaritoneToTaskQueue(cleanContent);
+                chatQueue.add(new ChatEvent("baritone_queue", cleanContent, null));
                 return;
             }
             String type = overlay ? "system" : "player";
@@ -348,6 +351,11 @@ public class StateCollector {
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
                 .replace("\r", "\\r");
+    }
+
+    private static String stripChatFormatting(String s) {
+        if (s == null) return null;
+        return s.replaceAll("\\u00A7[0-9A-FK-ORa-fk-or]", "");
     }
 
     private static class ChatEvent {

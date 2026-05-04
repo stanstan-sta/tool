@@ -13,6 +13,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Executes Minecraft commands and typed actions on the client.
@@ -93,8 +94,8 @@ public class CommandExecutor {
         }
         if (count < 1) count = 1;
 
-        // Schedule all Minecraft-state-dependent work on the render thread.
-        // The HTTP thread blocks on the future (typically <50ms until next tick).
+        // Queue the Baritone command on the render thread; the table UI work starts
+        // after #craft opens the crafting table.
         final String targetItem = itemName;
         final int targetCount = count;
         java.util.concurrent.CompletableFuture<String> future = new java.util.concurrent.CompletableFuture<>();
@@ -125,8 +126,14 @@ public class CommandExecutor {
 
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] Opening nearest crafting table with #craft..."), false);
-                TaskQueue.getInstance().enqueueWithCallback("#craft",
-                        () -> craftPostAction(targetItem, targetCount));
+                AtomicBoolean craftStarted = new AtomicBoolean(false);
+                Runnable craftOnce = () -> {
+                    if (craftStarted.compareAndSet(false, true)) {
+                        craftPostAction(targetItem, targetCount);
+                    }
+                };
+                TaskQueue.getInstance().enqueueWithCallback("#craft", craftOnce);
+                watchForCraftingScreen(client, craftOnce);
                 future.complete("craft: queued #craft; will craft " + targetCount + "x " + targetItem + " after table opens");
             } catch (Exception e) {
                 future.complete("craft: error â€” " + e.getMessage());
@@ -140,33 +147,60 @@ public class CommandExecutor {
         }
     }
 
-    private static void craftPostAction(String itemName, int count) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        ClientPlayerEntity player = client.player;
-        ClientPlayerInteractionManager im = client.interactionManager;
-        if (player == null || im == null) return;
+    private static void watchForCraftingScreen(MinecraftClient client, Runnable craftAction) {
+        Thread watcher = new Thread(() -> {
+            for (int wait = 0; wait < 200; wait++) {
+                if (Boolean.TRUE.equals(callClient(() -> {
+                    ClientPlayerEntity player = client.player;
+                    return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
+                }))) {
+                    callClient(() -> {
+                        craftAction.run();
+                        return null;
+                    });
+                    return;
+                }
+                sleep(50);
+            }
+            sendBridgeMessage("[Bridge] Crafting failed: crafting table screen never opened.");
+        }, "mindcraft-craft-screen-watcher");
+        watcher.setDaemon(true);
+        watcher.start();
+    }
 
-        ScreenHandler screen = null;
+    private static void craftPostAction(String itemName, int count) {
+        Thread worker = new Thread(() -> craftPostActionWorker(itemName, count), "mindcraft-craft-runner");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private static void craftPostActionWorker(String itemName, int count) {
+        MinecraftClient client = MinecraftClient.getInstance();
+
         for (int wait = 0; wait < 20; wait++) {
-            screen = player.currentScreenHandler;
-            if (screen instanceof CraftingScreenHandler) break;
+            if (Boolean.TRUE.equals(callClient(() -> {
+                ClientPlayerEntity player = client.player;
+                return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
+            }))) {
+                break;
+            }
             sleep(50);
         }
-        if (!(screen instanceof CraftingScreenHandler)) {
-            player.sendMessage(net.minecraft.text.Text.literal(
-                    "[Bridge] Crafting failed: crafting table did not open."), false);
+        if (!Boolean.TRUE.equals(callClient(() -> {
+            ClientPlayerEntity player = client.player;
+            return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
+        }))) {
+            sendBridgeMessage("[Bridge] Crafting failed: crafting table did not open.");
             return;
         }
 
-        player.sendMessage(net.minecraft.text.Text.literal(
-                "[Bridge] Crafting table opened. Starting craft of " + count + "x " + itemName + "..."), false);
+        sendBridgeMessage("[Bridge] Crafting table opened. Starting craft of " + count + "x " + itemName + "...");
 
-        int syncId = screen.syncId;
         Identifier itemId = itemName.contains(":")
                 ? Identifier.tryParse(itemName)
                 : Identifier.of("minecraft", itemName);
         if (itemId == null) {
-            player.sendMessage(net.minecraft.text.Text.literal("[Bridge] Invalid item: " + itemName), false);
+            sendBridgeMessage("[Bridge] Invalid item: " + itemName);
             return;
         }
 
@@ -176,8 +210,7 @@ public class CommandExecutor {
         }
         RecipeData recipe = RECIPE_DATABASE.get(itemKey);
         if (recipe == null) {
-            player.sendMessage(net.minecraft.text.Text.literal(
-                    "[Bridge] No recipe found for " + itemName + " in recipe database."), false);
+            sendBridgeMessage("[Bridge] No recipe found for " + itemName + " in recipe database.");
             return;
         }
 
@@ -185,34 +218,68 @@ public class CommandExecutor {
         int maxAttempts = Math.min(count, 64);
 
         for (int attempt = 0; attempt < maxAttempts && craftedTotal < count; attempt++) {
-            if (!(player.currentScreenHandler instanceof CraftingScreenHandler)) {
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Table closed. Crafted " + craftedTotal + "x " + itemName), false);
+            if (!Boolean.TRUE.equals(callClient(() -> {
+                ClientPlayerEntity player = client.player;
+                return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
+            }))) {
+                sendBridgeMessage("[Bridge] Table closed. Crafted " + craftedTotal + "x " + itemName);
                 return;
             }
-            screen = player.currentScreenHandler;
-            syncId = screen.syncId;
 
-            boolean filled = fillGridFromRecipe(player, im, screen, syncId, recipe);
+            boolean filled = Boolean.TRUE.equals(callClient(() -> {
+                ClientPlayerEntity player = client.player;
+                ClientPlayerInteractionManager im = client.interactionManager;
+                if (player == null || im == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
+                    return false;
+                }
+                ScreenHandler screen = player.currentScreenHandler;
+                return fillGridFromRecipe(player, im, screen, screen.syncId, recipe);
+            }));
             if (!filled) {
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Failed to fill recipe for " + itemName + ". Crafted " + craftedTotal + "x."), false);
+                sendBridgeMessage("[Bridge] Failed to fill recipe for " + itemName + ". Crafted " + craftedTotal + "x.");
                 break;
             }
-            sleep(120);
+            sleep(100);
 
-            int resultCount = takeCraftingResult(player, im, screen, syncId, itemId);
+            int resultCount = 0;
+            for (int wait = 0; wait < 20; wait++) {
+                resultCount = callClient(() -> {
+                    ClientPlayerEntity player = client.player;
+                    ClientPlayerInteractionManager im = client.interactionManager;
+                    if (player == null || im == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
+                        return 0;
+                    }
+                    ScreenHandler screen = player.currentScreenHandler;
+                    return takeCraftingResult(player, im, screen, screen.syncId, itemId);
+                });
+                if (resultCount > 0) break;
+                sleep(50);
+            }
             if (resultCount > 0) {
                 craftedTotal += resultCount;
             } else {
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] No result in output slot. Stopping."), false);
+                String gridState = callClient(() -> {
+                    ClientPlayerEntity player = client.player;
+                    if (player == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
+                        return "table closed";
+                    }
+                    return describeCraftingGrid(player.currentScreenHandler);
+                });
+                sendBridgeMessage("[Bridge] Crafting grid after fill: " + gridState);
+                sendBridgeMessage("[Bridge] No result in output slot. Stopping.");
                 break;
             }
         }
-        player.closeHandledScreen();
-        player.sendMessage(net.minecraft.text.Text.literal(
-                "[Bridge] Crafting complete: " + craftedTotal + "x " + itemName), false);
+        final int finalCraftedTotal = craftedTotal;
+        callClient(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player != null) {
+                player.closeHandledScreen();
+                player.sendMessage(net.minecraft.text.Text.literal(
+                        "[Bridge] Crafting complete: " + finalCraftedTotal + "x " + itemName), false);
+            }
+            return null;
+        });
     }
 
     private static boolean fillGridFromRecipe(ClientPlayerEntity player,
@@ -220,33 +287,42 @@ public class CommandExecutor {
                                                ScreenHandler screen,
                                                int syncId,
                                                RecipeData recipe) {
-        PlayerInventory inv = player.getInventory();
         for (GridSlot slot : recipe.slots) {
-            boolean found = false;
-            for (int invSlot = 0; invSlot < 36; invSlot++) {
-                ItemStack stack = inv.getStack(invSlot);
-                if (stack.isEmpty()) continue;
-                String stackId = getItemId(stack);
-                if (matchesItemId(stackId, slot.ingredientPatterns)) {
-                    int screenInvSlot = invSlotToScreenSlot(invSlot);
-                    im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-                    sleep(60);
-                    im.clickSlot(syncId, slot.gridIndex, 1, SlotActionType.PICKUP, player);
-                    sleep(60);
-                    im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
-                    sleep(60);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
+            int screenInvSlot = findMatchingInventoryScreenSlot(screen, slot.ingredientPatterns);
+            if (screenInvSlot < 0) {
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] Missing ingredient for slot " + slot.gridIndex + " in " + recipe.output
                         + ". Try: " + String.join(", ", slot.ingredientPatterns)), false);
                 return false;
             }
+            im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
+            im.clickSlot(syncId, slot.gridIndex, 1, SlotActionType.PICKUP, player);
+            im.clickSlot(syncId, screenInvSlot, 0, SlotActionType.PICKUP, player);
         }
         return true;
+    }
+
+    private static int findMatchingInventoryScreenSlot(ScreenHandler screen, List<String> patterns) {
+        // CraftingScreenHandler slots 0-9 are output + 3x3 grid; player inventory starts at 10.
+        for (int screenSlot = 10; screenSlot < screen.slots.size(); screenSlot++) {
+            ItemStack stack = screen.getSlot(screenSlot).getStack();
+            if (stack.isEmpty()) continue;
+            if (matchesItemId(getItemId(stack), patterns)) {
+                return screenSlot;
+            }
+        }
+        return -1;
+    }
+
+    private static String describeCraftingGrid(ScreenHandler screen) {
+        List<String> filled = new ArrayList<>();
+        for (int gridSlot = 1; gridSlot <= 9; gridSlot++) {
+            ItemStack stack = screen.getSlot(gridSlot).getStack();
+            if (!stack.isEmpty()) {
+                filled.add(gridSlot + "=" + getItemId(stack) + "x" + stack.getCount());
+            }
+        }
+        return filled.isEmpty() ? "empty" : String.join(", ", filled);
     }
 
     private static boolean matchesItemId(String itemId, List<String> patterns) {
@@ -301,7 +377,7 @@ public class CommandExecutor {
 
         // Stick (2 planks vertical -> 4)
         db.put("stick", new RecipeData("stick", lst(
-            gs(1, lst("*_planks")), gs(5, lst("*_planks"))
+            gs(1, lst("*_planks")), gs(4, lst("*_planks"))
         ), 4));
 
         // Crafting Table (4 planks in 2x2 -> 1)
@@ -495,7 +571,6 @@ public class CommandExecutor {
         if (resultStack.isEmpty() || !getItemId(resultStack).equals(expectedItem.toString())) return 0;
         int count = resultStack.getCount();
         im.clickSlot(syncId, 0, 0, SlotActionType.QUICK_MOVE, player);
-        sleep(80);
         return count;
     }
 
@@ -550,13 +625,42 @@ public class CommandExecutor {
         return s;
     }
 
-    private static int invSlotToScreenSlot(int invSlot) {
-        if (invSlot < 9) return 37 + invSlot;
-        return 10 + (invSlot - 9);
-    }
-
     private static void sleep(long ms) {
         try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
+
+    private static <T> T callClient(java.util.concurrent.Callable<T> action) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.isOnThread()) {
+            try {
+                return action.call();
+            } catch (Exception e) {
+                throw new RuntimeException("Minecraft client-thread action failed", e);
+            }
+        }
+        java.util.concurrent.CompletableFuture<T> future = new java.util.concurrent.CompletableFuture<>();
+        client.execute(() -> {
+            try {
+                future.complete(action.call());
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+        try {
+            return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new RuntimeException("Timed out waiting for Minecraft client thread", e);
+        }
+    }
+
+    private static void sendBridgeMessage(String message) {
+        callClient(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player != null) {
+                client.player.sendMessage(net.minecraft.text.Text.literal(message), false);
+            }
+            return null;
+        });
     }
 
     // â”€â”€â”€ Capabilities / commands JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
