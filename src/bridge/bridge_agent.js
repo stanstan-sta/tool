@@ -4,6 +4,7 @@ import { FabricBridge } from './fabric_bridge.js';
 import { buildBridgeSystemPrompt } from './bridge_prompt.js';
 import { buildBridgeTopographySystemMessage } from './topography.js';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
+import { wiki } from '../utils/MinecraftWiki.js';
 import settings from '../agent/settings.js';
 
 const POLL_MIN_MS = 800;
@@ -389,7 +390,8 @@ export class BridgeAgent {
 
     /**
      * Build a state summary string for injection into the LLM's context.
-     * Includes inventory, position, health, nearby entities, and queue status.
+     * Includes inventory, position, health, nearby entities, queue status,
+     * and a COMPLETE crafting analysis based on wiki recipe validation.
      */
     _buildStateContext(state) {
         if (!state || !state.connected) return null;
@@ -411,12 +413,163 @@ export class BridgeAgent {
         ctx += `Nearby players: ${nearby}\n`;
         ctx += `Nearby entities: ${entities}`;
 
-        // Include craftable items if available
-        if (state.craftable && Array.isArray(state.craftable) && state.craftable.length > 0) {
-            ctx += `\nCraftable: ${state.craftable.join(', ')}`;
-        }
+        // ── Crafting analysis based on wiki recipe validation ─────────────
+        ctx += this._buildCraftingAnalysis(state.inventory);
 
         return ctx;
+    }
+
+    /**
+     * Analyze the player's inventory against all wiki crafting recipes
+     * and produce a structured summary of what can be crafted now, and
+     * what is close to being craftable (missing 1-2 ingredient types).
+     * @param {Array<{slot:number,item:string,count:number}>} inventory
+     * @returns {string}
+     */
+    _buildCraftingAnalysis(inventory) {
+        if (!inventory || inventory.length === 0) return '\n\nCRAFTING ANALYSIS:\n  (empty inventory — nothing craftable)';
+
+        const craftingRecipes = wiki.data?.recipes?.crafting || {};
+        const smeltingRecipes = wiki.data?.recipes?.smelting || {};
+        const fuelItems = Object.keys(wiki.data?.categories?.fuel?.items || {});
+        const plankItems = [
+            'oak_planks', 'spruce_planks', 'birch_planks', 'jungle_planks',
+            'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks',
+            'bamboo_planks',
+        ];
+        const equivalentCount = (counts, ingredient) => {
+            const key = String(ingredient || '').toLowerCase();
+            if (key === 'oak_planks') {
+                return plankItems.reduce((sum, item) => sum + (counts.get(item) || 0), 0);
+            }
+            return counts.get(key) || 0;
+        };
+        const missingIngredients = (counts, recipe) => {
+            const missing = [];
+            for (const [ingredient, qtyNeeded] of Object.entries(recipe.ingredients || {})) {
+                const qtyOwned = equivalentCount(counts, ingredient);
+                if (qtyOwned < qtyNeeded) {
+                    missing.push({ ingredient, qtyNeeded, qtyOwned });
+                }
+            }
+            return missing;
+        };
+        const hasIngredients = (counts, recipe) => missingIngredients(counts, recipe).length === 0;
+
+        // Build effective item counts (what we own + what we can craft from what we own)
+        const itemCounts = new Map();
+        for (const stack of inventory) {
+            if (!stack || !stack.item) continue;
+            const name = stack.item.replace('minecraft:', '').toLowerCase();
+            itemCounts.set(name, (itemCounts.get(name) || 0) + stack.count);
+        }
+        const directCounts = new Map(itemCounts);
+        const directCraftable = new Set();
+        for (const [outputItem, recipe] of Object.entries(craftingRecipes)) {
+            if (!recipe || !recipe.ingredients) continue;
+            if (hasIngredients(directCounts, recipe)) {
+                directCraftable.add(outputItem);
+            }
+        }
+
+        // Resolve transitive crafting: repeatedly check which intermediates we can
+        // craft from current effective counts, add them, and re-test. Stop when no
+        // new items are discovered (max 5 passes to prevent infinite loops).
+        const knownCraftable = new Set();
+        for (let pass = 0; pass < 5; pass++) {
+            let added = false;
+            for (const [outputItem, recipe] of Object.entries(craftingRecipes)) {
+                if (!recipe || !recipe.ingredients) continue;
+                if (knownCraftable.has(outputItem)) continue;
+
+                if (hasIngredients(itemCounts, recipe)) {
+                    // Add this output to effective counts (assume we craft at least 1 batch)
+                    const outputQty = recipe.output || 1;
+                    itemCounts.set(outputItem.toLowerCase(), (itemCounts.get(outputItem.toLowerCase()) || 0) + outputQty);
+                    knownCraftable.add(outputItem);
+                    added = true;
+                }
+            }
+            if (!added) break;
+        }
+
+        // Direct items can be sent as one craft action. Transitive items need
+        // prerequisite craft actions queued first.
+        const directlyCraftable = [];
+        const craftableAfterPrereqs = [];
+        const nearlyCraftable = [];
+
+        for (const [outputItem, recipe] of Object.entries(craftingRecipes)) {
+            if (!recipe || !recipe.ingredients) continue;
+
+            const directMissing = missingIngredients(directCounts, recipe);
+            const transitiveMissing = missingIngredients(itemCounts, recipe);
+
+            if (directMissing.length === 0) {
+                directlyCraftable.push(outputItem);
+            } else if (transitiveMissing.length === 0) {
+                const prereqs = directMissing
+                    .flatMap(m => {
+                        const ingredient = String(m.ingredient || '').toLowerCase();
+                        if (ingredient === 'oak_planks') {
+                            return [...directCraftable].filter(item => item.endsWith('_planks'));
+                        }
+                        return knownCraftable.has(ingredient) ? [ingredient] : [];
+                    })
+                    .filter((item, idx, arr) => item && arr.indexOf(item) === idx);
+                craftableAfterPrereqs.push(prereqs.length > 0
+                    ? `${outputItem} [queue first: ${prereqs.join(', ')}]`
+                    : `${outputItem} [queue prerequisite crafts first]`);
+            } else if (transitiveMissing.length <= 2 && transitiveMissing.length > 0) {
+                nearlyCraftable.push(`${outputItem} [missing: ${transitiveMissing.map(m =>
+                    `${m.ingredient} (need ${m.qtyNeeded}, have ${m.qtyOwned})`
+                ).join(', ')}]`);
+            }
+        }
+
+        // Also check smelting recipes (non-transitive for simplicity)
+        for (const [outputItem, recipe] of Object.entries(smeltingRecipes)) {
+            if (!recipe || !recipe.input) continue;
+            const inputs = recipe.input.split('+').map(s => s.trim().toLowerCase());
+            const hasAllInputs = inputs.every(inp =>
+                inp === 'any_fuel' ||
+                inp === 'any_log' ||
+                equivalentCount(directCounts, inp) > 0
+            );
+            if (hasAllInputs) {
+                const hasFuel = fuelItems.some(f => directCounts.has(f.toLowerCase()));
+                if (hasFuel) {
+                    directlyCraftable.push(`${outputItem} (furnace)`);
+                } else {
+                    nearlyCraftable.push(`${outputItem} (furnace) [missing: fuel]`);
+                }
+            } else {
+                const needed = inputs.filter(inp =>
+                    inp !== 'any_fuel' &&
+                    inp !== 'any_log' &&
+                    equivalentCount(directCounts, inp) <= 0
+                );
+                if (needed.length <= 2 && needed.length > 0) {
+                    nearlyCraftable.push(`${outputItem} (furnace) [missing: ${needed.join(', ')}]`);
+                }
+            }
+        }
+
+        let analysis = '\n\nCRAFTING ANALYSIS:';
+        analysis += '\n  Bridge auto-expands stick crafts: if logs are available, craft stick directly and the bridge will craft matching planks first.';
+        if (directlyCraftable.length > 0) {
+            analysis += `\n  Directly craftable now: ${directlyCraftable.join(', ')}`;
+        } else {
+            analysis += '\n  Directly craftable now: (nothing - gather more materials first)';
+        }
+        if (craftableAfterPrereqs.length > 0) {
+            analysis += `\n  Craftable after prerequisites: ${craftableAfterPrereqs.join('; ')}`;
+        }
+        if (nearlyCraftable.length > 0) {
+            analysis += `\n  Nearly craftable (missing 1-2 items): ${nearlyCraftable.join('; ')}`;
+        }
+
+        return analysis;
     }
 
     /**
@@ -472,6 +625,33 @@ export class BridgeAgent {
                                 setTimeout(() => {
                                     if (!this.stopped) this._continuePlan();
                                 }, 500);
+                            }
+
+                            // Detect task failure → skip the failed task and auto-recover
+                            if (message.includes('Task failed:')) {
+                                const reason = message.substring(message.indexOf('Task failed:') + 'Task failed:'.length).trim();
+                                console.log(`${this.name} task failed: ${reason}`);
+                                sendOutputToServer(this.name, `⚠️ Task failed: ${reason}`);
+
+                                // Clear the failed batch. Later actions often depend on the
+                                // failed one, so continuing stale pending work is unsafe.
+                                const cancelResult = await this.bridge.cancelQueue();
+                                if (cancelResult.success) {
+                                    console.log(`${this.name} cleared failed queue, replanning`);
+                                    sendOutputToServer(this.name, `Cleared failed queue`);
+                                } else {
+                                    console.warn(`${this.name} failed to clear queue: ${cancelResult.error}`);
+                                }
+
+                                // Reset continuation state — the failure broke our plan
+                                this._pendingContinuation = false;
+                                this._lastHadActions = false;
+
+                                // Schedule an LLM re-invoke so the bot can adapt
+                                // (e.g., craft planks before trying sticks again)
+                                setTimeout(() => {
+                                    if (!this.stopped) this._handleFailureRecovery(reason, state);
+                                }, 800);
                             }
                             continue;
                         }
@@ -550,6 +730,109 @@ export class BridgeAgent {
 
             await new Promise(r => setTimeout(r, this._pollIntervalMs));
         }
+    }
+
+    /**
+     * Called when a queued task fails. Skips the failed task, gets fresh state,
+     * and re-invokes the LLM so it can adapt its plan (e.g., craft prerequisites first).
+     * @param {string} reason - the failure reason from Baritone
+     * @param {object} state - the state snapshot at the time of failure
+     */
+    _recordQueueDispatch(label, batchResult, fallbackCount) {
+        const queued = batchResult?.queued ?? fallbackCount;
+        if (queued > 0) {
+            this._lastHadActions = true;
+            this._pendingContinuation = true;
+            sendOutputToServer(this.name, `⚡ Queued ${queued} ${label}(s) for sequential execution`);
+            this.history.add('system', `Queued ${queued} ${label}(s). Queue will advance according to each entry completion policy.`);
+            return queued;
+        }
+
+        this._lastHadActions = false;
+        this._pendingContinuation = false;
+        const detail = batchResult?.output ? ` (${batchResult.output})` : '';
+        sendOutputToServer(this.name, `⚠️ Queued 0 ${label}(s)${detail}`);
+        this.history.add('system', `Queued 0 ${label}(s)${detail}. Nothing is running; replan from current state.`);
+        return 0;
+    }
+
+    async _handleFailureRecovery(reason, state) {
+        // Get fresh state after clearing the failed batch
+        const freshState = await this.bridge.getState();
+        if (!freshState || !freshState.connected) return;
+
+        this._lastState = freshState;
+
+        // Inject updated state + failure context into history
+        const stateContext = this._buildStateContext(freshState);
+        if (stateContext) {
+            this.history.add('system', stateContext);
+        }
+        this.history.add('system', `Previous action failed: ${reason}. The failed batch has been cleared. You should try an alternative approach or check what went wrong.`);
+
+        // Build prompt and re-invoke LLM
+        const history = this.history.getHistory();
+        if (settings.use_textual_topography === true && freshState?.surface_map) {
+            history.push({
+                role: 'system',
+                content: buildBridgeTopographySystemMessage(freshState.surface_map, {
+                    format: settings.textual_topography_format || 'coordinate_list'
+                })
+            });
+        }
+        const wantStructured = settings.bridge_structured_output === true;
+        if (wantStructured) {
+            history.push({
+                role: 'system',
+                content: buildBridgeSystemPrompt(settings, this.history.memory),
+            });
+        }
+
+        let response;
+        try {
+            response = await this.prompter.promptConvo(history);
+        } catch (err) {
+            console.error('LLM error in failure recovery:', err);
+            return;
+        }
+
+        if (!response || response.trim().length === 0) return;
+        console.log(`${this.name} failure recovery LLM response: ${response}`);
+
+        const { chat, commands, actions } = parseBridgeResponse(response, wantStructured);
+        const chatText = /^(no response needed|no reply|none|n\/a)$/i.test(chat.trim()) ? '' : chat;
+
+        this.history.add(this.name, response);
+
+        if (chatText.trim()) {
+            sendOutputToServer(this.name, chatText.trim());
+            if (settings.chat_ingame === true) {
+                this._trackSentChat(chatText.trim());
+                await this.bridge.sendCommand(`chat: ${chatText.trim()}`);
+            }
+        }
+
+        if (actions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(actions);
+            if (batchResult.success) {
+                this._recordQueueDispatch('action', batchResult, actions.length);
+            } else {
+                this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `⚠️ Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+            }
+        }
+
+        if (commands.length > 0) {
+            const batchResult = await this.bridge.sendBatchCommands(commands);
+            if (batchResult.success) {
+                this._recordQueueDispatch('command', batchResult, commands.length);
+            } else {
+                this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `⚠️ Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+            }
+        }
+
+        this.history.save();
     }
 
     /**
@@ -633,11 +916,7 @@ export class BridgeAgent {
         if (actions.length > 0) {
             const batchResult = await this.bridge.sendBatch(actions);
             if (batchResult.success) {
-                this._lastHadActions = true;
-                this._pendingContinuation = true;
-                const queued = batchResult.queued || actions.length;
-                sendOutputToServer(this.name, `⚡ Queued ${queued} action(s) for sequential execution`);
-                this.history.add('system', `Queued ${queued} action(s). Queue will advance on Baritone completion signals.`);
+                this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
                 const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
@@ -648,11 +927,7 @@ export class BridgeAgent {
         if (commands.length > 0) {
             const batchResult = await this.bridge.sendBatchCommands(commands);
             if (batchResult.success) {
-                this._lastHadActions = true;
-                this._pendingContinuation = true;
-                const queued = batchResult.queued || commands.length;
-                sendOutputToServer(this.name, `⚡ Queued ${queued} command(s) for sequential execution`);
-                this.history.add('system', `Queued ${queued} command(s). Queue will advance on Baritone completion signals.`);
+                this._recordQueueDispatch('command', batchResult, commands.length);
             } else {
                 const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
@@ -740,12 +1015,8 @@ export class BridgeAgent {
         if (actions.length > 0) {
             const batchResult = await this.bridge.sendBatch(actions);
             if (batchResult.success) {
-                this._lastHadActions = true;
-                this._pendingContinuation = true;
                 this._continuationSource = source;
-                const queued = batchResult.queued || actions.length;
-                sendOutputToServer(this.name, `⚡ Queued ${queued} action(s) for sequential execution`);
-                this.history.add('system', `Queued ${queued} action(s). Queue will advance on Baritone completion signals.`);
+                this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
                 const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
@@ -757,11 +1028,7 @@ export class BridgeAgent {
         if (commands.length > 0) {
             const batchResult = await this.bridge.sendBatchCommands(commands);
             if (batchResult.success) {
-                this._lastHadActions = true;
-                this._pendingContinuation = true;
-                const queued = batchResult.queued || commands.length;
-                sendOutputToServer(this.name, `⚡ Queued ${queued} command(s) for sequential execution`);
-                this.history.add('system', `Queued ${queued} command(s). Queue will advance on Baritone completion signals.`);
+                this._recordQueueDispatch('command', batchResult, commands.length);
             } else {
                 const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);

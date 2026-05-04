@@ -119,22 +119,30 @@ public class CommandExecutor {
                 if (itemKey.startsWith("minecraft:")) {
                     itemKey = itemKey.substring(10);
                 }
+                String normalizedItemKey = normalizeCraftTargetForInventory(player, itemKey);
+                if (!normalizedItemKey.equals(itemKey)) {
+                    player.sendMessage(net.minecraft.text.Text.literal(
+                            "[Bridge] Using " + normalizedItemKey + " instead of " + itemKey
+                                    + " based on inventory."), false);
+                    itemKey = normalizedItemKey;
+                }
                 if (!RECIPE_DATABASE.containsKey(itemKey)) {
                     future.complete("craft: no recipe found for " + targetItem);
                     return;
                 }
+                List<PlannedCraft> plan = planCraftsForInventory(player, itemKey, targetCount);
+                if (plan.isEmpty()) {
+                    future.complete("craft: could not plan " + targetItem);
+                    return;
+                }
 
                 player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Opening nearest crafting table with #craft..."), false);
-                AtomicBoolean craftStarted = new AtomicBoolean(false);
-                Runnable craftOnce = () -> {
-                    if (craftStarted.compareAndSet(false, true)) {
-                        craftPostAction(targetItem, targetCount);
-                    }
-                };
-                TaskQueue.getInstance().enqueueWithCallback("#craft", craftOnce);
-                watchForCraftingScreen(client, craftOnce);
-                future.complete("craft: queued #craft; will craft " + targetCount + "x " + targetItem + " after table opens");
+                        "[Bridge] Queued craft plan: " + describeCraftPlan(plan)), false);
+                for (PlannedCraft craft : plan) {
+                    enqueueBridgeCraft(craft.itemName(), craft.count());
+                }
+                future.complete("craft: queued " + plan.size() + " craft step(s); "
+                        + describeCraftPlan(plan));
             } catch (Exception e) {
                 future.complete("craft: error â€” " + e.getMessage());
             }
@@ -174,7 +182,51 @@ public class CommandExecutor {
         worker.start();
     }
 
+    private record PlannedCraft(String itemName, int count) {}
+
+    private static void enqueueBridgeCraft(String itemName, int count) {
+        AtomicBoolean craftStarted = new AtomicBoolean(false);
+        Runnable craftOnce = () -> {
+            if (craftStarted.compareAndSet(false, true)) {
+                craftPostAction(itemName, count);
+            }
+        };
+        TaskQueue.getInstance().enqueueWithCallback("#craft", craftOnce);
+    }
+
+    private static List<PlannedCraft> planCraftsForInventory(ClientPlayerEntity player, String itemKey, int targetCount) {
+        List<PlannedCraft> plan = new ArrayList<>();
+        RecipeData targetRecipe = RECIPE_DATABASE.get(itemKey);
+        if (targetRecipe == null) return plan;
+
+        if ("stick".equals(itemKey) && !TaskQueue.getInstance().hasQueuedOrActiveBridgeCraft()) {
+            int batches = Math.max(1, (int) Math.ceil(targetCount / (double) Math.max(1, targetRecipe.outputCount)));
+            int planksNeeded = batches * 2;
+            int planksHave = countMatchingInventory(player, lst("*_planks"));
+            int missingPlanks = Math.max(0, planksNeeded - planksHave);
+            if (missingPlanks > 0) {
+                String plankTarget = normalizeCraftTargetForInventory(player, "oak_planks");
+                RecipeData plankRecipe = RECIPE_DATABASE.get(plankTarget);
+                if (plankRecipe != null && hasIngredientsForRecipe(player, plankRecipe)) {
+                    plan.add(new PlannedCraft(plankTarget, missingPlanks));
+                }
+            }
+        }
+
+        plan.add(new PlannedCraft(itemKey, targetCount));
+        return plan;
+    }
+
+    private static String describeCraftPlan(List<PlannedCraft> plan) {
+        List<String> parts = new ArrayList<>();
+        for (PlannedCraft craft : plan) {
+            parts.add(craft.count() + "x " + craft.itemName());
+        }
+        return String.join(" -> ", parts);
+    }
+
     private static void craftPostActionWorker(String itemName, int count) {
+        try {
         MinecraftClient client = MinecraftClient.getInstance();
 
         for (int wait = 0; wait < 20; wait++) {
@@ -280,6 +332,10 @@ public class CommandExecutor {
             }
             return null;
         });
+        } finally {
+            sleep(250);
+            TaskQueue.getInstance().completeActiveIf("#craft");
+        }
     }
 
     private static boolean fillGridFromRecipe(ClientPlayerEntity player,
@@ -372,7 +428,7 @@ public class CommandExecutor {
 
         // Planks (1 log -> 4)
         for (String w : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry")) {
-            db.put(w + "_planks", new RecipeData(w + "_planks", lst(gs(1, lst("*_log"))), 4));
+            db.put(w + "_planks", new RecipeData(w + "_planks", lst(gs(1, lst("minecraft:" + w + "_log"))), 4));
         }
 
         // Stick (2 planks vertical -> 4)
@@ -548,6 +604,27 @@ public class CommandExecutor {
             gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
         ), 1));
 
+        // Iron Block (9 iron ingots -> 1)
+        db.put("iron_block", new RecipeData("iron_block", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // Iron Pickaxe (3 iron ingots + 2 sticks -> 1)
+        db.put("iron_pickaxe", new RecipeData("iron_pickaxe", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(5, lst("minecraft:stick")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
+
+        // Diamond Pickaxe (3 diamonds + 2 sticks -> 1)
+        db.put("diamond_pickaxe", new RecipeData("diamond_pickaxe", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(5, lst("minecraft:stick")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
+
         // Bucket (3 iron ingots V -> 1)
         db.put("bucket", new RecipeData("bucket", lst(
             gs(1, lst("minecraft:iron_ingot")), gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
@@ -611,6 +688,59 @@ public class CommandExecutor {
     }
 
     // â”€â”€â”€ ID helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private static boolean hasIngredientsForRecipe(ClientPlayerEntity player, RecipeData recipe) {
+        for (GridSlot slot : recipe.slots) {
+            if (countMatchingInventory(player, slot.ingredientPatterns) <= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int countMatchingInventory(ClientPlayerEntity player, List<String> patterns) {
+        int total = 0;
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isEmpty() && matchesItemId(getItemId(stack), patterns)) {
+                total += stack.getCount();
+            }
+        }
+        return total;
+    }
+
+    private static String normalizeCraftTargetForInventory(ClientPlayerEntity player, String itemKey) {
+        if (player == null || itemKey == null || !itemKey.endsWith("_planks")) {
+            return itemKey;
+        }
+
+        String requestedWood = itemKey.substring(0, itemKey.length() - "_planks".length());
+        String requestedLog = "minecraft:" + requestedWood + "_log";
+        if (countItemInInventory(player, requestedLog) > 0) {
+            return itemKey;
+        }
+
+        for (String wood : lst("oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry")) {
+            if (countItemInInventory(player, "minecraft:" + wood + "_log") > 0) {
+                return wood + "_planks";
+            }
+        }
+
+        return itemKey;
+    }
+
+    private static int countItemInInventory(ClientPlayerEntity player, String itemId) {
+        int total = 0;
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isEmpty() && getItemId(stack).equals(itemId)) {
+                total += stack.getCount();
+            }
+        }
+        return total;
+    }
 
     private static String getItemId(ItemStack stack) {
         if (stack.isEmpty()) return "";

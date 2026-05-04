@@ -275,6 +275,12 @@ public class StateCollector {
             sb.append(",\"queue\":{");
             sb.append("\"status\":\"").append(escape(qs.status())).append("\",");
             sb.append("\"active\":").append(qs.active() == null ? "null" : "\"" + escape(qs.active()) + "\"").append(",");
+            if (qs.kind() != null) {
+                sb.append("\"kind\":\"").append(escape(qs.kind())).append("\",");
+            }
+            if (qs.completion() != null) {
+                sb.append("\"completion\":\"").append(escape(qs.completion())).append("\",");
+            }
             sb.append("\"pending\":").append(qs.pending()).append(",");
             sb.append("\"paused\":").append(qs.paused());
             if (qs.lastFailure() != null) {

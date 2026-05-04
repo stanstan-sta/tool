@@ -136,6 +136,73 @@ export class FabricBridge {
     }
 
     /**
+     * Skip the currently-failed task and advance the queue.
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async skipQueue() {
+        try {
+            const res = await fetch(`${this.url}/queue/skip`, {
+                method: 'POST',
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Resume a paused queue (retries the failed task).
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async resumeQueue() {
+        try {
+            const res = await fetch(`${this.url}/queue/resume`, {
+                method: 'POST',
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Cancel all queued and active tasks.
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async cancelQueue() {
+        try {
+            const res = await fetch(`${this.url}/queue/cancel`, {
+                method: 'POST',
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            return await res.json();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Get queue state (status, active task, pending count, paused, last failure).
+     * @returns {Promise<{status: string, active: string|null, pending: number, paused: boolean, lastFailure?: string}|null>}
+     */
+    async getQueueState() {
+        try {
+            const res = await fetch(`${this.url}/queue/state`, {
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Retrieve the current command registry from the Fabric client.
      * @returns {Promise<Array<string>>}
      */

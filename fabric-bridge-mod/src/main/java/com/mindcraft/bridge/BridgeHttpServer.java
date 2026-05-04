@@ -33,6 +33,10 @@ public class BridgeHttpServer {
         server.createContext("/batch", this::handleBatch);
         server.createContext("/capabilities", this::handleCapabilities);
         server.createContext("/commands", this::handleCommands);
+        server.createContext("/queue/skip", this::handleQueueSkip);
+        server.createContext("/queue/resume", this::handleQueueResume);
+        server.createContext("/queue/cancel", this::handleQueueCancel);
+        server.createContext("/queue/state", this::handleQueueState);
 
         // Single-threaded executor is fine — Minecraft main-thread work is
         // scheduled via MinecraftClient.execute() inside the handlers.
@@ -125,7 +129,12 @@ public class BridgeHttpServer {
             // Its return value is a human-readable description, NOT a command.
             // Don't enqueue the description as a command.
             if (isSelfExecuting) {
-                respond(ex, 200, "{\"success\":true,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                if (executed.startsWith("craft: queued")) {
+                    respond(ex, 200, "{\"success\":true,\"queued\":" + parseCraftQueuedCount(executed)
+                            + ",\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                } else {
+                    respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
+                }
                 return;
             }
 
@@ -153,6 +162,8 @@ public class BridgeHttpServer {
             // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
             int totalQueued = 0;
             boolean hadActionsArray = false;
+            boolean cancelled = false;
+            java.util.List<String> errors = new java.util.ArrayList<>();
 
             // Try "actions" array first (typed actions)
             String actionsArray = extractJsonArray(body, "actions");
@@ -167,19 +178,26 @@ public class BridgeHttpServer {
                     String actionType = extractJsonString(actionObj, "type");
                     if ("cancel".equals(actionType)) {
                         TaskQueue.getInstance().cancelAll();
-                        respond(ex, 200, "{\"success\":true,\"cancelled\":true,\"queued\":0}");
-                        return;
+                        cancelled = true;
+                        continue;
                     }
                     if ("craft".equals(actionType)) {
                         String executed = CommandExecutor.executeTypedJson(actionObj);
                         if (executed != null && executed.startsWith("craft: queued")) {
-                            totalQueued++;
+                            totalQueued += parseCraftQueuedCount(executed);
+                        } else {
+                            errors.add(executed == null || executed.isBlank()
+                                    ? "craft: invalid action"
+                                    : executed);
                         }
                         continue;
                     }
                     // Non-craft: executeTypedJson only translates to a command string.
                     String executed = CommandExecutor.executeTypedJson(actionObj);
-                    if (executed == null || executed.isBlank()) continue;
+                    if (executed == null || executed.isBlank()) {
+                        errors.add("invalid typed action");
+                        continue;
+                    }
                     int colonIdx = executed.indexOf(':');
                     String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
                     totalQueued += TaskQueue.getInstance().enqueue(cmd);
@@ -213,7 +231,16 @@ public class BridgeHttpServer {
                 return;
             }
 
-            respond(ex, 200, "{\"success\":true,\"queued\":" + totalQueued + "}");
+            if (totalQueued == 0 && hadActionsArray && !cancelled) {
+                String error = errors.isEmpty() ? "No actions were queued" : String.join("; ", errors);
+                respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(error) + "\"}");
+                return;
+            }
+
+            respond(ex, 200, "{\"success\":true,\"queued\":" + totalQueued
+                    + (cancelled ? ",\"cancelled\":true" : "")
+                    + (!errors.isEmpty() ? ",\"warnings\":\"" + jsonEscape(String.join("; ", errors)) + "\"" : "")
+                    + "}");
         }
     }
 
@@ -417,6 +444,67 @@ public class BridgeHttpServer {
             elements.add(last);
         }
         return elements.toArray(new String[0]);
+    }
+
+    private static int parseCraftQueuedCount(String output) {
+        if (output == null) return 1;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("^craft: queued\\s+(\\d+)").matcher(output);
+        if (!matcher.find()) return 1;
+        try {
+            return Math.max(1, Integer.parseInt(matcher.group(1)));
+        } catch (NumberFormatException ignored) {
+            return 1;
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Queue management handlers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private void handleQueueSkip(HttpExchange ex) throws IOException {
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        TaskQueue.getInstance().skip();
+        respond(ex, 200, "{\"success\":true,\"action\":\"skipped\"}");
+    }
+
+    private void handleQueueResume(HttpExchange ex) throws IOException {
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        TaskQueue.getInstance().resume();
+        respond(ex, 200, "{\"success\":true,\"action\":\"resumed\"}");
+    }
+
+    private void handleQueueCancel(HttpExchange ex) throws IOException {
+        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        TaskQueue.getInstance().cancelAll();
+        respond(ex, 200, "{\"success\":true,\"action\":\"cancelled\"}");
+    }
+
+    private void handleQueueState(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+        String json = "{"
+            + "\"status\":\"" + jsonEscape(qs.status()) + "\","
+            + "\"active\":" + (qs.active() == null ? "null" : "\"" + jsonEscape(qs.active()) + "\"") + ","
+            + (qs.kind() != null ? "\"kind\":\"" + jsonEscape(qs.kind()) + "\"," : "")
+            + (qs.completion() != null ? "\"completion\":\"" + jsonEscape(qs.completion()) + "\"," : "")
+            + "\"pending\":" + qs.pending() + ","
+            + "\"paused\":" + qs.paused()
+            + (qs.lastFailure() != null ? ",\"lastFailure\":\"" + jsonEscape(qs.lastFailure()) + "\"" : "")
+            + "}";
+        respond(ex, 200, json);
     }
 
     /** Escape a string for embedding inside a JSON string value. */
