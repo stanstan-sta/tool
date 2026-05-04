@@ -35,8 +35,9 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '  {"type":"cancel"}                                            — cancel all queued actions',
             '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
             '',
-            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+            'Common raw_commands: #task sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
             '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
+            'Use #task sleep instead of #sleep so the bridge queue receives completion/failure status.',
             'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
             'Never invent new types. For anything else, use raw_command with the # prefix.',
           ].join('\n');

@@ -151,11 +151,8 @@ public class BridgeHttpServer {
             String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
 
             // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
-            java.util.List<String> deferredNonCraft = new java.util.ArrayList<>();
-            java.util.List<String> deferredCraftActions = new java.util.ArrayList<>();
             int totalQueued = 0;
             boolean hadActionsArray = false;
-            boolean cancelRequested = false;
 
             // Try "actions" array first (typed actions)
             String actionsArray = extractJsonArray(body, "actions");
@@ -163,43 +160,29 @@ public class BridgeHttpServer {
                 hadActionsArray = true;
                 String[] actionObjects = splitJsonArray(actionsArray);
 
-                // PASS 1: Collect non-craft commands. We DON'T execute anything
-                // yet — just parse type and extract the command string.
+                // Preserve the model's action order. Each action appends exactly
+                // one command/callback to TaskQueue.
                 for (String actionObj : actionObjects) {
                     if (actionObj == null || actionObj.isBlank()) continue;
                     String actionType = extractJsonString(actionObj, "type");
                     if ("cancel".equals(actionType)) {
                         TaskQueue.getInstance().cancelAll();
-                        cancelRequested = true;
-                        break;
+                        respond(ex, 200, "{\"success\":true,\"cancelled\":true,\"queued\":0}");
+                        return;
                     }
                     if ("craft".equals(actionType)) {
-                        deferredCraftActions.add(actionObj);
+                        String executed = CommandExecutor.executeTypedJson(actionObj);
+                        if (executed != null && executed.startsWith("craft: queued")) {
+                            totalQueued++;
+                        }
                         continue;
                     }
-                    // Non-craft: executeTypedJson to get the command string
+                    // Non-craft: executeTypedJson only translates to a command string.
                     String executed = CommandExecutor.executeTypedJson(actionObj);
                     if (executed == null || executed.isBlank()) continue;
                     int colonIdx = executed.indexOf(':');
                     String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
-                    deferredNonCraft.add(cmd);
-                }
-
-                if (cancelRequested) {
-                    respond(ex, 200, "{\"success\":true,\"cancelled\":true,\"queued\":0}");
-                    return;
-                }
-
-                // Enqueue all non-craft commands first, in array order
-                if (!deferredNonCraft.isEmpty()) {
-                    totalQueued += TaskQueue.getInstance().enqueue(deferredNonCraft);
-                }
-
-                // PASS 2: Execute craft actions. They self-enqueue their
-                // #task interact commands AFTER the non-craft batch above.
-                for (String craftActionJson : deferredCraftActions) {
-                    CommandExecutor.executeTypedJson(craftActionJson);
-                    totalQueued++;
+                    totalQueued += TaskQueue.getInstance().enqueue(cmd);
                 }
             }
 

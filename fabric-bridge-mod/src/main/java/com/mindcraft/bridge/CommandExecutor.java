@@ -679,6 +679,7 @@ public class CommandExecutor {
         return "["
             + "\"#goto x y z\","
             + "\"#craft\","
+            + "\"#task sleep\","
             + "\"#mine count block\","
             + "\"#follow player <name>\","
             + "\"#cancel\","
@@ -744,12 +745,21 @@ public class CommandExecutor {
                 return null;
             }
             case "cancel": return "#cancel";
-            case "raw_command": return extractJsonString(json, "command");
+            case "raw_command": return normalizeRawBaritoneCommand(extractJsonString(json, "command"));
             default: return null;
         }
     }
 
     // â”€â”€â”€ JSON extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private static String normalizeRawBaritoneCommand(String command) {
+        if (command == null) return null;
+        String trimmed = command.trim();
+        if (trimmed.equalsIgnoreCase("#sleep") || trimmed.equalsIgnoreCase("sleep")) {
+            return "#task sleep";
+        }
+        return trimmed;
+    }
 
     private static String extractJsonString(String json, String key) {
         String search = "\"" + key + "\"";
