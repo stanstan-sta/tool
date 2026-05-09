@@ -107,18 +107,6 @@
         .setting-wrapper input[type="checkbox"] {
             transform: scale(1.2);
         }
-        .agent-view-container {
-            width: 100%;
-            height: 100%;
-            aspect-ratio: 4/3;
-            overflow: hidden;
-        }
-        .agent-viewer {
-            width: 100%;
-            height: 100%;
-            border: none;
-            display: block;
-        }
         .last-message {
             font-style: italic;
             color: #aaa;
@@ -131,11 +119,6 @@
         .start-btn:disabled {
             opacity: 0.4;
             cursor: not-allowed;
-        }
-        .agent-view-container {
-            margin-top: 6px;
-            display: flex;
-            justify-content: flex-start;
         }
         .agent-grid {
             display: grid;
@@ -488,11 +471,11 @@
 
     <div class="page-footer">
         <div>
-            <button id="openCreateAgentBtn" class="start-btn">New Agent</button>
+            <button id="openCreateAgentBtn" class="start-btn">New Bridge Agent</button>
             <button id="openApiKeysBtn" class="neutral-btn" style="margin-left:8px;">🔑 API Keys</button>
         </div>
         <div style="display:flex; gap:12px;">
-            <button class="stop-btn" onclick="disconnectAllAgents()">Disconnect All Agents</button>
+            <button class="stop-btn" onclick="disconnectAllAgents()">Disconnect Bridge Agents</button>
             <button class="stop-btn" onclick="confirmShutdown()">Full Shutdown</button>
         </div>
     </div>
@@ -501,7 +484,7 @@
     <div id="createAgentModal" class="modal-backdrop">
         <div class="modal">
             <div class="modal-header">
-                <h2 style="margin:0;">Create Agent</h2>
+                <h2 style="margin:0;">Create Bridge Agent</h2>
                 <button id="closeCreateAgentBtn" class="modal-close-btn">Close</button>
             </div>
             <div class="modal-body">
@@ -513,10 +496,10 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <div class="footer-left" id="footerStatus">Configure settings, then upload a profile and create the agent.</div>
+                <div class="footer-left" id="footerStatus">Configure bridge settings, then upload a profile and create the agent.</div>
                 <div class="footer-actions">
                     <button id="uploadProfileBtn" class="start-btn">Upload Profile</button>
-                    <button id="submitCreateAgentBtn" class="start-btn" disabled>Create Agent</button>
+                    <button id="submitCreateAgentBtn" class="start-btn" disabled>Create Bridge Agent</button>
                 </div>
             </div>
         </div>
@@ -553,7 +536,7 @@
                             </div>
                             <div class="profile-field-row">
                                 <label for="profilePersonality">Personality / Character Description</label>
-                                <textarea id="profilePersonality" rows="3" placeholder="Describe your bot's personality and character here. Injected via $PERSONALITY in the system prompt." oninput="onAgentSettingsChanged()"></textarea>
+                                <textarea id="profilePersonality" rows="3" placeholder="Describe your agent's personality and character here. Injected via $PERSONALITY in the system prompt." oninput="onAgentSettingsChanged()"></textarea>
                                 <div class="field-hint">Add <code>$PERSONALITY</code> to the system prompt below to use this field.</div>
                             </div>
                             <div class="profile-field-row">
@@ -1179,19 +1162,6 @@
             originalAgentSettings = null;
         }
 
-        function updateAgentViewer(name) {
-            const agentEl = document.getElementById(`agent-${name}`);
-            if (!agentEl) return;
-
-            const settings = agentSettings[name];
-            const viewerContainer = agentEl.querySelector('.agent-view-container');
-            if (!viewerContainer) return;
-
-            const agentState = currentAgents.find(a => a.name === name);
-            const shouldShow = agentState?.in_game && settings?.render_bot_view === true;
-            viewerContainer.parentElement.style.display = shouldShow ? '' : 'none';
-        }
-
         discardBtn.addEventListener('click', () => {
             if (!currentAgentName || !originalAgentSettings) return;
             buildAgentSettingsForm(originalAgentSettings);
@@ -1203,7 +1173,6 @@
             socket.emit('set-agent-settings', currentAgentName, edited);
             // Update local settings immediately
             agentSettings[currentAgentName] = { ...edited, fetched: true };
-            updateAgentViewer(currentAgentName);
             closeAgentSettings();
         });
 
@@ -1211,10 +1180,6 @@
 
 
         function renderAgentCard(agent) {
-            const cfg = agentSettings[agent.name] || {};
-            const showViewer = agent.in_game && cfg.render_bot_view === true;
-            const viewerPort = agent.viewerPort;
-            const viewerHTML = showViewer ? `<div class="agent-view-container"><iframe class="agent-viewer" id="viewer-${agent.name}" src="http://localhost:${viewerPort}"></iframe></div>` : '';
             const lastMessage = agentLastMessage[agent.name] || '';
             const invOpen = inventoryOpen[agent.name] === true;
             const invStyle = invOpen ? '' : 'display:none;';
@@ -1227,7 +1192,6 @@
                                     <button class="gear-btn" title="Inventory" onclick="toggleDetails('${agent.name}')">Inventory</button>
                                 </span>
                             </div>
-                            ${showViewer ? `<div class="cell" style="grid-row: span 3; padding:0;">${viewerHTML}</div>` : ''}
                             <div class="cell" id="action-${agent.name}">action: -</div>
                             <div class="cell" id="mode-${agent.name}">gamemode: -</div>
                             <div class="cell" id="health-${agent.name}">health: -</div>
@@ -1263,19 +1227,13 @@
 
         async function renderAgents(agents) {
             if (!agents.length) {
-                agentsDiv.innerHTML = '<div class="agent">No agents connected</div>';
+                agentsDiv.innerHTML = '<div class="agent">No bridge agents connected</div>';
                 return;
             }
 
             // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
-                // Update all viewers after initial render
-                setTimeout(() => {
-                    agents.forEach(a => {
-                        if (a.in_game) updateAgentViewer(a.name);
-                    });
-                }, 0);
                 return;
             }
 
@@ -1283,7 +1241,7 @@
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected;
+                return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
             });
 
             // Update only changed agents
@@ -1292,11 +1250,9 @@
                 if (el) {
                     // Update existing card
                     el.outerHTML = renderAgentCard(agent);
-                    if (agent.in_game) updateAgentViewer(agent.name);
                 } else {
                     // Add new card
                     agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-                    if (agent.in_game) updateAgentViewer(agent.name);
                 }
             });
 
@@ -1326,7 +1282,7 @@
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.viewerPort !== a.viewerPort || prev.socket_connected !== a.socket_connected;
+                return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
             });
 
             // Update current agents list
@@ -1335,12 +1291,6 @@
             // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
-                // Update all viewers after initial render
-                setTimeout(() => {
-                    agents.forEach(a => {
-                        if (a.in_game) updateAgentViewer(a.name);
-                    });
-                }, 0);
                 return;
             }
 
@@ -1350,11 +1300,9 @@
                 if (el) {
                     // Update existing card
                     el.outerHTML = renderAgentCard(agent);
-                    if (agent.in_game) updateAgentViewer(agent.name);
                 } else {
                     // Add new card
                     agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-                    if (agent.in_game) updateAgentViewer(agent.name);
                 }
             });
 

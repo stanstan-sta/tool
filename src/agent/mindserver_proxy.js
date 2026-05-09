@@ -112,7 +112,16 @@ class MindServerProxy {
 
         this.socket.on('get-full-state', (callback) => {
             try {
-                const state = getFullState(this.agent);
+                const state = typeof this.agent?.getFullState === 'function'
+                    ? this.agent.getFullState()
+                    : getFullState(this.agent);
+                if (state && typeof state.then === 'function') {
+                    state.then(callback).catch((error) => {
+                        console.error('Error getting full state:', error);
+                        callback(null);
+                    });
+                    return;
+                }
                 callback(state);
             } catch (error) {
                 console.error('Error getting full state:', error);

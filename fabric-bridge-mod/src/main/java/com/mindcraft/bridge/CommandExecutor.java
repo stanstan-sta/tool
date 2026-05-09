@@ -4,13 +4,21 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.world.ClientWorld;
+import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.BlockState;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.screen.AbstractFurnaceScreenHandler;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -126,23 +134,20 @@ public class CommandExecutor {
                                     + " based on inventory."), false);
                     itemKey = normalizedItemKey;
                 }
-                if (!RECIPE_DATABASE.containsKey(itemKey)) {
-                    future.complete("craft: no recipe found for " + targetItem);
-                    return;
-                }
-                List<PlannedCraft> plan = planCraftsForInventory(player, itemKey, targetCount);
-                if (plan.isEmpty()) {
-                    future.complete("craft: could not plan " + targetItem);
+                MakePlan plan = planMakeForInventory(player, itemKey, targetCount);
+                if (!plan.isSuccess()) {
+                    future.complete("craft: could not plan " + targetItem + " - "
+                            + String.join("; ", plan.errors));
                     return;
                 }
 
                 player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Queued craft plan: " + describeCraftPlan(plan)), false);
-                for (PlannedCraft craft : plan) {
-                    enqueueBridgeCraft(craft.itemName(), craft.count());
+                        "[Bridge] Queued make plan: " + describeMakePlan(plan.steps)), false);
+                for (MakeStep step : plan.steps) {
+                    enqueueMakeStep(step);
                 }
-                future.complete("craft: queued " + plan.size() + " craft step(s); "
-                        + describeCraftPlan(plan));
+                future.complete("craft: queued " + plan.steps.size() + " step(s); "
+                        + describeMakePlan(plan.steps));
             } catch (Exception e) {
                 future.complete("craft: error â€” " + e.getMessage());
             }
@@ -182,7 +187,61 @@ public class CommandExecutor {
         worker.start();
     }
 
-    private record PlannedCraft(String itemName, int count) {}
+    private enum MakeStepKind { MINE, SMELT, CRAFT }
+
+    private record MakeStep(MakeStepKind kind, String itemName, int count, String command) {}
+
+    private record IngredientNeed(List<String> patterns, int count) {}
+
+    private record GatherProvider(String mineTarget, String producedItem) {}
+
+    private static class MakePlan {
+        final List<MakeStep> steps = new ArrayList<>();
+        final List<String> errors = new ArrayList<>();
+        final Map<String, Integer> virtualInventory = new HashMap<>();
+
+        boolean isSuccess() {
+            return errors.isEmpty();
+        }
+
+        void addVirtual(String itemId, int count) {
+            if (count <= 0) return;
+            virtualInventory.merge(normalizeItemId(itemId), count, Integer::sum);
+        }
+
+        int countVirtual(String itemId) {
+            return virtualInventory.getOrDefault(normalizeItemId(itemId), 0);
+        }
+
+        int consumeItem(String itemId, int count) {
+            if (count <= 0) return 0;
+            String normalized = normalizeItemId(itemId);
+            int have = virtualInventory.getOrDefault(normalized, 0);
+            int used = Math.min(have, count);
+            if (used > 0) {
+                int left = have - used;
+                if (left > 0) {
+                    virtualInventory.put(normalized, left);
+                } else {
+                    virtualInventory.remove(normalized);
+                }
+            }
+            return count - used;
+        }
+
+        int consumeMatching(List<String> patterns, int count) {
+            int remaining = count;
+            if (remaining <= 0) return 0;
+            List<String> keys = new ArrayList<>(virtualInventory.keySet());
+            keys.sort(String::compareTo);
+            for (String key : keys) {
+                if (remaining <= 0) break;
+                if (!matchesItemId(key, patterns)) continue;
+                remaining = consumeItem(key, remaining);
+            }
+            return remaining;
+        }
+    }
 
     private static void enqueueBridgeCraft(String itemName, int count) {
         AtomicBoolean craftStarted = new AtomicBoolean(false);
@@ -194,33 +253,749 @@ public class CommandExecutor {
         TaskQueue.getInstance().enqueueWithCallback("#craft", craftOnce);
     }
 
-    private static List<PlannedCraft> planCraftsForInventory(ClientPlayerEntity player, String itemKey, int targetCount) {
-        List<PlannedCraft> plan = new ArrayList<>();
-        RecipeData targetRecipe = RECIPE_DATABASE.get(itemKey);
-        if (targetRecipe == null) return plan;
-
-        if ("stick".equals(itemKey) && !TaskQueue.getInstance().hasQueuedOrActiveBridgeCraft()) {
-            int batches = Math.max(1, (int) Math.ceil(targetCount / (double) Math.max(1, targetRecipe.outputCount)));
-            int planksNeeded = batches * 2;
-            int planksHave = countMatchingInventory(player, lst("*_planks"));
-            int missingPlanks = Math.max(0, planksNeeded - planksHave);
-            if (missingPlanks > 0) {
-                String plankTarget = normalizeCraftTargetForInventory(player, "oak_planks");
-                RecipeData plankRecipe = RECIPE_DATABASE.get(plankTarget);
-                if (plankRecipe != null && hasIngredientsForRecipe(player, plankRecipe)) {
-                    plan.add(new PlannedCraft(plankTarget, missingPlanks));
-                }
-            }
+    private static void enqueueMakeStep(MakeStep step) {
+        if (step.kind() == MakeStepKind.CRAFT) {
+            enqueueBridgeCraft(step.itemName(), step.count());
+        } else if (step.command() != null && !step.command().isBlank()) {
+            TaskQueue.getInstance().enqueue(step.command());
         }
+    }
 
-        plan.add(new PlannedCraft(itemKey, targetCount));
+    private static MakePlan planMakeForInventory(ClientPlayerEntity player, String itemKey, int targetCount) {
+        MakePlan plan = new MakePlan();
+        snapshotInventory(player, plan);
+        makeItem(plan, normalizeItemId(itemKey), targetCount, 0);
         return plan;
     }
 
-    private static String describeCraftPlan(List<PlannedCraft> plan) {
+    private static boolean makeItem(MakePlan plan, String itemId, int count, int depth) {
+        if (!plan.errors.isEmpty()) return false;
+        if (count <= 0) return true;
+        if (depth > 12) {
+            plan.errors.add("recipe chain too deep at " + stripMinecraftNamespace(itemId));
+            return false;
+        }
+
+        String normalized = normalizeItemId(itemId);
+        int missing = plan.consumeItem(normalized, count);
+        if (missing <= 0) return true;
+
+        String itemKey = stripMinecraftNamespace(normalized);
+        RecipeData recipe = RECIPE_DATABASE.get(itemKey);
+        if (recipe != null) {
+            int outputCount = Math.max(1, recipe.outputCount);
+            int batches = Math.max(1, (int) Math.ceil(missing / (double) outputCount));
+            for (IngredientNeed ingredient : aggregateRecipeIngredients(recipe, batches)) {
+                if (!makeIngredient(plan, ingredient.patterns(), ingredient.count(), depth + 1)) {
+                    return false;
+                }
+            }
+            plan.steps.add(new MakeStep(MakeStepKind.CRAFT, itemKey, missing, null));
+            plan.addVirtual(normalized, batches * outputCount);
+            plan.consumeItem(normalized, missing);
+            return true;
+        }
+
+        SmeltRecipe smelt = chooseSmeltRecipeForOutput(plan, normalized);
+        if (smelt != null) {
+            if (!makeItem(plan, smelt.input(), missing, depth + 1)) {
+                return false;
+            }
+            int fuelNeeded = fuelItemsNeededForPlan(plan, missing, smelt.input());
+            if (fuelNeeded > 0 && !makeItem(plan, "minecraft:coal", fuelNeeded, depth + 1)) {
+                return false;
+            }
+            String inputKey = stripMinecraftNamespace(smelt.input());
+            plan.steps.add(new MakeStep(MakeStepKind.SMELT, inputKey, missing,
+                    "#task smelt " + inputKey + " " + missing));
+            plan.addVirtual(normalized, missing);
+            plan.consumeItem(normalized, missing);
+            return true;
+        }
+
+        GatherProvider gather = GATHER_PROVIDERS.get(normalized);
+        if (gather != null) {
+            plan.steps.add(new MakeStep(MakeStepKind.MINE, stripMinecraftNamespace(gather.producedItem()), missing,
+                    "#mine " + missing + " " + gather.mineTarget()));
+            plan.addVirtual(gather.producedItem(), missing);
+            plan.consumeItem(normalized, missing);
+            return true;
+        }
+
+        plan.errors.add("no recipe, smelt path, or gather provider for " + stripMinecraftNamespace(normalized));
+        return false;
+    }
+
+    private static boolean makeIngredient(MakePlan plan, List<String> patterns, int count, int depth) {
+        int missing = plan.consumeMatching(patterns, count);
+        if (missing <= 0) return true;
+
+        String candidate = chooseIngredientCandidate(plan, patterns);
+        if (candidate == null) {
+            plan.errors.add("no provider for ingredient " + String.join("/", patterns));
+            return false;
+        }
+
+        if (!makeItem(plan, candidate, missing, depth + 1)) {
+            return false;
+        }
+        return true;
+    }
+
+    private static List<IngredientNeed> aggregateRecipeIngredients(RecipeData recipe, int batches) {
+        Map<String, IngredientNeed> byPatternSet = new LinkedHashMap<>();
+        for (GridSlot slot : recipe.slots) {
+            List<String> normalizedPatterns = new ArrayList<>();
+            for (String pattern : slot.ingredientPatterns) {
+                normalizedPatterns.add(normalizeIngredientPattern(pattern));
+            }
+            String key = String.join("|", normalizedPatterns);
+            IngredientNeed existing = byPatternSet.get(key);
+            byPatternSet.put(key, existing == null
+                    ? new IngredientNeed(normalizedPatterns, batches)
+                    : new IngredientNeed(existing.patterns(), existing.count() + batches));
+        }
+        return new ArrayList<>(byPatternSet.values());
+    }
+
+    private static String chooseIngredientCandidate(MakePlan plan, List<String> patterns) {
+        for (String existing : plan.virtualInventory.keySet()) {
+            if (matchesItemId(existing, patterns)) return existing;
+        }
+        if (patterns.stream().anyMatch(p -> p.equals("*_planks"))) {
+            return choosePlanksForPlan(plan);
+        }
+        for (String pattern : patterns) {
+            if (pattern.startsWith("*")) continue;
+            String exact = normalizeItemId(pattern);
+            if (RECIPE_DATABASE.containsKey(stripMinecraftNamespace(exact))
+                    || chooseSmeltRecipeForOutput(plan, exact) != null
+                    || GATHER_PROVIDERS.containsKey(exact)) {
+                return exact;
+            }
+        }
+        return null;
+    }
+
+    private static String choosePlanksForPlan(MakePlan plan) {
+        for (String wood : WOOD_TYPES) {
+            String planks = normalizeItemId(wood + "_planks");
+            if (plan.countVirtual(planks) > 0) return planks;
+        }
+        for (String wood : WOOD_TYPES) {
+            String log = normalizeItemId(wood + "_log");
+            if (plan.countVirtual(log) > 0) return normalizeItemId(wood + "_planks");
+        }
+        return normalizeItemId("oak_planks");
+    }
+
+    private static SmeltRecipe chooseSmeltRecipeForOutput(MakePlan plan, String outputItemId) {
+        String output = normalizeItemId(outputItemId);
+        List<SmeltRecipe> candidates = new ArrayList<>();
+        for (SmeltRecipe recipe : SMELT_RECIPES.values()) {
+            if (recipe.output().equals(output)) {
+                candidates.add(recipe);
+            }
+        }
+        candidates.sort(Comparator.comparing(SmeltRecipe::input));
+        for (SmeltRecipe recipe : candidates) {
+            if (plan.countVirtual(recipe.input()) > 0) return recipe;
+        }
+        for (SmeltRecipe recipe : candidates) {
+            if (GATHER_PROVIDERS.containsKey(recipe.input())) return recipe;
+        }
+        return candidates.isEmpty() ? null : candidates.get(0);
+    }
+
+    private static int fuelItemsNeededForPlan(MakePlan plan, int smeltItems, String avoidItemId) {
+        int availableCapacity = 0;
+        String avoid = normalizeItemId(avoidItemId);
+        for (Map.Entry<String, Integer> entry : plan.virtualInventory.entrySet()) {
+            if (entry.getKey().equals(avoid)) continue;
+            availableCapacity += entry.getValue() * fuelCapacityItems(entry.getKey());
+        }
+        int missingCapacity = Math.max(0, smeltItems - availableCapacity);
+        if (missingCapacity <= 0) return 0;
+        return Math.max(1, (int) Math.ceil(missingCapacity / 8.0));
+    }
+
+    private static void snapshotInventory(ClientPlayerEntity player, MakePlan plan) {
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (!stack.isEmpty()) {
+                plan.addVirtual(getItemId(stack), stack.getCount());
+            }
+        }
+    }
+
+    // Bridge-owned smelting orchestration. Public command remains:
+    // #task smelt <input> [count]
+
+    public static void runSmeltTask(String command) {
+        Thread worker = new Thread(() -> smeltTaskWorker(command), "mindcraft-smelt-runner");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private record SmeltRecipe(String input, String output, boolean allowFurnace,
+                               boolean allowBlast, boolean allowSmoker) {}
+
+    private record FurnaceInfo(BlockPos pos, String blockId, long cookMs, int inputCount,
+                               int outputCount, float cookProgress) {}
+
+    private static class FurnacePlan {
+        final FurnaceInfo info;
+        int assigned;
+        FurnacePlan(FurnaceInfo info) {
+            this.info = info;
+        }
+        long etaMs() {
+            double existing = info.inputCount > 0
+                    ? Math.max(0.0, 1.0 - info.cookProgress) + Math.max(0, info.inputCount - 1)
+                    : 0.0;
+            return (long) Math.ceil((existing + assigned) * info.cookMs);
+        }
+    }
+
+    private static void smeltTaskWorker(String command) {
+        String normalizedCommand = String.valueOf(command).trim();
+        try {
+            SmeltRequest request = parseSmeltRequest(normalizedCommand);
+            if (request == null) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: expected #task smelt <item> [count]");
+                return;
+            }
+
+            String resolvedInput = callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                return player == null ? normalizeItemId(request.input())
+                        : resolveSmeltInputForInventory(player, request.input());
+            });
+            SmeltRecipe recipe = SMELT_RECIPES.get(resolvedInput);
+            if (recipe == null) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: no recipe for " + request.input());
+                return;
+            }
+
+            int availableInput = callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                return player == null ? 0 : countItemInInventory(player, recipe.input());
+            });
+            int targetCount = request.count() == null ? availableInput : Math.min(request.count(), availableInput);
+            if (targetCount <= 0) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: no " + recipe.input() + " in inventory");
+                return;
+            }
+
+            int fuelCapacity = callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                return player == null ? 0 : countAvailableFuelCapacity(player, recipe.input());
+            });
+            if (fuelCapacity <= 0) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: no fuel available");
+                return;
+            }
+
+            sendBridgeMessage("[Bridge] Smelting " + targetCount + "x " + recipe.input()
+                    + " -> " + recipe.output() + " using nearby furnaces.");
+
+            List<BlockPos> candidates = callClient(() -> scanSmeltFurnaces(recipe, 16));
+            if (candidates.isEmpty()) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: no usable furnace blocks nearby");
+                return;
+            }
+
+            List<FurnacePlan> plans = new ArrayList<>();
+            for (BlockPos pos : candidates) {
+                FurnaceInfo info = inspectFurnace(pos, recipe);
+                if (info != null) {
+                    plans.add(new FurnacePlan(info));
+                }
+            }
+
+            if (plans.isEmpty()) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand,
+                        "smelt: no compatible furnaces found; all were blocked or incompatible");
+                return;
+            }
+
+            assignSmeltLoad(plans, targetCount);
+            plans.removeIf(plan -> plan.assigned <= 0 && plan.info.outputCount <= 0 && plan.info.inputCount <= 0);
+            if (plans.stream().noneMatch(plan -> plan.assigned > 0)) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: could not assign furnace load");
+                return;
+            }
+
+            int assignedTotal = plans.stream().mapToInt(plan -> plan.assigned).sum();
+            if (fuelCapacity < assignedTotal) {
+                TaskQueue.getInstance().failActiveIf(normalizedCommand,
+                        "smelt: fuel can smelt " + fuelCapacity + " item(s), need " + assignedTotal);
+                return;
+            }
+
+            for (FurnacePlan plan : plans) {
+                if (plan.assigned <= 0) continue;
+                if (!loadFurnace(plan.info.pos, recipe, plan.assigned)) {
+                    TaskQueue.getInstance().failActiveIf(normalizedCommand,
+                            "smelt: failed to load furnace at " + plan.info.pos.toShortString());
+                    return;
+                }
+            }
+
+            long waitMs = plans.stream().mapToLong(FurnacePlan::etaMs).max().orElse(0L) + 1_500L;
+            sendBridgeMessage("[Bridge] Smelt plan loaded across "
+                    + plans.stream().filter(plan -> plan.assigned > 0).count()
+                    + " furnace(s). Waiting about " + Math.max(1, waitMs / 1000) + "s before collection.");
+            sleep(waitMs);
+
+            int beforeOutput = countInventoryItemSafe(recipe.output());
+            long deadline = System.currentTimeMillis() + Math.max(60_000L, waitMs + 60_000L);
+            int collectedDelta = 0;
+            while (System.currentTimeMillis() < deadline) {
+                for (FurnacePlan plan : plans) {
+                    collectFurnaceOutput(plan.info.pos, recipe);
+                }
+                int afterOutput = countInventoryItemSafe(recipe.output());
+                collectedDelta = Math.max(0, afterOutput - beforeOutput);
+                if (collectedDelta >= targetCount) {
+                    sendBridgeMessage("[Bridge] Smelting complete: collected " + collectedDelta
+                            + "x " + recipe.output() + ".");
+                    TaskQueue.getInstance().completeActiveIf(normalizedCommand);
+                    return;
+                }
+                sleep(2_000L);
+            }
+
+            TaskQueue.getInstance().failActiveIf(normalizedCommand,
+                    "smelt: timed out after collecting " + collectedDelta + "/" + targetCount
+                            + " " + recipe.output());
+        } catch (Exception e) {
+            TaskQueue.getInstance().failActiveIf(normalizedCommand, "smelt: " + e.getMessage());
+        } finally {
+            callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                if (player != null) player.closeHandledScreen();
+                return null;
+            });
+        }
+    }
+
+    private record SmeltRequest(String input, Integer count) {}
+
+    private static SmeltRequest parseSmeltRequest(String command) {
+        String[] parts = String.valueOf(command).trim().split("\\s+");
+        if (parts.length < 3) return null;
+        if (!"#task".equalsIgnoreCase(parts[0]) || !"smelt".equalsIgnoreCase(parts[1])) return null;
+        String input = normalizeItemId(parts[2]);
+        Integer count = null;
+        if (parts.length >= 4) {
+            try {
+                count = Math.max(1, Integer.parseInt(parts[3]));
+            } catch (NumberFormatException ignored) {}
+        }
+        return new SmeltRequest(input, count);
+    }
+
+    private static FurnaceInfo inspectFurnace(BlockPos pos, SmeltRecipe recipe) {
+        if (!openFurnace(pos)) return null;
+        try {
+            return callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                if (player == null || !(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler furnace)) {
+                    return null;
+                }
+                ScreenHandler screen = player.currentScreenHandler;
+                ItemStack input = screen.getSlot(0).getStack();
+                ItemStack output = screen.getSlot(2).getStack();
+                if (!input.isEmpty() && !getItemId(input).equals(recipe.input())) return null;
+                if (!output.isEmpty() && !getItemId(output).equals(recipe.output())) return null;
+                String blockId = getBlockId(MinecraftClient.getInstance().world.getBlockState(pos).getBlock());
+                return new FurnaceInfo(pos, blockId, cookMsForBlock(blockId),
+                        input.isEmpty() ? 0 : input.getCount(),
+                        output.isEmpty() ? 0 : output.getCount(),
+                        furnace.getCookProgress());
+            });
+        } finally {
+            closeScreenSafe();
+        }
+    }
+
+    private static boolean loadFurnace(BlockPos pos, SmeltRecipe recipe, int inputCount) {
+        if (!openFurnace(pos)) return false;
+        try {
+            return Boolean.TRUE.equals(callClient(() -> {
+                MinecraftClient client = MinecraftClient.getInstance();
+                ClientPlayerEntity player = client.player;
+                ClientPlayerInteractionManager im = client.interactionManager;
+                if (player == null || im == null || !(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler)) {
+                    return false;
+                }
+                ScreenHandler screen = player.currentScreenHandler;
+                ItemStack input = screen.getSlot(0).getStack();
+                ItemStack output = screen.getSlot(2).getStack();
+                if (!input.isEmpty() && !getItemId(input).equals(recipe.input())) return false;
+                if (!output.isEmpty() && !getItemId(output).equals(recipe.output())) return false;
+                if (!moveItemsIntoSlot(player, im, screen, 0, recipe.input(), inputCount)) return false;
+                ItemStack fuelStack = screen.getSlot(1).getStack();
+                String existingFuelId = fuelStack.isEmpty() ? null : getItemId(fuelStack);
+                int fuelItems = fuelItemsNeeded(player, inputCount, recipe.input());
+                if (fuelItems <= 0 && existingFuelId == null) return false;
+                if (existingFuelId != null && countItemInInventory(player, existingFuelId) <= 0) return true;
+                String fuelId = existingFuelId != null ? existingFuelId : bestFuelItem(player, recipe.input());
+                return fuelId != null && moveItemsIntoSlot(player, im, screen, 1, fuelId, fuelItems);
+            }));
+        } finally {
+            closeScreenSafe();
+        }
+    }
+
+    private static void collectFurnaceOutput(BlockPos pos, SmeltRecipe recipe) {
+        if (!openFurnace(pos)) return;
+        try {
+            callClient(() -> {
+                MinecraftClient client = MinecraftClient.getInstance();
+                ClientPlayerEntity player = client.player;
+                ClientPlayerInteractionManager im = client.interactionManager;
+                if (player == null || im == null || !(player.currentScreenHandler instanceof AbstractFurnaceScreenHandler)) {
+                    return null;
+                }
+                ScreenHandler screen = player.currentScreenHandler;
+                ItemStack output = screen.getSlot(2).getStack();
+                if (!output.isEmpty() && getItemId(output).equals(recipe.output())) {
+                    im.clickSlot(screen.syncId, 2, 0, SlotActionType.QUICK_MOVE, player);
+                }
+                return null;
+            });
+        } finally {
+            closeScreenSafe();
+        }
+    }
+
+    private static void assignSmeltLoad(List<FurnacePlan> plans, int targetCount) {
+        for (int i = 0; i < targetCount; i++) {
+            FurnacePlan best = null;
+            for (FurnacePlan plan : plans) {
+                if (best == null || plan.etaMs() < best.etaMs()) {
+                    best = plan;
+                }
+            }
+            if (best != null) best.assigned++;
+        }
+    }
+
+    private static List<BlockPos> scanSmeltFurnaces(SmeltRecipe recipe, int range) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.world == null) return List.of();
+        BlockPos playerPos = player.getBlockPos();
+        List<BlockPos> positions = new ArrayList<>();
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
+        for (int dx = -range; dx <= range; dx++) {
+            for (int dy = -range; dy <= range; dy++) {
+                for (int dz = -range; dz <= range; dz++) {
+                    mutable.set(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getZ() + dz);
+                    BlockState state = client.world.getBlockState(mutable);
+                    if (isAllowedFurnaceBlock(state.getBlock(), recipe)) {
+                        positions.add(mutable.toImmutable());
+                    }
+                }
+            }
+        }
+        positions.sort(Comparator.comparingDouble(pos -> pos.getSquaredDistance(playerPos)));
+        return positions;
+    }
+
+    private static boolean openFurnace(BlockPos pos) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (!waitUntilNear(pos, 4.75, 30_000L)) return false;
+        callClient(() -> {
+            ClientPlayerEntity player = client.player;
+            ClientPlayerInteractionManager im = client.interactionManager;
+            if (player == null || im == null || client.world == null) return null;
+            Vec3d hit = Vec3d.ofCenter(pos);
+            BlockHitResult bhr = new BlockHitResult(hit, Direction.UP, pos, false);
+            im.interactBlock(player, Hand.MAIN_HAND, bhr);
+            return null;
+        });
+        for (int i = 0; i < 40; i++) {
+            if (Boolean.TRUE.equals(callClient(() -> {
+                ClientPlayerEntity player = MinecraftClient.getInstance().player;
+                return player != null && player.currentScreenHandler instanceof AbstractFurnaceScreenHandler;
+            }))) {
+                sleep(100);
+                return true;
+            }
+            sleep(50);
+        }
+        return false;
+    }
+
+    private static boolean waitUntilNear(BlockPos pos, double distance, long timeoutMs) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (!Boolean.TRUE.equals(callClient(() -> {
+            ClientPlayerEntity player = client.player;
+            return player != null && player.getBlockPos().isWithinDistance(pos, distance);
+        }))) {
+            execute("#goto " + pos.getX() + " " + pos.getY() + " " + pos.getZ());
+        }
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (Boolean.TRUE.equals(callClient(() -> {
+                ClientPlayerEntity player = client.player;
+                return player != null && player.getBlockPos().isWithinDistance(pos, distance);
+            }))) {
+                return true;
+            }
+            sleep(250);
+        }
+        return false;
+    }
+
+    private static boolean moveItemsIntoSlot(ClientPlayerEntity player, ClientPlayerInteractionManager im,
+                                             ScreenHandler screen, int targetSlot, String itemId, int count) {
+        int moved = 0;
+        while (moved < count) {
+            int source = findInventoryScreenSlot(screen, itemId);
+            if (source < 0) return false;
+            im.clickSlot(screen.syncId, source, 0, SlotActionType.PICKUP, player);
+            int guard = 0;
+            while (moved < count && guard++ < 64) {
+                ItemStack cursor = screen.getCursorStack();
+                if (cursor.isEmpty()) break;
+                int before = cursor.getCount();
+                im.clickSlot(screen.syncId, targetSlot, 1, SlotActionType.PICKUP, player);
+                ItemStack afterCursor = screen.getCursorStack();
+                int after = afterCursor.isEmpty() ? 0 : afterCursor.getCount();
+                if (after < before) {
+                    moved++;
+                } else {
+                    break;
+                }
+            }
+            im.clickSlot(screen.syncId, source, 0, SlotActionType.PICKUP, player);
+        }
+        return true;
+    }
+
+    private static int findInventoryScreenSlot(ScreenHandler screen, String itemId) {
+        for (int screenSlot = 3; screenSlot < screen.slots.size(); screenSlot++) {
+            ItemStack stack = screen.getSlot(screenSlot).getStack();
+            if (!stack.isEmpty() && getItemId(stack).equals(itemId)) {
+                return screenSlot;
+            }
+        }
+        return -1;
+    }
+
+    private static int countAvailableFuelCapacity(ClientPlayerEntity player, String avoidItemId) {
+        int total = 0;
+        String avoid = normalizeItemId(avoidItemId);
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            String id = getItemId(stack);
+            if (id.equals(avoid)) continue;
+            total += stack.getCount() * fuelCapacityItems(id);
+        }
+        return total;
+    }
+
+    private static int fuelItemsNeeded(ClientPlayerEntity player, int smeltItems, String avoidItemId) {
+        String fuel = bestFuelItem(player, avoidItemId);
+        if (fuel == null) return 0;
+        int capacity = Math.max(1, fuelCapacityItems(fuel));
+        return Math.max(1, (int) Math.ceil(smeltItems / (double) capacity));
+    }
+
+    private static String bestFuelItem(ClientPlayerEntity player, String avoidItemId) {
+        String avoid = normalizeItemId(avoidItemId);
+        String best = null;
+        int bestCapacity = 0;
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            String id = getItemId(stack);
+            if (id.equals(avoid)) continue;
+            int capacity = fuelCapacityItems(id);
+            if (capacity > bestCapacity) {
+                bestCapacity = capacity;
+                best = id;
+            }
+        }
+        return best;
+    }
+
+    private static int fuelCapacityItems(String itemId) {
+        String id = normalizeItemId(itemId);
+        if (id.equals("minecraft:lava_bucket")) return 100;
+        if (id.equals("minecraft:coal_block")) return 80;
+        if (id.equals("minecraft:blaze_rod")) return 12;
+        if (id.equals("minecraft:coal") || id.equals("minecraft:charcoal")) return 8;
+        if (id.endsWith("_log") || id.endsWith("_wood")) return 1;
+        if (id.endsWith("_planks")) return 1;
+        return 0;
+    }
+
+    private static String resolveSmeltInputForInventory(ClientPlayerEntity player, String requested) {
+        String input = normalizeItemId(requested);
+        if (countItemInInventory(player, input) > 0) return input;
+        Map<String, String> minedDropAliases = Map.of(
+                "minecraft:iron_ore", "minecraft:raw_iron",
+                "minecraft:deepslate_iron_ore", "minecraft:raw_iron",
+                "minecraft:gold_ore", "minecraft:raw_gold",
+                "minecraft:deepslate_gold_ore", "minecraft:raw_gold",
+                "minecraft:copper_ore", "minecraft:raw_copper",
+                "minecraft:deepslate_copper_ore", "minecraft:raw_copper"
+        );
+        String alias = minedDropAliases.get(input);
+        if (alias != null && countItemInInventory(player, alias) > 0) return alias;
+        return input;
+    }
+
+    private static int countInventoryItemSafe(String itemId) {
+        return callClient(() -> {
+            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            return player == null ? 0 : countItemInInventory(player, itemId);
+        });
+    }
+
+    private static void closeScreenSafe() {
+        callClient(() -> {
+            ClientPlayerEntity player = MinecraftClient.getInstance().player;
+            if (player != null) player.closeHandledScreen();
+            return null;
+        });
+        sleep(100);
+    }
+
+    private static boolean isAllowedFurnaceBlock(Block block, SmeltRecipe recipe) {
+        if (block == Blocks.FURNACE) return recipe.allowFurnace();
+        if (block == Blocks.BLAST_FURNACE) return recipe.allowBlast();
+        if (block == Blocks.SMOKER) return recipe.allowSmoker();
+        return false;
+    }
+
+    private static long cookMsForBlock(String blockId) {
+        return (blockId.equals("minecraft:blast_furnace") || blockId.equals("minecraft:smoker"))
+                ? 5_000L : 10_000L;
+    }
+
+    private static String normalizeItemId(String item) {
+        String id = String.valueOf(item == null ? "" : item).trim().toLowerCase(Locale.ROOT);
+        return id.contains(":") ? id : "minecraft:" + id;
+    }
+
+    private static String normalizeIngredientPattern(String pattern) {
+        String value = String.valueOf(pattern == null ? "" : pattern).trim().toLowerCase(Locale.ROOT);
+        if (value.startsWith("*")) return value;
+        return normalizeItemId(value);
+    }
+
+    private static String stripMinecraftNamespace(String itemId) {
+        String normalized = normalizeItemId(itemId);
+        return normalized.startsWith("minecraft:") ? normalized.substring(10) : normalized;
+    }
+
+    private static final Map<String, SmeltRecipe> SMELT_RECIPES = buildSmeltRecipes();
+
+    private static Map<String, SmeltRecipe> buildSmeltRecipes() {
+        Map<String, SmeltRecipe> db = new HashMap<>();
+        addSmelt(db, "iron_ore", "iron_ingot", true, true, false);
+        addSmelt(db, "deepslate_iron_ore", "iron_ingot", true, true, false);
+        addSmelt(db, "raw_iron", "iron_ingot", true, true, false);
+        addSmelt(db, "gold_ore", "gold_ingot", true, true, false);
+        addSmelt(db, "deepslate_gold_ore", "gold_ingot", true, true, false);
+        addSmelt(db, "raw_gold", "gold_ingot", true, true, false);
+        addSmelt(db, "copper_ore", "copper_ingot", true, true, false);
+        addSmelt(db, "deepslate_copper_ore", "copper_ingot", true, true, false);
+        addSmelt(db, "raw_copper", "copper_ingot", true, true, false);
+        addSmelt(db, "ancient_debris", "netherite_scrap", true, true, false);
+        addSmelt(db, "sand", "glass", true, false, false);
+        addSmelt(db, "cobblestone", "stone", true, false, false);
+        addSmelt(db, "stone", "smooth_stone", true, false, false);
+        addSmelt(db, "clay_ball", "brick", true, false, false);
+        addSmelt(db, "netherrack", "nether_brick", true, false, false);
+        addSmelt(db, "kelp", "dried_kelp", true, false, false);
+        for (String wood : lst("oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry")) {
+            addSmelt(db, wood + "_log", "charcoal", true, false, false);
+            addSmelt(db, wood + "_wood", "charcoal", true, false, false);
+        }
+        for (String food : lst("beef", "chicken", "porkchop", "mutton", "rabbit", "cod", "salmon", "potato")) {
+            String cooked = food.equals("potato") ? "baked_potato" : "cooked_" + food;
+            addSmelt(db, food, cooked, true, false, true);
+        }
+        return db;
+    }
+
+    private static void addSmelt(Map<String, SmeltRecipe> db, String input, String output,
+                                 boolean furnace, boolean blast, boolean smoker) {
+        db.put(normalizeItemId(input), new SmeltRecipe(normalizeItemId(input), normalizeItemId(output),
+                furnace, blast, smoker));
+    }
+
+    private static final List<String> WOOD_TYPES = lst(
+            "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry");
+
+    private static final Map<String, GatherProvider> GATHER_PROVIDERS = buildGatherProviders();
+
+    private static Map<String, GatherProvider> buildGatherProviders() {
+        Map<String, GatherProvider> providers = new HashMap<>();
+        addGather(providers, "cobblestone", "cobblestone");
+        addGather(providers, "cobbled_deepslate", "cobbled_deepslate");
+        addGather(providers, "blackstone", "blackstone");
+        addGather(providers, "sand", "sand");
+        addGather(providers, "clay_ball", "clay", "clay_ball");
+        addGather(providers, "coal", "coal_ore", "coal");
+        addGather(providers, "redstone", "redstone_ore", "redstone");
+        addGather(providers, "diamond", "diamond_ore", "diamond");
+        addGather(providers, "emerald", "emerald_ore", "emerald");
+        addGather(providers, "lapis_lazuli", "lapis_ore", "lapis_lazuli");
+        addGather(providers, "flint", "gravel", "flint");
+        addGather(providers, "raw_iron", "iron_ore", "raw_iron");
+        addGather(providers, "raw_gold", "gold_ore", "raw_gold");
+        addGather(providers, "raw_copper", "copper_ore", "raw_copper");
+        addGather(providers, "ancient_debris", "ancient_debris");
+        for (String wood : WOOD_TYPES) {
+            addGather(providers, wood + "_log", wood + "_log");
+            addGather(providers, wood + "_wood", wood + "_wood");
+        }
+        return providers;
+    }
+
+    private static void addGather(Map<String, GatherProvider> providers, String item, String mineTarget) {
+        addGather(providers, item, mineTarget, item);
+    }
+
+    private static void addGather(Map<String, GatherProvider> providers, String item,
+                                  String mineTarget, String producedItem) {
+        providers.put(normalizeItemId(item), new GatherProvider(mineTarget, normalizeItemId(producedItem)));
+    }
+
+    private static int countRecipeIngredientSlots(RecipeData recipe, String itemId) {
+        int total = 0;
+        for (GridSlot slot : recipe.slots) {
+            if (matchesItemId(itemId, slot.ingredientPatterns)) {
+                total++;
+            }
+        }
+        return total;
+    }
+
+    private static String describeMakePlan(List<MakeStep> plan) {
+        if (plan.isEmpty()) return "already satisfied from inventory";
         List<String> parts = new ArrayList<>();
-        for (PlannedCraft craft : plan) {
-            parts.add(craft.count() + "x " + craft.itemName());
+        for (MakeStep step : plan) {
+            String name = step.itemName();
+            if (step.kind() == MakeStepKind.MINE) {
+                parts.add("mine " + step.count() + "x " + name);
+            } else if (step.kind() == MakeStepKind.SMELT) {
+                parts.add("smelt " + step.count() + "x " + name);
+            } else {
+                parts.add("craft " + step.count() + "x " + name);
+            }
         }
         return String.join(" -> ", parts);
     }
@@ -259,6 +1034,14 @@ public class CommandExecutor {
         String itemKey = itemId.toString();
         if (itemKey.startsWith("minecraft:")) {
             itemKey = itemKey.substring(10);
+        }
+        final String itemKeyForNormalize = itemKey;
+        String normalizedItemKey = callClient(() ->
+                normalizeCraftTargetForInventory(client.player, itemKeyForNormalize));
+        if (!normalizedItemKey.equals(itemKey)) {
+            sendBridgeMessage("[Bridge] Using " + normalizedItemKey + " instead of " + itemKey
+                    + " based on inventory.");
+            itemKey = normalizedItemKey;
         }
         RecipeData recipe = RECIPE_DATABASE.get(itemKey);
         if (recipe == null) {
@@ -447,6 +1230,21 @@ public class CommandExecutor {
             gs(1, lst("minecraft:coal","minecraft:charcoal")),
             gs(4, lst("minecraft:stick"))
         ), 4));
+
+        // Pickaxes
+        db.put("wooden_pickaxe", new RecipeData("wooden_pickaxe", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(5, lst("minecraft:stick")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
+
+        db.put("stone_pickaxe", new RecipeData("stone_pickaxe", lst(
+            gs(1, lst("minecraft:cobblestone", "minecraft:cobbled_deepslate", "minecraft:blackstone")),
+            gs(2, lst("minecraft:cobblestone", "minecraft:cobbled_deepslate", "minecraft:blackstone")),
+            gs(3, lst("minecraft:cobblestone", "minecraft:cobbled_deepslate", "minecraft:blackstone")),
+            gs(5, lst("minecraft:stick")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
 
         // Furnace (cobblestone ring -> 1)
         db.put("furnace", new RecipeData("furnace", lst(
@@ -809,7 +1607,7 @@ public class CommandExecutor {
         return "["
             + "\"#goto x y z\","
             + "\"#craft\","
-            + "\"#task sleep\","
+            + "\"#sleep\","
             + "\"#mine count block\","
             + "\"#follow player <name>\","
             + "\"#cancel\","
@@ -885,8 +1683,10 @@ public class CommandExecutor {
     private static String normalizeRawBaritoneCommand(String command) {
         if (command == null) return null;
         String trimmed = command.trim();
-        if (trimmed.equalsIgnoreCase("#sleep") || trimmed.equalsIgnoreCase("sleep")) {
-            return "#task sleep";
+        if (trimmed.equalsIgnoreCase("#sleep")
+                || trimmed.equalsIgnoreCase("sleep")
+                || trimmed.equalsIgnoreCase("#task sleep")) {
+            return "#sleep";
         }
         return trimmed;
     }

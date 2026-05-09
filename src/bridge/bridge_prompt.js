@@ -35,9 +35,9 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '  {"type":"cancel"}                                            — cancel all queued actions',
             '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
             '',
-            'Common raw_commands: #task sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
             '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-            'Prefer tracked bridge actions: craft, mine, #task sleep, #task smelt, and #task interact. Use #task sleep instead of #sleep so the bridge queue receives completion/failure status.',
+            'Prefer tracked bridge actions: craft, mine, #sleep, #task smelt, and #task interact. Use #sleep for sleeping; #task sleep is unreliable on this bridge.',
             'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
             'Never invent new types. For anything else, use raw_command with the # prefix.',
           ].join('\n');
@@ -55,20 +55,10 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
 
     const craftingRules = [
             'CRAFTING RULES:',
-            '- Crafting is fully automatic. Send a craft action and the bridge finds the nearest crafting table, walks to it, opens it, fills the recipe, and extracts the result.',
-            '- If no crafting table is nearby, the bridge will ask you to place one. If ingredients are missing, it will tell you what is needed.',
-            '- Use {"type":"craft","item":"<name>","count":<N>} e.g. {"type":"craft","item":"stick","count":16}.',
-            '- The item name must match a recipe in the bridge database. Common supported examples include planks, stick, crafting_table, torch, furnace, iron_block, iron_pickaxe, diamond_pickaxe, doors, fences, and chests.',
-            '- The bridge can auto-expand simple prerequisite crafts. If the player asks for sticks and logs are available, send {"type":"craft","item":"stick","count":<N>} even if planks are not currently in inventory.',
-            '- Do not refuse stick crafting just because oak_planks are missing. Any plank type works, and the bridge chooses the matching plank type from available logs.',
-            '',
-            'IMPORTANT — "Directly craftable now" means one craft action can run immediately.',
-            '- "Craftable after prerequisites" means you SHOULD send actions instead of only replying. For sticks, one craft action for stick is enough because the bridge expands log -> planks -> sticks.',
-            '- For other prerequisite chains, queue the prerequisite craft actions first, then queue the requested item in the same actions array.',
-            '- Example: if sticks are craftable after prerequisites, respond with a craft action for stick, not a refusal.',
-            '- If a player requests an item in the "Nearly craftable" list, tell them exactly what materials are missing instead of trying to craft it.',
-            '- If a requested item is not in the analysis at all, explain that you cannot craft it with current materials.',
-            '- If nothing is craftable, tell the player what basic materials to gather first (e.g., "We need logs to make planks first!").',
+            '- For make/craft requests, send one craft action for the final requested item. The Fabric bridge resolves prerequisites such as mining, smelting, planks, sticks, and deferred final crafting.',
+            '- Use {"type":"craft","item":"<name>","count":<N>} e.g. {"type":"craft","item":"iron_pickaxe","count":1}.',
+            '- Do not manually expand normal recipe chains in the prompt response. Do not refuse just because current inventory is missing obvious prerequisites; let the bridge planner try.',
+            '- If the player asks for a non-craftable or unsupported item, reply briefly instead of inventing action types.',
           ].join('\n');
 
     const topographyDocs = settings.use_textual_topography
@@ -79,8 +69,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             'EXAMPLES:',
             'Chat only:  {"reply":"Yeah, the weather is nice today."}',
             'With move:  {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
-            'With craft: {"reply":"Let me craft that.","actions":[{"type":"craft","provider":"baritone_chat","item":"stick","count":4}]}',
-            'With prerequisite craft: {"reply":"I need planks first, then sticks.","actions":[{"type":"craft","provider":"baritone_chat","item":"acacia_planks","count":4},{"type":"craft","provider":"baritone_chat","item":"stick","count":4}]}',
+            'With craft: {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}]}',
             'With batch: {"reply":"Let me get iron.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#mine iron_ore 5"},{"type":"raw_command","provider":"baritone_chat","command":"#task smelt iron_ore"}]}',
           ].join('\n');
 

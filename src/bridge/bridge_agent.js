@@ -148,6 +148,104 @@ function normalizeAction(action) {
     return action;
 }
 
+function normalizeItemName(name) {
+    return String(name || '')
+        .replace(/^minecraft:/i, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9_ ]+/g, ' ')
+        .replace(/\s+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+function countInventoryItems(inventory = []) {
+    const counts = new Map();
+    for (const stack of inventory || []) {
+        if (!stack || !stack.item) continue;
+        const name = normalizeItemName(stack.item);
+        counts.set(name, (counts.get(name) || 0) + (Number(stack.count) || 0));
+    }
+    return counts;
+}
+
+function getAnyPlankCount(counts) {
+    let total = 0;
+    for (const [item, count] of counts.entries()) {
+        if (item.endsWith('_planks')) total += count;
+    }
+    return total;
+}
+
+function getAnyLogCount(counts) {
+    let total = 0;
+    for (const [item, count] of counts.entries()) {
+        if (item.endsWith('_log') || item.endsWith('_wood')) total += count;
+    }
+    return total;
+}
+
+function findRequestedCraftItem(message) {
+    const lower = String(message || '').toLowerCase();
+    if (!/\b(make|craft|get|create|build)\b/.test(lower)) return null;
+    const normalizedMessage = normalizeItemName(lower);
+    const recipes = wiki.data?.recipes?.crafting || {};
+    const candidates = Object.keys(recipes)
+        .filter(item => normalizedMessage.includes(normalizeItemName(item)))
+        .sort((a, b) => b.length - a.length);
+    return candidates[0] || null;
+}
+
+function inferActiveTaskDecision(message) {
+    const text = String(message || '').toLowerCase();
+    if (/\b(stop|cancel|instead|rather|nevermind|never mind|come here|come back|follow me|change|switch)\b/.test(text)) {
+        return 'cancel_replace';
+    }
+    return 'append_after_current';
+}
+
+export function isActiveQueueState(state) {
+    const status = String(state?.queue?.status || '').toLowerCase();
+    return status === 'executing' || status === 'draining';
+}
+
+export function parseActiveTaskDecision(response, message = '') {
+    const json = extractJsonObjectCandidate(response);
+    if (!json) {
+        return { valid: false, decision: 'continue', reply: '', actions: [], commands: [] };
+    }
+
+    try {
+        const parsed = JSON.parse(json);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { valid: false, decision: 'continue', reply: '', actions: [], commands: [] };
+        }
+
+        let decision = String(parsed.decision || '').trim();
+        const allowed = new Set(['continue', 'cancel_replace', 'append_after_current']);
+        const actions = Array.isArray(parsed.actions) ? parsed.actions.map(normalizeAction).filter(Boolean) : [];
+        const commands = Array.isArray(parsed.commands)
+            ? parsed.commands.map(cmd => String(cmd || '').trim()).filter(Boolean)
+            : [];
+
+        if (!allowed.has(decision) && !decision && (actions.length > 0 || commands.length > 0)) {
+            decision = inferActiveTaskDecision(message);
+        }
+
+        if (!allowed.has(decision)) {
+            return { valid: false, decision: 'continue', reply: '', actions: [], commands: [] };
+        }
+
+        return {
+            valid: true,
+            decision,
+            reply: typeof parsed.reply === 'string' ? parsed.reply.trim() : '',
+            actions,
+            commands,
+        };
+    } catch {
+        return { valid: false, decision: 'continue', reply: '', actions: [], commands: [] };
+    }
+}
+
 /**
  * Parse the LLM's response into a chat text portion and a list of actions.
  *
@@ -572,6 +670,86 @@ export class BridgeAgent {
         return analysis;
     }
 
+    _buildCraftFallbackActions(message, state, chatText, options = {}) {
+        const complaint = /\b(need|missing|don't have|do not have|can't|cannot|lack|requires|required)\b/i.test(chatText || '');
+        if (!complaint && options.force !== true) return [];
+
+        const item = findRequestedCraftItem(message);
+        if (!item) return [];
+
+        const recipe = wiki.data?.recipes?.crafting?.[item];
+        if (!recipe?.ingredients) return [];
+
+        const counts = countInventoryItems(state?.inventory || []);
+        const actions = [];
+        const plannedCrafts = new Set();
+
+        const addCraft = (craftItem, count = 1) => {
+            const key = `${craftItem}:${count}`;
+            if (plannedCrafts.has(key)) return;
+            plannedCrafts.add(key);
+            actions.push({ type: 'craft', provider: 'baritone_chat', item: craftItem, count });
+        };
+
+        const have = (ingredient) => {
+            const name = normalizeItemName(ingredient);
+            if (name === 'oak_planks') return getAnyPlankCount(counts);
+            return counts.get(name) || 0;
+        };
+
+        const ensureSticks = (needed) => {
+            const current = counts.get('stick') || 0;
+            const missing = Math.max(0, needed - current);
+            if (missing <= 0) return true;
+
+            const planksAvailable = getAnyPlankCount(counts);
+            const logsAvailable = getAnyLogCount(counts);
+            if (planksAvailable <= 0 && logsAvailable <= 0) {
+                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'wood', count: 1 });
+            }
+            return true;
+        };
+
+        for (const [ingredient, rawQty] of Object.entries(recipe.ingredients)) {
+            const name = normalizeItemName(ingredient);
+            const qtyNeeded = Number(rawQty) || 1;
+            const qtyHave = have(name);
+            const missing = Math.max(0, qtyNeeded - qtyHave);
+            if (missing <= 0) continue;
+
+            if (name === 'stick') {
+                ensureSticks(qtyNeeded);
+            } else if (name === 'oak_planks') {
+                if (getAnyPlankCount(counts) < qtyNeeded && getAnyLogCount(counts) <= 0) {
+                    actions.push({ type: 'mine', provider: 'baritone_chat', target: 'wood', count: 1 });
+                }
+                addCraft('oak_planks', missing);
+            } else if (name === 'cobblestone') {
+                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'cobblestone', count: missing });
+            } else if (name === 'iron_ingot') {
+                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'iron_ore', count: missing });
+                actions.push({ type: 'raw_command', provider: 'baritone_chat', command: '#task smelt iron_ore' });
+            } else if (name === 'coal') {
+                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'coal_ore', count: missing });
+            } else {
+                return [];
+            }
+        }
+
+        if (!actions.length) return [];
+        addCraft(item, 1);
+        return actions;
+    }
+
+    _buildActiveTaskCraftActions(message, state) {
+        const actions = this._buildCraftFallbackActions(message, state, 'missing materials', { force: true });
+        if (actions.length > 0) return actions;
+
+        const item = findRequestedCraftItem(message);
+        if (!item) return [];
+        return [{ type: 'craft', provider: 'baritone_chat', item, count: 1 }];
+    }
+
     /**
      * Main agent loop. Polls state, processes pending messages, calls LLM.
      */
@@ -705,7 +883,11 @@ export class BridgeAgent {
                 if (this._inboundQueue.length > 0) {
                     const { source, message } = this._inboundQueue.shift();
                     console.log(`${this.name} handling message from ${source}: ${message}`);
-                    await this._handleMessage(source, message, state);
+                    if (isActiveQueueState(state)) {
+                        await this._handleActiveTaskMessage(source, message, state);
+                    } else {
+                        await this._handleMessage(source, message, state);
+                    }
 
                     this._pollIntervalMs = POLL_MIN_MS;
                     continue;
@@ -938,12 +1120,6 @@ export class BridgeAgent {
         this.history.save();
     }
 
-    /**
-     * Handle a single incoming message — call LLM, execute commands, record results.
-     * @param {string} source
-     * @param {string} message
-     * @param {object|null} state  Most-recent Fabric state snapshot
-     */
     async _handleMessage(source, message, state) {
         if (!source || !message) return;
 
@@ -952,7 +1128,7 @@ export class BridgeAgent {
             this.history.add(source, message);
         }
 
-        // ── Inject current state into history before LLM call ───────────────
+        // Inject current state into history before the LLM call.
         if (state && state.connected) {
             const stateContext = this._buildStateContext(state);
             if (stateContext) {
@@ -960,7 +1136,7 @@ export class BridgeAgent {
             }
         }
 
-        // ── Build prompt and call LLM ──────────────────────────────────────
+        // Build prompt and call the LLM.
         const history = this.history.getHistory();
         if (settings.use_textual_topography === true && state?.surface_map) {
             history.push({
@@ -993,10 +1169,20 @@ export class BridgeAgent {
 
         console.log(`${this.name} LLM response: ${response}`);
 
-        // ── Parse response ─────────────────────────────────────────────────
+        // Parse the model response into chat and bridge work.
         const { chat: rawChat, commands, actions, structured } = parseBridgeResponse(response, wantStructured);
         const suppressChat = /^(no response needed|no reply|none|n\/a)$/i.test(rawChat.trim());
-        const chat = suppressChat ? '' : rawChat;
+        let chat = suppressChat ? '' : rawChat;
+        let dispatchActions = actions;
+
+        if (dispatchActions.length === 0 && commands.length === 0 && state?.connected) {
+            const fallbackActions = this._buildCraftFallbackActions(message, state, chat);
+            if (fallbackActions.length > 0) {
+                dispatchActions = fallbackActions;
+                chat = 'I will gather the missing materials and craft it.';
+                this.history.add('system', `Converted missing-materials reply into ${fallbackActions.length} gather/craft action(s).`);
+            }
+        }
 
         // Record the full LLM response in history
         this.history.add(this.name, response);
@@ -1011,16 +1197,16 @@ export class BridgeAgent {
             }
         }
 
-        // ── Dispatch actions via batch queue ───────────────────────────────
-        if (actions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(actions);
+        // Dispatch actions via the batch queue.
+        if (dispatchActions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(dispatchActions);
             if (batchResult.success) {
                 this._continuationSource = source;
-                this._recordQueueDispatch('action', batchResult, actions.length);
+                this._recordQueueDispatch('action', batchResult, dispatchActions.length);
             } else {
                 const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
             }
         }
 
@@ -1032,12 +1218,153 @@ export class BridgeAgent {
             } else {
                 const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
             }
         }
 
-        if (wantStructured && !structured && commands.length === 0 && actions.length === 0) {
+        if (wantStructured && !structured && commands.length === 0 && dispatchActions.length === 0) {
             this.history.add('system', 'Invalid structured response: expected JSON object with reply/actions.');
+        }
+
+        this.history.save();
+    }
+
+    /**
+     * Handle chat while the bridge queue is busy. The evaluator may continue,
+     * cancel and replace, or append work behind the current queue.
+     */
+    async _handleActiveTaskMessage(source, message, state) {
+        if (!source || !message) return;
+
+        if (source !== this.name) {
+            this.history.add(source, message);
+        }
+
+        const queue = state?.queue || {};
+        const stateContext = this._buildStateContext(state) || 'CURRENT STATE: unavailable';
+        const evaluatorPrompt = [
+            'You are evaluating player chat while the bridge agent is already executing a queued task.',
+            'Do what the user asks, but decide whether that means continue, cancel/replace, or append after current.',
+            'Casual chat, encouragement, status questions, or unrelated comments should usually be "continue" with no actions.',
+            'If the player asks to stop, cancel, change target, come back, follow them, or do something instead, use "cancel_replace".',
+            'If the player asks to do something after the current task, use "append_after_current".',
+            'If the player asks to make, craft, get, create, or build an item, include the needed craft/gather actions. Do not answer with chat only.',
+            'For craft requests during an active task, prefer "append_after_current" unless the player clearly says instead/change/stop.',
+            '',
+            'Return exactly one JSON object and no other text:',
+            '{"decision":"continue|cancel_replace|append_after_current","reply":"<short optional chat>","actions":[],"commands":[]}',
+            '',
+            'Action schema examples:',
+            '{"type":"move","provider":"baritone_chat","x":1,"y":64,"z":1}',
+            '{"type":"follow","provider":"baritone_chat","target":"player_name"}',
+            '{"type":"craft","provider":"baritone_chat","item":"stone_pickaxe","count":1}',
+            '{"type":"raw_command","provider":"baritone_chat","command":"#sleep"}',
+            '',
+            `Queue status: ${queue.status || 'unknown'}`,
+            `Active command: ${queue.active || 'none'}`,
+            `Pending count: ${queue.pending ?? 0}`,
+            `Last failure: ${queue.lastFailure || 'none'}`,
+            '',
+            stateContext,
+            '',
+            `New message from ${source}: ${message}`,
+        ].join('\n');
+
+        let response;
+        try {
+            response = await this.prompter.promptConvo([
+                { role: 'system', content: evaluatorPrompt },
+            ]);
+        } catch (err) {
+            console.error('LLM error in active-task evaluator:', err);
+            this.history.add('system', `Active-task evaluator failed: ${err.message}`);
+            return;
+        }
+
+        const decision = parseActiveTaskDecision(response, message);
+        console.log(`${this.name} active-task evaluator response: ${response}`);
+        this.history.add('system', `Active-task evaluator response: ${response || '(empty)'}`);
+
+        if (!decision.valid) {
+            this.history.add('system', 'Invalid active-task evaluator response. Defaulted to continue with no queue change.');
+            this.history.save();
+            return;
+        }
+
+        if (decision.decision === 'continue'
+                && decision.actions.length === 0
+                && decision.commands.length === 0
+                && findRequestedCraftItem(message)) {
+            const craftActions = this._buildActiveTaskCraftActions(message, state);
+            if (craftActions.length > 0) {
+                decision.decision = inferActiveTaskDecision(message);
+                decision.actions = craftActions;
+                if (!decision.reply) {
+                    decision.reply = decision.decision === 'cancel_replace'
+                        ? 'Okay, switching to that.'
+                        : 'Okay, I will queue that after this.';
+                }
+                this.history.add('system', `Converted active craft request into ${craftActions.length} queued action(s).`);
+            }
+        }
+
+        if (decision.reply.trim()) {
+            const reply = decision.reply.trim();
+            sendOutputToServer(this.name, reply);
+            if (settings.chat_ingame === true) {
+                this._trackSentChat(reply);
+                await this.bridge.sendCommand(`chat: ${reply}`);
+            }
+        }
+
+        if (decision.decision === 'continue') {
+            this.history.save();
+            return;
+        }
+
+        if (decision.decision === 'cancel_replace') {
+            const cancelResult = await this.bridge.cancelQueue();
+            if (!cancelResult.success) {
+                const errMsg = `Active-task cancel failed: ${cancelResult.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                this.history.save();
+                return;
+            }
+
+            this._pendingContinuation = false;
+            this._lastHadActions = false;
+            this.history.add('system', `Interrupted active queue due to player request: ${message}`);
+            sendOutputToServer(this.name, 'Interrupted active task');
+        }
+
+        if (decision.actions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(decision.actions);
+            if (batchResult.success) {
+                this._continuationSource = source;
+                this._recordQueueDispatch('action', batchResult, decision.actions.length);
+            } else {
+                const errMsg = `Active-task action dispatch failed: ${batchResult.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+            }
+        }
+
+        if (decision.commands.length > 0) {
+            const batchResult = await this.bridge.sendBatchCommands(decision.commands);
+            if (batchResult.success) {
+                this._recordQueueDispatch('command', batchResult, decision.commands.length);
+            } else {
+                const errMsg = `Active-task command dispatch failed: ${batchResult.error || 'unknown error'}`;
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+            }
+        }
+
+        if (decision.decision !== 'continue'
+                && decision.actions.length === 0
+                && decision.commands.length === 0) {
+            this.history.add('system', `Active-task decision ${decision.decision} returned no actions or commands.`);
         }
 
         this.history.save();

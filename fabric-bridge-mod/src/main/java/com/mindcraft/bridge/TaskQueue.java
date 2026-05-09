@@ -42,7 +42,8 @@ public class TaskQueue {
             TaskKind kind,
             CompletionPolicy completion,
             Runnable postAction,
-            long timeoutMs
+            long timeoutMs,
+            long settleMs
     ) {}
 
     private final Queue<PendingTask> pending = new ConcurrentLinkedQueue<>();
@@ -50,6 +51,7 @@ public class TaskQueue {
 
     private volatile PendingTask activeTask = null;
     private volatile boolean activePostActionStarted = false;
+    private volatile boolean activeSettleStarted = false;
     private volatile boolean paused = false;
     private volatile String lastFailureReason = null;
     private volatile boolean enabled = true;
@@ -143,6 +145,7 @@ public class TaskQueue {
             lastFailureReason = reason;
             paused = true;
             activePostActionStarted = false;
+            activeSettleStarted = false;
             return;
         }
 
@@ -154,6 +157,7 @@ public class TaskQueue {
         pending.clear();
         activeTask = null;
         activePostActionStarted = false;
+        activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
         CommandExecutor.execute("#cancel");
@@ -164,6 +168,7 @@ public class TaskQueue {
         pending.clear();
         activeTask = null;
         activePostActionStarted = false;
+        activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
         return true;
@@ -174,6 +179,18 @@ public class TaskQueue {
         if (command == null || active == null) return false;
         if (!active.command().trim().equalsIgnoreCase(command.trim())) return false;
         return completeActiveId(active.id(), null);
+    }
+
+    public boolean failActiveIf(String command, String reason) {
+        PendingTask active = activeTask;
+        if (command == null || active == null) return false;
+        if (!active.command().trim().equalsIgnoreCase(command.trim())) return false;
+        chatDebug("[Bridge] DEBUG: bridge task failed - " + reason);
+        lastFailureReason = reason == null ? "unknown" : reason;
+        paused = true;
+        activePostActionStarted = false;
+        activeSettleStarted = false;
+        return true;
     }
 
     public void resume() {
@@ -190,6 +207,7 @@ public class TaskQueue {
         if (!paused) return;
         activeTask = null;
         activePostActionStarted = false;
+        activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
         dispatchIfIdle();
@@ -253,32 +271,57 @@ public class TaskQueue {
 
     private PendingTask classify(String command, Runnable postAction) {
         String trimmed = String.valueOf(command).trim();
+        if (trimmed.equalsIgnoreCase("#task sleep") || trimmed.equalsIgnoreCase("sleep")) {
+            trimmed = "#sleep";
+        }
         long id = ids.getAndIncrement();
 
         if (isCancelCommand(trimmed)) {
             return new PendingTask(id, trimmed, TaskKind.IMMEDIATE,
-                    CompletionPolicy.IMMEDIATE, null, 0);
+                    CompletionPolicy.IMMEDIATE, null, 0, 0);
         }
 
         if (postAction != null || trimmed.equalsIgnoreCase("#craft")) {
             return new PendingTask(id, trimmed, TaskKind.BRIDGE_CRAFT,
-                    CompletionPolicy.BRIDGE_CALLBACK, postAction, 90_000L);
+                    CompletionPolicy.BRIDGE_CALLBACK, postAction, 90_000L, settleFor(trimmed));
         }
 
         if (trimmed.regionMatches(true, 0, "#task ", 0, 6)) {
             return new PendingTask(id, trimmed, TaskKind.BARITONE_TASK,
-                    CompletionPolicy.BARITONE_TASK_CHAT, null, 0);
+                    CompletionPolicy.BARITONE_TASK_CHAT, null, timeoutFor(trimmed), settleFor(trimmed));
+        }
+
+        if (isTrackableRawBaritoneCommand(trimmed)) {
+            return new PendingTask(id, trimmed, TaskKind.RAW_BARITONE,
+                    CompletionPolicy.BARITONE_TASK_CHAT, null, timeoutFor(trimmed), settleFor(trimmed));
         }
 
         return new PendingTask(id, trimmed, TaskKind.RAW_BARITONE,
-                CompletionPolicy.UNTRACKED_TIMEOUT, null, timeoutFor(trimmed));
+                CompletionPolicy.UNTRACKED_TIMEOUT, null, timeoutFor(trimmed), settleFor(trimmed));
     }
 
     private long timeoutFor(String command) {
         String lower = command.toLowerCase();
+        if (lower.startsWith("#task smelt ")) return 600_000L;
         if (lower.startsWith("#mine ")) return 180_000L;
+        if (lower.startsWith("#goto ")) return 180_000L;
+        if (lower.equals("#sleep")) return 60_000L;
+        if (lower.startsWith("#surface") || lower.startsWith("#path")) return 120_000L;
         if (lower.startsWith("#explore") || lower.startsWith("#farm")) return 120_000L;
         return 30_000L;
+    }
+
+    private long settleFor(String command) {
+        String lower = command.toLowerCase();
+        if ((lower.startsWith("#goto ") || lower.startsWith("#task "))
+                && (lower.contains("portal")
+                    || lower.contains("nether")
+                    || lower.contains("overworld")
+                    || lower.contains("end_portal"))) {
+            return 10_000L;
+        }
+        if (lower.startsWith("#goto ")) return 1_500L;
+        return 0L;
     }
 
     private void dispatchIfIdle() {
@@ -292,6 +335,7 @@ public class TaskQueue {
         if (next == null) return;
         activeTask = next;
         activePostActionStarted = false;
+        activeSettleStarted = false;
         CommandExecutor.execute(next.command());
 
         if (next.completion() == CompletionPolicy.IMMEDIATE) {
@@ -301,7 +345,7 @@ public class TaskQueue {
         } else if (next.completion() == CompletionPolicy.BRIDGE_CALLBACK
                 || next.completion() == CompletionPolicy.BARITONE_TASK_CHAT) {
             startBaritonePlanWatcher(next);
-            if (next.completion() == CompletionPolicy.BRIDGE_CALLBACK && next.timeoutMs() > 0) {
+            if (next.timeoutMs() > 0) {
                 startTimeoutWatcher(next);
             }
         }
@@ -320,8 +364,9 @@ public class TaskQueue {
 
     private void startBaritonePlanWatcher(PendingTask task) {
         Thread watcher = new Thread(() -> {
-            boolean sawPending = false;
+            boolean sawBusy = false;
             long start = System.currentTimeMillis();
+            long lastBusyAt = start;
             sleepQuietly(300);
 
             while (true) {
@@ -329,13 +374,27 @@ public class TaskQueue {
                 if (active == null || active.id() != task.id() || paused) return;
 
                 Integer pendingCount = readBaritoneTaskPlanPendingCount();
-                if (pendingCount == null) return;
-                if (pendingCount > 0) {
-                    sawPending = true;
+                Boolean pathingBusy = readBaritonePathingBusy();
+                Boolean processBusy = readRelevantBaritoneProcessBusy(task.command());
+                boolean hasSignal = pendingCount != null || pathingBusy != null || processBusy != null;
+                boolean busy = (pendingCount != null && pendingCount > 0)
+                        || Boolean.TRUE.equals(pathingBusy)
+                        || Boolean.TRUE.equals(processBusy);
+
+                if (busy) {
+                    sawBusy = true;
+                    lastBusyAt = System.currentTimeMillis();
                 }
 
                 long elapsed = System.currentTimeMillis() - start;
-                if (pendingCount == 0 && (sawPending || elapsed > 1_000L)) {
+                if (!hasSignal && elapsed > 5_000L) {
+                    chatDebug("[Bridge] DEBUG: no Baritone state signal for " + task.command()
+                            + "; waiting for timeout fallback");
+                    return;
+                }
+
+                if (!busy && (sawBusy || elapsed > startupGraceFor(task.command()))
+                        && System.currentTimeMillis() - lastBusyAt > quietPeriodFor(task.command())) {
                     if (task.completion() == CompletionPolicy.BRIDGE_CALLBACK) {
                         chatDebug("[Bridge] DEBUG: Baritone task plan idle; starting bridge callback for "
                                 + task.command());
@@ -353,11 +412,40 @@ public class TaskQueue {
         watcher.start();
     }
 
+    private long startupGraceFor(String command) {
+        String lower = command.toLowerCase();
+        if (lower.equals("#sleep")) return 4_000L;
+        if (lower.startsWith("#goto ") && !looksLikeCoordinateGoto(lower)) return 8_000L;
+        if (lower.startsWith("#mine ")) return 4_000L;
+        return 2_500L;
+    }
+
+    private long quietPeriodFor(String command) {
+        String lower = command.toLowerCase();
+        if (lower.contains("portal") || lower.contains("nether") || lower.contains("overworld")) {
+            return 2_000L;
+        }
+        return 1_000L;
+    }
+
+    private boolean looksLikeCoordinateGoto(String command) {
+        String[] parts = command.trim().split("\\s+");
+        if (parts.length < 4) return false;
+        return isNumber(parts[1]) && isNumber(parts[2]) && isNumber(parts[3]);
+    }
+
+    private boolean isNumber(String value) {
+        try {
+            Double.parseDouble(value);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private Integer readBaritoneTaskPlanPendingCount() {
         try {
-            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
-            Object provider = apiClass.getMethod("getProvider").invoke(null);
-            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object baritone = getPrimaryBaritone();
             if (baritone == null) return null;
             Object taskPlanProcess = baritone.getClass().getMethod("getTaskPlanProcess").invoke(baritone);
             if (taskPlanProcess == null) return null;
@@ -365,6 +453,83 @@ public class TaskQueue {
             return pending instanceof Number ? ((Number) pending).intValue() : null;
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    private Boolean readBaritonePathingBusy() {
+        try {
+            Object baritone = getPrimaryBaritone();
+            if (baritone == null) return null;
+            Object pathing = baritone.getClass().getMethod("getPathingBehavior").invoke(baritone);
+            if (pathing == null) return null;
+            Object isPathing = pathing.getClass().getMethod("isPathing").invoke(pathing);
+            if (Boolean.TRUE.equals(isPathing)) return true;
+            Object hasPath = pathing.getClass().getMethod("hasPath").invoke(pathing);
+            if (Boolean.TRUE.equals(hasPath)) return true;
+            Object inProgress = pathing.getClass().getMethod("getInProgress").invoke(pathing);
+            return optionalPresent(inProgress);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Boolean readRelevantBaritoneProcessBusy(String command) {
+        try {
+            Object baritone = getPrimaryBaritone();
+            if (baritone == null) return null;
+            String lower = String.valueOf(command).trim().toLowerCase();
+
+            if (lower.startsWith("#mine ")) {
+                return processActive(baritone, "getMineProcess");
+            }
+            if (lower.startsWith("#follow ")) {
+                return processActive(baritone, "getFollowProcess");
+            }
+            if (lower.startsWith("#explore")) {
+                return processActive(baritone, "getExploreProcess");
+            }
+            if (lower.startsWith("#farm")) {
+                return processActive(baritone, "getFarmProcess");
+            }
+            if (lower.startsWith("#goto ")) {
+                Boolean custom = processActive(baritone, "getCustomGoalProcess");
+                Boolean getToBlock = processActive(baritone, "getGetToBlockProcess");
+                if (Boolean.TRUE.equals(custom) || Boolean.TRUE.equals(getToBlock)) return true;
+                if (custom != null || getToBlock != null) return false;
+            }
+            if (lower.regionMatches(true, 0, "#task ", 0, 6)) {
+                return processActive(baritone, "getTaskPlanProcess");
+            }
+            return null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Object getPrimaryBaritone() throws ReflectiveOperationException {
+        Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+        Object provider = apiClass.getMethod("getProvider").invoke(null);
+        return provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+    }
+
+    private Boolean processActive(Object baritone, String getter) {
+        try {
+            Object process = baritone.getClass().getMethod(getter).invoke(baritone);
+            if (process == null) return null;
+            Object active = process.getClass().getMethod("isActive").invoke(process);
+            return active instanceof Boolean ? (Boolean) active : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private boolean optionalPresent(Object optional) {
+        try {
+            if (optional == null) return false;
+            Object present = optional.getClass().getMethod("isPresent").invoke(optional);
+            return Boolean.TRUE.equals(present);
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -377,8 +542,34 @@ public class TaskQueue {
     private boolean completeActiveId(long id, String reason) {
         PendingTask active = activeTask;
         if (active == null || active.id() != id) return false;
+        if (paused) return false;
+        if (active.settleMs() > 0 && !activeSettleStarted && !"timeout".equals(reason)) {
+            activeSettleStarted = true;
+            chatDebug("[Bridge] DEBUG: completed " + active.command()
+                    + " by " + (reason == null ? "baritone" : reason)
+                    + "; settling " + active.settleMs() + "ms");
+            startSettleWatcher(active, reason);
+            return true;
+        }
+        if (activeSettleStarted) return true;
+        return finishActiveId(id, reason);
+    }
+
+    private void startSettleWatcher(PendingTask task, String reason) {
+        Thread watcher = new Thread(() -> {
+            sleepQuietly(task.settleMs());
+            finishActiveId(task.id(), reason == null ? "settled" : reason + "+settled");
+        }, "mindcraft-task-settle-" + task.id());
+        watcher.setDaemon(true);
+        watcher.start();
+    }
+
+    private boolean finishActiveId(long id, String reason) {
+        PendingTask active = activeTask;
+        if (active == null || active.id() != id) return false;
         activeTask = null;
         activePostActionStarted = false;
+        activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
         if (reason != null) {
@@ -416,6 +607,15 @@ public class TaskQueue {
 
     private static boolean isCancelCommand(String command) {
         return "#cancel".equalsIgnoreCase(String.valueOf(command).trim());
+    }
+
+    private static boolean isTrackableRawBaritoneCommand(String command) {
+        String lower = String.valueOf(command).trim().toLowerCase();
+        return lower.startsWith("#goto ")
+                || lower.startsWith("#mine ")
+                || lower.equals("#sleep")
+                || lower.startsWith("#surface")
+                || lower.startsWith("#path");
     }
 
     private static void chatDebug(String msg) {

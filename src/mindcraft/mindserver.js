@@ -20,12 +20,11 @@ const agent_listeners = [];
 const settings_spec = JSON.parse(readFileSync(path.join(__dirname, 'public/settings_spec.json'), 'utf8'));
 
 class AgentConnection {
-    constructor(settings, viewer_port) {
+    constructor(settings) {
         this.socket = null;
         this.settings = settings;
         this.in_game = false;
         this.full_state = null;
-        this.viewer_port = viewer_port;
         this.profile_path = settings.profile_path || null;
     }
     setSettings(settings) {
@@ -33,8 +32,8 @@ class AgentConnection {
     }
 }
 
-export function registerAgent(settings, viewer_port) {
-    let agentConnection = new AgentConnection(settings, viewer_port);
+export function registerAgent(settings) {
+    let agentConnection = new AgentConnection(settings);
     agent_connections[settings.profile.name] = agentConnection;
 }
 
@@ -396,7 +395,6 @@ function agentsStatusUpdate(socket) {
         agents.push({
             name: agentName, 
             in_game: conn.in_game,
-            viewerPort: conn.viewer_port,
             socket_connected: !!conn.socket
         });
     };
