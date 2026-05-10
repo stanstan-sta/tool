@@ -417,6 +417,13 @@ public class StateCollector {
             sb.append("}");
         }
 
+        // Append builder state. Present only when Baritone's BuilderProcess
+        // is active, so the Node side can watch it go idle to detect completion.
+        Boolean builderActive = CommandExecutor.isBuilderActive();
+        if (Boolean.TRUE.equals(builderActive)) {
+            sb.append(",\"builder\":{\"active\":true}");
+        }
+
         sb.append("}");
         return sb.toString();
     }

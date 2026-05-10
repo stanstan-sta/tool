@@ -37,6 +37,7 @@ public class BridgeHttpServer {
         server.createContext("/queue/resume", this::handleQueueResume);
         server.createContext("/queue/cancel", this::handleQueueCancel);
         server.createContext("/queue/state", this::handleQueueState);
+        server.createContext("/read_blocks", this::handleReadBlocks);
 
         // Single-threaded executor is fine — Minecraft main-thread work is
         // scheduled via MinecraftClient.execute() inside the handlers.
@@ -114,9 +115,12 @@ public class BridgeHttpServer {
                 return;
             }
 
-            // Check type before executing — craft actions are self-executing
+            // Check type before executing — craft/attack/build are self-executing
             String actionType = extractJsonString(actionJson, "type");
-            boolean isSelfExecuting = "craft".equals(actionType) || "attack".equals(actionType);
+            boolean isSelfExecuting = "craft".equals(actionType)
+                    || "attack".equals(actionType)
+                    || "build_schematic".equals(actionType)
+                    || "cancel_build".equals(actionType);
 
             String executed = CommandExecutor.executeTypedJson(actionJson);
             if (executed == null || executed.isBlank()) {
@@ -124,16 +128,17 @@ public class BridgeHttpServer {
                 return;
             }
 
-            // Craft actions are self-executing: executeCraftAction() directly
-            // sends #craft and registers a post-Baritone callback.
-            // Its return value is a human-readable description, NOT a command.
-            // Don't enqueue the description as a command.
+            // Self-executing actions bypass the queue — their workers own the lifecycle.
             if (isSelfExecuting) {
                 if (executed.startsWith("craft: queued")) {
                     respond(ex, 200, "{\"success\":true,\"queued\":" + parseCraftQueuedCount(executed)
                             + ",\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
                 } else if (executed.startsWith("attack:")) {
                     respond(ex, 200, "{\"success\":true,\"queued\":1,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                } else if (executed.startsWith("build_schematic: queued")) {
+                    respond(ex, 200, "{\"success\":true,\"queued\":1,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                } else if (executed.startsWith("cancel_build:")) {
+                    respond(ex, 200, "{\"success\":true,\"queued\":0,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
                 } else {
                     respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
                 }
@@ -143,6 +148,10 @@ public class BridgeHttpServer {
             // Route through TaskQueue for consistent queuing behavior.
             // The executed string is already a concrete command like "move: #goto x y z".
             // Extract just the raw command part after the type prefix for the queue.
+            if (executed.startsWith("error:")) {
+                respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
+                return;
+            }
             String rawCommand = executed;
             int colonIdx = executed.indexOf(':');
             if (colonIdx > 0) {
@@ -205,10 +214,36 @@ public class BridgeHttpServer {
                         }
                         continue;
                     }
+                    if ("build_schematic".equals(actionType)) {
+                        String executed = CommandExecutor.executeTypedJson(actionObj);
+                        if (executed != null && executed.startsWith("build_schematic: queued")) {
+                            totalQueued += 1;
+                        } else {
+                            errors.add(executed == null || executed.isBlank()
+                                    ? "build_schematic: invalid action"
+                                    : executed);
+                        }
+                        continue;
+                    }
+                    if ("cancel_build".equals(actionType)) {
+                        String executed = CommandExecutor.executeTypedJson(actionObj);
+                        if (executed != null && executed.startsWith("cancel_build:")) {
+                            // no queue change
+                        } else {
+                            errors.add(executed == null || executed.isBlank()
+                                    ? "cancel_build: invalid action"
+                                    : executed);
+                        }
+                        continue;
+                    }
                     // Non-craft/attack: executeTypedJson only translates to a command string.
                     String executed = CommandExecutor.executeTypedJson(actionObj);
                     if (executed == null || executed.isBlank()) {
                         errors.add("invalid typed action");
+                        continue;
+                    }
+                    if (executed.startsWith("error:")) {
+                        errors.add(executed);
                         continue;
                     }
                     int colonIdx = executed.indexOf(':');
@@ -524,5 +559,42 @@ public class BridgeHttpServer {
     static String jsonEscape(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    /**
+     * GET /read_blocks?x=..&y=..&z=..&w=..&h=..&l=..
+     * Returns a flat array of block identifier strings for the box
+     * (x..x+w, y..y+h, z..z+l) in XZY order.
+     * Clamped to 24x24x24 to avoid runaway responses.
+     */
+    private void handleReadBlocks(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        String query = ex.getRequestURI().getRawQuery();
+        Integer x = extractQueryInt(query, "x");
+        Integer y = extractQueryInt(query, "y");
+        Integer z = extractQueryInt(query, "z");
+        Integer w = extractQueryInt(query, "w");
+        Integer h = extractQueryInt(query, "h");
+        Integer l = extractQueryInt(query, "l");
+        if (x == null || y == null || z == null || w == null || h == null || l == null) {
+            respond(ex, 400, "{\"error\":\"Missing x/y/z/w/h/l query params\"}");
+            return;
+        }
+        if (w <= 0 || h <= 0 || l <= 0) {
+            respond(ex, 400, "{\"error\":\"w/h/l must be positive\"}");
+            return;
+        }
+        if (w > 24) w = 24;
+        if (h > 24) h = 24;
+        if (l > 24) l = 24;
+        String json = CommandExecutor.readBlocksInBox(x, y, z, w, h, l);
+        if (json == null) {
+            respond(ex, 503, "{\"error\":\"Not connected\"}");
+            return;
+        }
+        respond(ex, 200, json);
     }
 }

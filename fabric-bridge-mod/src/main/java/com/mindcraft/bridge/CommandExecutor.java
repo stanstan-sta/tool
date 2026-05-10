@@ -16,6 +16,7 @@ import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Identifier;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Direction;
@@ -26,6 +27,7 @@ import net.minecraft.world.World;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Executes Minecraft commands and typed actions on the client.
@@ -85,15 +87,27 @@ public class CommandExecutor {
         if ("attack".equals(type)) {
             return executeAttackAction(actionJson);
         }
+        if ("build_schematic".equals(type)) {
+            return executeBuildSchematicAction(actionJson);
+        }
+        if ("cancel_build".equals(type)) {
+            return executeCancelBuildAction();
+        }
         String command = extractRawBaritoneCommand(actionJson, type);
         if (command != null) {
             return type + ": " + command;
         }
-        String rawCmd = extractJsonString(actionJson, "command");
-        if (rawCmd != null && !rawCmd.isBlank()) {
-            return type + ": " + rawCmd;
+        // raw_command is the only type allowed to pass through an arbitrary
+        // "command" field. Anything else with a "command" field is an LLM
+        // hallucination — refuse it instead of sending garbage to the server.
+        if ("raw_command".equals(type)) {
+            String rawCmd = extractJsonString(actionJson, "command");
+            if (rawCmd != null && !rawCmd.isBlank()) {
+                return type + ": " + rawCmd;
+            }
+            return "raw_command: missing command";
         }
-        return type;
+        return "error: unknown action type \"" + type + "\"";
     }
 
     // â”€â”€â”€ Craft action orchestration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -302,8 +316,13 @@ public class CommandExecutor {
         CombatState state = CombatState.SEARCHING;
         long searchDeadline = System.currentTimeMillis() + (searchTimeS * 1000L);
         Entity currentTarget = null;
+        Entity huntTarget = null;
+        boolean isSafetyKill = false;
+        AtomicLong lastHitTimestamp = new AtomicLong(0);
         Vec3d lastTargetPos = null;
         long retargetTimer = 0;
+        BlockPos lastGotoTarget = null;
+        boolean announcedSearch = false;
 
         boolean hadWeapon = equipBestWeapon(player);
         if (!hadWeapon) {
@@ -328,6 +347,7 @@ public class CommandExecutor {
 
             switch (state) {
                 case SEARCHING: {
+                    lastGotoTarget = null;
                     if (useUntilItems) {
                         boolean allMet = true;
                         for (Map.Entry<String, Integer> entry : untilItems.entrySet()) {
@@ -363,7 +383,10 @@ public class CommandExecutor {
                         continue;
                     }
 
-                    sendBridgeMessage("[Bridge] Hunt: searching via #explore ...");
+                    if (!announcedSearch) {
+                        sendBridgeMessage("[Bridge] Hunt: searching via #explore ...");
+                        announcedSearch = true;
+                    }
                     TaskQueue.getInstance().cancelAll();
                     sleepQuietly(150);
                     TaskQueue.getInstance().enqueue("#explore");
@@ -403,6 +426,7 @@ public class CommandExecutor {
                 }
 
                 case APPROACHING: {
+                    announcedSearch = false;
                     if (currentTarget == null || currentTarget.isRemoved() || !currentTarget.isAlive()) {
                         sendBridgeMessage("[Bridge] Hunt: target lost during approach");
                         state = CombatState.SEARCHING;
@@ -419,13 +443,20 @@ public class CommandExecutor {
                         continue;
                     }
 
-                    String followCmd = "#follow entity " + currentTarget.getId();
-                    TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
-                    String active = qs.active();
-                    if (active == null || !active.equals(followCmd)) {
+                    BlockPos currentTargetBlock = new BlockPos(
+                            (int) Math.floor(currentTarget.getX()),
+                            (int) Math.floor(currentTarget.getY()),
+                            (int) Math.floor(currentTarget.getZ())
+                    );
+                    if (lastGotoTarget == null || !lastGotoTarget.equals(currentTargetBlock)) {
                         TaskQueue.getInstance().cancelAll();
-                        sleepQuietly(150);
-                        TaskQueue.getInstance().enqueue(followCmd);
+                        sleepQuietly(100);
+                        TaskQueue.getInstance().enqueue(
+                                "#goto " + currentTargetBlock.getX() + " " +
+                                        currentTargetBlock.getY() + " " +
+                                        currentTargetBlock.getZ()
+                        );
+                        lastGotoTarget = currentTargetBlock;
                     }
 
                     sleepQuietly(500);
@@ -433,10 +464,27 @@ public class CommandExecutor {
                 }
 
                 case ENGAGING: {
+                    announcedSearch = false;
+                    lastGotoTarget = null;
+                    equipBestWeapon(player);
+
                     if (currentTarget == null || currentTarget.isRemoved() || !currentTarget.isAlive()) {
+                        boolean recentHit = (System.currentTimeMillis() - lastHitTimestamp.get()) < 2000;
+                        if (isSafetyKill) {
+                            sendBridgeMessage("[Bridge] Hunt: safety-killed threat, back to hunt");
+                            isSafetyKill = false;
+                            currentTarget = huntTarget;
+                            huntTarget = null;
+                            if (currentTarget != null && currentTarget.isAlive()) {
+                                state = CombatState.APPROACHING;
+                            } else {
+                                state = CombatState.SEARCHING;
+                            }
+                            continue;
+                        }
                         sendBridgeMessage("[Bridge] Hunt: target killed");
                         totalAttempts++;
-                        if (!useUntilItems) {
+                        if (!useUntilItems && recentHit) {
                             killsRemaining--;
                         }
                         if (currentTarget != null) {
@@ -449,25 +497,33 @@ public class CommandExecutor {
                     double dist = player.squaredDistanceTo(currentTarget);
                     if (dist > 36.0) {
                         sendBridgeMessage("[Bridge] Hunt: target moved away, re-approaching");
+                        lastGotoTarget = null;
                         state = CombatState.APPROACHING;
                         continue;
                     }
 
                     if (System.currentTimeMillis() - retargetTimer >= 2000) {
                         retargetTimer = System.currentTimeMillis();
-                        Entity better = findBetterTarget(client, player, currentTarget, targetTypeRaw, maxDistance);
-                        if (better != null && better != currentTarget) {
-                            currentTarget = better;
+                        Entity threat = findClosestHostile(client, player, 4.0);
+                        if (threat != null && threat != currentTarget
+                                && player.squaredDistanceTo(threat) < player.squaredDistanceTo(currentTarget)) {
+                            if (!isSafetyKill) {
+                                huntTarget = currentTarget;
+                                isSafetyKill = true;
+                            }
+                            currentTarget = threat;
                         }
                     }
 
                     final ClientPlayerEntity fp = player;
                     final Entity t = currentTarget;
+                    final AtomicLong hitStamp = lastHitTimestamp;
                     client.execute(() -> {
                         lookAtEntity(fp, t);
                         if (client.interactionManager != null) {
                             client.interactionManager.attackEntity(fp, t);
                             fp.swingHand(Hand.MAIN_HAND);
+                            hitStamp.set(System.currentTimeMillis());
                         }
                     });
 
@@ -477,8 +533,10 @@ public class CommandExecutor {
                 }
 
                 case LOOTING: {
+                    announcedSearch = false;
+                    lastGotoTarget = null;
                     sendBridgeMessage("[Bridge] Hunt: looting drops ...");
-                    sleepQuietly(1500);
+                    sleepQuietly(2500);
 
                     if (lastTargetPos != null) {
                         Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
@@ -569,6 +627,7 @@ public class CommandExecutor {
         return nearest;
     }
 
+    // DEPRECATED: replaced by findClosestHostile in 1b-fix-retarget
     private static Entity findBetterTarget(MinecraftClient client, ClientPlayerEntity player, Entity currentTarget, String targetType, double maxDistance) {
         if (currentTarget == null || player == null || client.world == null) return null;
         Box box = player.getBoundingBox().expand(8.0);
@@ -592,6 +651,22 @@ public class CommandExecutor {
         return best == currentTarget ? null : best;
     }
 
+    private static Entity findClosestHostile(MinecraftClient client, ClientPlayerEntity player, double radius) {
+        if (player == null || client.world == null) return null;
+        Box box = player.getBoundingBox().expand(radius);
+        List<Entity> entities = client.world.getOtherEntities(player, box, e -> isHostile(e));
+        Entity nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        for (Entity e : entities) {
+            double d = player.squaredDistanceTo(e);
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = e;
+            }
+        }
+        return nearest;
+    }
+
     private static String normalizeEntityTypeName(String raw) {
         if (raw == null) return "";
         String s = raw.toLowerCase();
@@ -610,33 +685,38 @@ public class CommandExecutor {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getStack(i);
             if (stack.isEmpty()) continue;
-            String itemId = stack.getItem().toString();
-            if (itemId.startsWith("Item{") && itemId.endsWith("}")) {
-                itemId = itemId.substring(5, itemId.length() - 1);
-            }
-            String name = itemId.toLowerCase();
-            float damage = getMeleeDamage(name);
+            String itemId = getItemId(stack).toLowerCase();
+            float damage = getMeleeDamage(itemId);
             if (damage > bestDamage) {
                 bestDamage = damage;
                 bestSlot = i;
             }
         }
-        if (bestSlot >= 0) {
-            inv.setSelectedSlot(bestSlot);
-            sendBridgeMessage("[Bridge] Combat: selected slot " + bestSlot + " (damage " + bestDamage + ")");
-            return true;
+        if (bestSlot < 0) {
+            return false;
         }
-        return false;
+        if (bestSlot == inv.getSelectedSlot()) {
+            return true; // silent no-op — already on best slot
+        }
+        final int target = bestSlot;
+        float dmg = bestDamage;
+        MinecraftClient client = MinecraftClient.getInstance();
+        client.execute(() -> {
+            ClientPlayerEntity p = client.player;
+            if (p == null) return;
+            p.getInventory().setSelectedSlot(target);
+            if (p.networkHandler != null) {
+                p.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(target));
+            }
+        });
+        sendBridgeMessage("[Bridge] Combat: selected slot " + target + " (damage " + dmg + ")");
+        return true;
     }
 
     private static int getAttackCooldownMs(ClientPlayerEntity player) {
         ItemStack held = player.getMainHandStack();
         if (held.isEmpty()) return 250; // fist: 4.0 attack speed
-        String itemId = held.getItem().toString();
-        if (itemId.startsWith("Item{") && itemId.endsWith("}")) {
-            itemId = itemId.substring(5, itemId.length() - 1);
-        }
-        String name = itemId.toLowerCase();
+        String name = getItemId(held).toLowerCase();
         // 1.21 attack speeds: sword=1.6 (625ms), axe=1.0 (1000ms), pick=1.2 (833ms), shovel=1.0 (1000ms), fist=4.0 (250ms)
         if (name.contains("sword")) return 625;
         if (name.contains("axe")) return 1000;
@@ -672,6 +752,499 @@ public class CommandExecutor {
         float pitch = (float) (Math.toDegrees(Math.atan2(-dy, distXZ)));
         player.setYaw(yaw);
         player.setPitch(pitch);
+    }
+
+    // ─── Build (schematic) action orchestration ──────────────────────────────────────────────────────
+
+    /**
+     * Self-executing build action.
+     * Expects an already-validated schematic payload in the JSON (see
+     * {@link BridgeSchematic#createProxy}). Hands the resulting schematic to
+     * Baritone's BuilderProcess via reflection. Returns a human-readable
+     * status string, not a Baritone command.
+     */
+    private static String executeBuildSchematicAction(String actionJson) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null || client.world == null) {
+            return "build_schematic: not connected";
+        }
+
+        // Parse size + origin + palette + blocks
+        String name = extractJsonString(actionJson, "name");
+        if (name == null || name.isBlank()) name = "bridge_build";
+
+        String originObj = extractJsonObject(actionJson, "origin");
+        String sizeObj = extractJsonObject(actionJson, "size");
+        if (originObj == null || sizeObj == null) return "build_schematic: missing origin/size";
+
+        Integer ox = parseIntSafe(extractJsonPrimitive(originObj, "x"));
+        Integer oy = parseIntSafe(extractJsonPrimitive(originObj, "y"));
+        Integer oz = parseIntSafe(extractJsonPrimitive(originObj, "z"));
+        Integer sx = parseIntSafe(extractJsonPrimitive(sizeObj, "x"));
+        Integer sy = parseIntSafe(extractJsonPrimitive(sizeObj, "y"));
+        Integer sz = parseIntSafe(extractJsonPrimitive(sizeObj, "z"));
+        if (ox == null || oy == null || oz == null || sx == null || sy == null || sz == null) {
+            return "build_schematic: invalid origin/size numbers";
+        }
+        if (sx <= 0 || sy <= 0 || sz <= 0) return "build_schematic: size must be positive";
+        long total = (long) sx * (long) sy * (long) sz;
+        if (total > 60_000L) return "build_schematic: size exceeds 60k block cap";
+
+        List<String> palette = parseStringArray(extractJsonArrayRaw(actionJson, "palette"));
+        if (palette == null || palette.isEmpty()) return "build_schematic: empty palette";
+
+        short[] blocks;
+        String b64 = extractJsonString(actionJson, "blocks");
+        if (b64 != null && !b64.isBlank()) {
+            try {
+                byte[] raw = java.util.Base64.getDecoder().decode(b64.trim());
+                if (raw.length < total * 2) return "build_schematic: blocks payload too short";
+                blocks = new short[(int) total];
+                for (int i = 0; i < total; i++) {
+                    int lo = raw[i * 2] & 0xFF;
+                    int hi = raw[i * 2 + 1] & 0xFF;
+                    blocks[i] = (short) (lo | (hi << 8));
+                }
+            } catch (IllegalArgumentException iae) {
+                return "build_schematic: bad base64 blocks";
+            }
+        } else {
+            String arr = extractJsonArrayRaw(actionJson, "blocks");
+            if (arr == null) return "build_schematic: no blocks payload";
+            List<String> ints = splitJsonArray(arr);
+            if (ints.size() < total) return "build_schematic: blocks count < size";
+            blocks = new short[(int) total];
+            for (int i = 0; i < total; i++) {
+                try {
+                    blocks[i] = (short) Integer.parseInt(ints.get(i).trim());
+                } catch (NumberFormatException nfe) {
+                    return "build_schematic: non-integer block index";
+                }
+            }
+        }
+
+        final Object schematic = BridgeSchematic.createProxy(palette, blocks, sx, sy, sz);
+        if (schematic == null) return "build_schematic: failed to build schematic proxy";
+
+        final String buildName = name;
+        final int fox = ox, foy = oy, foz = oz;
+        final int fsx = sx, fsy = sy, fsz = sz;
+
+        // Hand off on the render thread; BuilderProcess reads world state on tick.
+        // BUT first spawn a launcher that waits for TaskQueue to drain so any
+        // craft/mine/smelt actions queued before us finish first.
+        final List<String> palettePass = palette;
+        final short[] blocksPass = blocks;
+        Thread launcher = new Thread(
+                () -> buildLauncherWorker(buildName, schematic, fox, foy, foz, fsx, fsy, fsz,
+                        palettePass, blocksPass),
+                "mindcraft-build-launcher"
+        );
+        launcher.setDaemon(true);
+        launcher.start();
+
+        return "build_schematic: queued " + buildName + " (" + fsx + "x" + fsy + "x" + fsz + ")";
+    }
+
+    private static void buildLauncherWorker(String buildName, Object schematic,
+                                            int fox, int foy, int foz,
+                                            int fsx, int fsy, int fsz,
+                                            List<String> palette, short[] blocks) {
+        // ── Phase 1: wait for any prerequisite tasks already in the queue. ──
+        long deadline = System.currentTimeMillis() + 15L * 60L * 1000L;
+        boolean first = true;
+        while (System.currentTimeMillis() < deadline) {
+            TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+            String status = qs.status();
+            if ("idle".equals(status) || "disabled".equals(status)) break;
+            if ("paused".equals(status)) {
+                sendBridgeMessage("[Bridge] Build: prerequisite task failed, aborting " + buildName
+                        + ": " + (qs.lastFailure() == null ? "unknown" : qs.lastFailure()));
+                return;
+            }
+            if (first) {
+                sendBridgeMessage("[Bridge] Build: waiting for prerequisites (" + qs.pending() + " pending)");
+                first = false;
+            }
+            sleepQuietly(1000);
+        }
+
+        // ── Phase 2: materials fence. ──────────────────────────────────────
+        // Compare placed-block tally against live inventory. If we're short on
+        // anything, enqueue make-steps for the delta and loop. This is STRICT:
+        // if we can't gather everything within MAX_RETRIES rounds, we abort
+        // instead of starting a half-finished build. A partial cabin is worse
+        // than "sorry, I couldn't get wool" — the user asked for a house, not
+        // a shell.
+        MinecraftClient client = MinecraftClient.getInstance();
+        int retries = 0;
+        final int MAX_RETRIES = 3;
+        Map<String, Integer> lastShortages = new LinkedHashMap<>();
+        boolean fenceSatisfied = false;
+        while (retries < MAX_RETRIES) {
+            Map<String, Integer> needed = tallyPlacedBlocksAsItems(palette, blocks);
+            if (needed.isEmpty()) { fenceSatisfied = true; break; }
+
+            Map<String, Integer> shortages = computeInventoryShortages(client.player, needed);
+            if (shortages.isEmpty()) { fenceSatisfied = true; break; }
+            lastShortages = shortages;
+
+            // Short on something. Plan it and enqueue the make-steps.
+            if (retries == 0) {
+                sendBridgeMessage("[Bridge] Build: fence shortage — "
+                        + formatShortages(shortages) + ". Topping up...");
+            } else {
+                sendBridgeMessage("[Bridge] Build: retry " + (retries + 1) + "/" + MAX_RETRIES
+                        + " — still short " + formatShortages(shortages));
+            }
+
+            boolean queuedAny = false;
+            boolean planFailure = false;
+            StringBuilder planErrors = new StringBuilder();
+            for (Map.Entry<String, Integer> e : shortages.entrySet()) {
+                String item = e.getKey();
+                int count = e.getValue();
+                if (count <= 0) continue;
+                if (client.player == null || client.world == null) break;
+                MakePlan plan = planMakeForInventory(client.player, item, count);
+                if (!plan.isSuccess() || plan.steps.isEmpty()) {
+                    planFailure = true;
+                    if (planErrors.length() > 0) planErrors.append("; ");
+                    planErrors.append(count).append("x ").append(item);
+                    if (!plan.errors.isEmpty()) {
+                        planErrors.append(" (").append(String.join(", ", plan.errors)).append(")");
+                    }
+                    continue;
+                }
+                for (MakeStep step : plan.steps) {
+                    enqueueMakeStep(step);
+                }
+                queuedAny = true;
+            }
+
+            if (!queuedAny) {
+                // Nothing at all could be queued — no provider for these items.
+                sendBridgeMessage("[Bridge] Build: can't obtain "
+                        + formatShortages(shortages)
+                        + (planFailure ? " (" + planErrors + ")" : "")
+                        + ". Aborting " + buildName + ".");
+                return;
+            }
+
+            // Wait for the top-up queue to drain before re-tallying.
+            long topupDeadline = System.currentTimeMillis() + 10L * 60L * 1000L;
+            while (System.currentTimeMillis() < topupDeadline) {
+                TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+                String status = qs.status();
+                if ("idle".equals(status) || "disabled".equals(status)) break;
+                if ("paused".equals(status)) {
+                    sendBridgeMessage("[Bridge] Build: top-up task failed, aborting " + buildName
+                            + ": " + (qs.lastFailure() == null ? "unknown" : qs.lastFailure()));
+                    return;
+                }
+                sleepQuietly(1000);
+            }
+            retries++;
+        }
+
+        if (!fenceSatisfied) {
+            // Materials still missing after MAX_RETRIES rounds. Do NOT build.
+            // The user explicitly asked for a house and we can't fulfill it;
+            // a half-built shell is worse than an honest failure.
+            sendBridgeMessage("[Bridge] Build: gave up after " + MAX_RETRIES
+                    + " top-up rounds — still short " + formatShortages(lastShortages)
+                    + ". Not starting build of " + buildName + ".");
+            return;
+        }
+
+        // ── Phase 3: launch on the render thread. ──────────────────────────
+        client.execute(() -> {
+            boolean ok = invokeBuilderBuild(buildName, schematic, fox, foy, foz);
+            if (ok) {
+                sendBridgeMessage("[Bridge] Build: started " + buildName + " @ (" + fox + "," + foy + "," + foz + ") size " + fsx + "x" + fsy + "x" + fsz);
+                Thread watchdog = new Thread(() -> buildWatchdogWorker(buildName), "mindcraft-build-watchdog");
+                watchdog.setDaemon(true);
+                watchdog.start();
+            } else {
+                sendBridgeMessage("[Bridge] Build: reflective invocation failed (is Baritone present?)");
+            }
+        });
+    }
+
+    /**
+     * Tally the schematic's non-air blocks as item counts.
+     * Doors + beds place two blocks from a single item; we approximate that by
+     * counting *half* of matching-name blocks for door/bed entries so we don't
+     * over-order. The templates actually only set the lower half so they're
+     * unaffected; this is defensive for scanned-readback buildings that include
+     * both halves.
+     */
+    /**
+     * Tally the schematic's non-air blocks as item counts.
+     *
+     * Doors and beds span two cells in the schematic but one item. We divide
+     * their raw cell count by 2 (rounded up) so the fence doesn't over-order.
+     * Same for tall plants (large_fern, sunflower, etc.).
+     */
+    private static Map<String, Integer> tallyPlacedBlocksAsItems(List<String> palette, short[] blocks) {
+        Map<String, Integer> raw = new LinkedHashMap<>();
+        if (palette == null || blocks == null) return raw;
+        for (short idx : blocks) {
+            int pi = idx & 0xFFFF;
+            if (pi < 0 || pi >= palette.size()) continue;
+            String id = palette.get(pi);
+            if (id == null || id.isEmpty()) continue;
+            String stripped = stripMinecraftNamespace(id);
+            if ("air".equals(stripped) || "cave_air".equals(stripped) || "void_air".equals(stripped)) continue;
+            raw.merge(stripped, 1, Integer::sum);
+        }
+        // Halve two-cell items.
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : raw.entrySet()) {
+            String item = e.getKey();
+            int count = e.getValue();
+            if (isTwoCellItem(item)) {
+                count = (count + 1) / 2;
+            }
+            out.put(item, count);
+        }
+        return out;
+    }
+
+    private static boolean isTwoCellItem(String stripped) {
+        return stripped.endsWith("_door")
+                || stripped.endsWith("_bed")
+                || "sunflower".equals(stripped)
+                || "lilac".equals(stripped)
+                || "rose_bush".equals(stripped)
+                || "peony".equals(stripped)
+                || "large_fern".equals(stripped)
+                || "tall_grass".equals(stripped)
+                || "small_dripleaf".equals(stripped);
+    }
+
+    /**
+     * Compare needed items against current inventory. Returns only shortages.
+     */
+    private static Map<String, Integer> computeInventoryShortages(ClientPlayerEntity player,
+                                                                  Map<String, Integer> needed) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        if (player == null) return out;
+        for (Map.Entry<String, Integer> e : needed.entrySet()) {
+            String item = e.getKey();
+            int want = e.getValue();
+            int have = countItemInInventory(player, "minecraft:" + item);
+            if (have < want) out.put(item, want - have);
+        }
+        return out;
+    }
+
+    private static String formatShortages(Map<String, Integer> shortages) {
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        for (Map.Entry<String, Integer> e : shortages.entrySet()) {
+            if (shown > 0) sb.append(", ");
+            sb.append(e.getValue()).append("x ").append(e.getKey());
+            shown++;
+            if (shown >= 5) {
+                if (shortages.size() > shown) sb.append(" (+").append(shortages.size() - shown).append(" more)");
+                break;
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String executeCancelBuildAction() {
+        boolean ok = invokeBuilderCancel();
+        return ok ? "cancel_build: builder stopped" : "cancel_build: failed or no active build";
+    }
+
+    /**
+     * Reflectively call {@code baritone.api.IBaritone.getBuilderProcess().build(name, schematic, origin)}.
+     * Uses {@code net.minecraft.util.math.BlockPos} as the {@code Vec3i} concrete type expected by
+     * Baritone's signature (BlockPos is a Vec3i in Minecraft).
+     */
+    private static boolean invokeBuilderBuild(String name, Object schematic, int x, int y, int z) {
+        try {
+            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = apiClass.getMethod("getProvider").invoke(null);
+            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object builder = baritone.getClass().getMethod("getBuilderProcess").invoke(baritone);
+            if (builder == null) return false;
+
+            Class<?> iSchematic = Class.forName("baritone.api.schematic.ISchematic");
+            // Baritone signature: void build(String, ISchematic, Vec3i)
+            // net.minecraft.util.math.BlockPos extends Vec3i.
+            BlockPos origin = new BlockPos(x, y, z);
+
+            // Find the (String, ISchematic, Vec3i-compatible) overload.
+            for (java.lang.reflect.Method m : builder.getClass().getMethods()) {
+                if (!"build".equals(m.getName())) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length != 3) continue;
+                if (!p[0].equals(String.class)) continue;
+                if (!iSchematic.isAssignableFrom(p[1])) continue;
+                if (!p[2].isAssignableFrom(origin.getClass())) continue;
+                m.invoke(builder, name, schematic, origin);
+                return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static boolean invokeBuilderCancel() {
+        try {
+            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = apiClass.getMethod("getProvider").invoke(null);
+            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object builder = baritone.getClass().getMethod("getBuilderProcess").invoke(baritone);
+            if (builder == null) return false;
+            // IBuilderProcess.onLostControl() / onPause() — simplest exit is to call onLostControl via the pause method
+            try {
+                builder.getClass().getMethod("pause").invoke(builder);
+                return true;
+            } catch (NoSuchMethodException nsm) {
+                // Fallback: let Baritone's generic process cancel handle it
+                Object mgr = baritone.getClass().getMethod("getPathingControlManager").invoke(baritone);
+                if (mgr != null) {
+                    mgr.getClass().getMethod("cancelEverything").invoke(mgr);
+                    return true;
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Polls BuilderProcess.isActive() and posts a single [Bridge] status line
+     * when the builder goes idle. 15-minute hard cap. Runs off the render thread.
+     * This does NOT interact with TaskQueue — build progress is exposed via
+     * {@link CommandExecutor#isBuilderActive()} on the /state payload.
+     */
+    private static void buildWatchdogWorker(String name) {
+        long deadline = System.currentTimeMillis() + 15L * 60L * 1000L;
+        // Give the builder a beat to latch.
+        sleepQuietly(1500);
+        boolean everActive = false;
+        while (System.currentTimeMillis() < deadline) {
+            Boolean active = readBuilderActive();
+            if (Boolean.TRUE.equals(active)) {
+                everActive = true;
+            } else if (everActive && Boolean.FALSE.equals(active)) {
+                sendBridgeMessage("[Bridge] Build: " + name + " finished");
+                return;
+            }
+            sleepQuietly(1000);
+        }
+        sendBridgeMessage("[Bridge] Build: " + name + " watchdog timeout");
+    }
+
+    /** Exposed for StateCollector. Returns null if Baritone isn't loaded. */
+    public static Boolean isBuilderActive() {
+        return readBuilderActive();
+    }
+
+    private static Boolean readBuilderActive() {
+        try {
+            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = apiClass.getMethod("getProvider").invoke(null);
+            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object builder = baritone.getClass().getMethod("getBuilderProcess").invoke(baritone);
+            if (builder == null) return null;
+            Object active = builder.getClass().getMethod("isActive").invoke(builder);
+            return (active instanceof Boolean) ? (Boolean) active : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // Read a JSON array value's raw substring (brackets included). Null if missing.
+    private static String extractJsonArrayRaw(String json, String key) {
+        String search = "\"" + key + "\"";
+        int ki = json.indexOf(search);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + search.length());
+        if (colon < 0) return null;
+        int start = json.indexOf('[', colon + 1);
+        if (start < 0) return null;
+        int depth = 0;
+        boolean inString = false;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (inString) {
+                if (c == '\\') { i++; continue; }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; continue; }
+            if (c == '[') depth++;
+            else if (c == ']') {
+                depth--;
+                if (depth == 0) return json.substring(start, i + 1);
+            }
+        }
+        return null;
+    }
+
+    // Split a JSON array body "[a, b, \"c\"]" into its element string list. Shallow splitter.
+    private static List<String> splitJsonArray(String arr) {
+        List<String> out = new ArrayList<>();
+        if (arr == null) return out;
+        String body = arr.trim();
+        if (body.startsWith("[")) body = body.substring(1);
+        if (body.endsWith("]")) body = body.substring(0, body.length() - 1);
+        int depth = 0;
+        boolean inString = false;
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (inString) {
+                cur.append(c);
+                if (c == '\\') {
+                    if (i + 1 < body.length()) { cur.append(body.charAt(i + 1)); i++; }
+                    continue;
+                }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; cur.append(c); continue; }
+            if (c == '[' || c == '{') { depth++; cur.append(c); continue; }
+            if (c == ']' || c == '}') { depth--; cur.append(c); continue; }
+            if (c == ',' && depth == 0) {
+                String v = cur.toString().trim();
+                if (!v.isEmpty()) out.add(v);
+                cur.setLength(0);
+                continue;
+            }
+            cur.append(c);
+        }
+        String last = cur.toString().trim();
+        if (!last.isEmpty()) out.add(last);
+        return out;
+    }
+
+    private static List<String> parseStringArray(String arr) {
+        if (arr == null) return null;
+        List<String> items = splitJsonArray(arr);
+        List<String> out = new ArrayList<>(items.size());
+        for (String item : items) {
+            String s = item.trim();
+            if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
+                s = s.substring(1, s.length() - 1);
+                s = s.replace("\\\"", "\"").replace("\\\\", "\\");
+            }
+            out.add(s);
+        }
+        return out;
+    }
+
+    private static Integer parseIntSafe(String s) {
+        if (s == null) return null;
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException nfe) { return null; }
     }
 
     private static String executeCraftAction(String actionJson) {
@@ -964,6 +1537,21 @@ public class CommandExecutor {
         }
 
         String itemKey = stripMinecraftNamespace(normalized);
+
+        // Smithing gate: netherite gear (and any future smithing outputs) must
+        // go through a SmithingScreenHandler, which the bridge doesn't drive
+        // yet. Fail fast with a clear message instead of letting the planner
+        // pick the minecraft-data fake crafting recipe (legacy pre-1.20 one).
+        SmithingRecipe smithing = SMITHING_RECIPES.get(itemKey);
+        if (smithing != null) {
+            plan.errors.add("can't craft " + stripMinecraftNamespace(smithing.output())
+                    + " yet: needs " + stripMinecraftNamespace(smithing.template())
+                    + " + " + stripMinecraftNamespace(smithing.base())
+                    + " + " + stripMinecraftNamespace(smithing.addition())
+                    + " on a smithing_table (smithing worker not implemented)");
+            return false;
+        }
+
         RecipeData recipe = RECIPE_DATABASE.get(itemKey);
         if (recipe != null) {
             int outputCount = Math.max(1, recipe.outputCount);
@@ -978,6 +1566,16 @@ public class CommandExecutor {
             plan.addVirtual(normalized, batches * outputCount);
             plan.consumeItem(normalized, missing);
             return true;
+        }
+
+        // Tier priority: gather BEFORE smelting when the output has a direct
+        // gather provider. Many ores drop their item (diamond, coal, redstone,
+        // emerald, lapis, quartz) when mined with the right tool — that's the
+        // obvious, fast path. Smelting falls back only for ores that don't
+        // drop their ingot directly (iron, gold, copper raw ores).
+        GatherProvider gatherEarly = GATHER_PROVIDERS.get(normalized);
+        if (gatherEarly != null) {
+            return emitGatherStep(plan, normalized, gatherEarly, missing, depth);
         }
 
         SmeltRecipe smelt = chooseSmeltRecipeForOutput(plan, normalized);
@@ -1003,40 +1601,50 @@ public class CommandExecutor {
 
         GatherProvider gather = GATHER_PROVIDERS.get(normalized);
         if (gather != null) {
-            String requiredTool = MINE_TOOL_REQUIREMENTS.get(gather.mineTarget());
-            if (requiredTool != null && !plan.hasEquivalentOrBetterTool(requiredTool)) {
-                if (!makeItem(plan, requiredTool, 1, depth + 1)) {
-                    plan.errors.add("Need " + requiredTool + " to mine " + gather.mineTarget()
-                            + " but couldn't plan one");
-                    return false;
-                }
-                plan.reserveTool(requiredTool);
-            }
-            boolean inNether = playerIsInNether();
-            boolean isNetherTarget = isNetherGatherTarget(gather.mineTarget());
-            boolean needsEnterPortal = isNetherTarget && !inNether;
-            boolean needsExitPortal = !isNetherTarget && inNether;
-            if (needsEnterPortal) {
-                plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
-            }
-            if (needsExitPortal) {
-                plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
-            }
-            plan.steps.add(new MakeStep(MakeStepKind.MINE, stripMinecraftNamespace(gather.producedItem()), missing,
-                    "#mine " + missing + " " + gather.mineTarget()));
-            plan.addVirtual(gather.producedItem(), missing);
-            plan.consumeItem(normalized, missing);
-            if (needsEnterPortal) {
-                plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
-            }
-            if (needsExitPortal) {
-                plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
-            }
-            return true;
+            return emitGatherStep(plan, normalized, gather, missing, depth);
         }
 
         plan.errors.add("no recipe, smelt path, or gather provider for " + stripMinecraftNamespace(normalized));
         return false;
+    }
+
+    /**
+     * Emit the mine step + any tool/portal prereqs for a gather provider.
+     * Extracted so it can be called from the early gather-first tier and the
+     * later fallback tier without duplicating logic.
+     */
+    private static boolean emitGatherStep(MakePlan plan, String normalized,
+                                          GatherProvider gather, int missing, int depth) {
+        String requiredTool = MINE_TOOL_REQUIREMENTS.get(gather.mineTarget());
+        if (requiredTool != null && !plan.hasEquivalentOrBetterTool(requiredTool)) {
+            if (!makeItem(plan, requiredTool, 1, depth + 1)) {
+                plan.errors.add("Need " + requiredTool + " to mine " + gather.mineTarget()
+                        + " but couldn't plan one");
+                return false;
+            }
+            plan.reserveTool(requiredTool);
+        }
+        boolean inNether = playerIsInNether();
+        boolean isNetherTarget = isNetherGatherTarget(gather.mineTarget());
+        boolean needsEnterPortal = isNetherTarget && !inNether;
+        boolean needsExitPortal = !isNetherTarget && inNether;
+        if (needsEnterPortal) {
+            plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
+        }
+        if (needsExitPortal) {
+            plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
+        }
+        plan.steps.add(new MakeStep(MakeStepKind.MINE, stripMinecraftNamespace(gather.producedItem()), missing,
+                "#mine " + missing + " " + gather.mineTarget()));
+        plan.addVirtual(gather.producedItem(), missing);
+        plan.consumeItem(normalized, missing);
+        if (needsEnterPortal) {
+            plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
+        }
+        if (needsExitPortal) {
+            plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
+        }
+        return true;
     }
 
     private static boolean makeIngredient(MakePlan plan, List<String> patterns, int count, int depth) {
@@ -1111,13 +1719,55 @@ public class CommandExecutor {
             }
         }
         candidates.sort(Comparator.comparing(SmeltRecipe::input));
+        // 1. Prefer inputs we already have (virtually).
         for (SmeltRecipe recipe : candidates) {
             if (plan.countVirtual(recipe.input()) > 0) return recipe;
         }
+        // 2. Prefer inputs with a direct gather provider.
         for (SmeltRecipe recipe : candidates) {
             if (GATHER_PROVIDERS.containsKey(recipe.input())) return recipe;
         }
+        // 3. Prefer inputs that are reachable transitively via another smelt
+        //    whose input is gatherable (raw_iron ← iron_ore, for example).
+        for (SmeltRecipe recipe : candidates) {
+            if (isInputTransitivelyReachable(recipe.input(), 0)) return recipe;
+        }
+        // 4. Last resort: first alphabetical candidate, even if unreachable.
+        //    The make planner will fail with a clean "no provider" message
+        //    if nothing can satisfy it.
         return candidates.isEmpty() ? null : candidates.get(0);
+    }
+
+    /**
+     * Cheap transitive reachability check used to prefer smelt inputs that
+     * actually have a source. Returns true when the item is gatherable, has
+     * a recipe whose ingredients are each reachable, or smelts from a
+     * reachable input. Depth-bounded to avoid cycles.
+     */
+    private static boolean isInputTransitivelyReachable(String itemId, int depth) {
+        if (depth > 4) return false;
+        String normalized = normalizeItemId(itemId);
+        if (GATHER_PROVIDERS.containsKey(normalized)) return true;
+        String key = stripMinecraftNamespace(normalized);
+        RecipeData recipe = RECIPE_DATABASE.get(key);
+        if (recipe != null) {
+            // Accept if at least one ingredient-variant in every slot is reachable.
+            for (GridSlot slot : recipe.slots) {
+                boolean any = false;
+                for (String p : slot.ingredientPatterns) {
+                    if (p.startsWith("*")) { any = true; break; } // wildcard accepts many
+                    if (isInputTransitivelyReachable(p, depth + 1)) { any = true; break; }
+                }
+                if (!any) return false;
+            }
+            return true;
+        }
+        for (SmeltRecipe s : SMELT_RECIPES.values()) {
+            if (s.output().equals(normalized)) {
+                if (isInputTransitivelyReachable(s.input(), depth + 1)) return true;
+            }
+        }
+        return false;
     }
 
     private static int fuelItemsNeededForPlan(MakePlan plan, int smeltItems, String avoidItemId) {
@@ -1153,6 +1803,15 @@ public class CommandExecutor {
 
     private record SmeltRecipe(String input, String output, boolean allowFurnace,
                                boolean allowBlast, boolean allowSmoker) {}
+
+    /**
+     * Vanilla smithing table recipe: a base item combined with an addition
+     * (typically netherite_ingot) and a template item on a smithing table.
+     * Execution requires the smithing screen handler worker (not yet
+     * implemented). The planner surfaces a clear error when asked for a
+     * smithing output so the caller knows why.
+     */
+    private record SmithingRecipe(String output, String template, String base, String addition) {}
 
     private record FurnaceInfo(BlockPos pos, String blockId, long cookMs, int inputCount,
                                int outputCount, float cookProgress) {}
@@ -1626,30 +2285,80 @@ public class CommandExecutor {
 
     private static Map<String, SmeltRecipe> buildSmeltRecipes() {
         Map<String, SmeltRecipe> db = new HashMap<>();
-        addSmelt(db, "iron_ore", "iron_ingot", true, true, false);
-        addSmelt(db, "deepslate_iron_ore", "iron_ingot", true, true, false);
-        addSmelt(db, "raw_iron", "iron_ingot", true, true, false);
-        addSmelt(db, "gold_ore", "gold_ingot", true, true, false);
-        addSmelt(db, "deepslate_gold_ore", "gold_ingot", true, true, false);
-        addSmelt(db, "raw_gold", "gold_ingot", true, true, false);
-        addSmelt(db, "copper_ore", "copper_ingot", true, true, false);
-        addSmelt(db, "deepslate_copper_ore", "copper_ingot", true, true, false);
-        addSmelt(db, "raw_copper", "copper_ingot", true, true, false);
-        addSmelt(db, "ancient_debris", "netherite_scrap", true, true, false);
-        addSmelt(db, "sand", "glass", true, false, false);
-        addSmelt(db, "cobblestone", "stone", true, false, false);
-        addSmelt(db, "stone", "smooth_stone", true, false, false);
-        addSmelt(db, "clay_ball", "brick", true, false, false);
-        addSmelt(db, "netherrack", "nether_brick", true, false, false);
-        addSmelt(db, "kelp", "dried_kelp", true, false, false);
-        for (String wood : lst("oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry")) {
-            addSmelt(db, wood + "_log", "charcoal", true, false, false);
-            addSmelt(db, wood + "_wood", "charcoal", true, false, false);
+
+        // ── Ore smelting (regular + deepslate + raw variants). ──────────
+        addSmelt(db, "iron_ore",             "iron_ingot",    true, true,  false);
+        addSmelt(db, "deepslate_iron_ore",   "iron_ingot",    true, true,  false);
+        addSmelt(db, "raw_iron",             "iron_ingot",    true, true,  false);
+        addSmelt(db, "gold_ore",             "gold_ingot",    true, true,  false);
+        addSmelt(db, "deepslate_gold_ore",   "gold_ingot",    true, true,  false);
+        addSmelt(db, "raw_gold",             "gold_ingot",    true, true,  false);
+        addSmelt(db, "copper_ore",           "copper_ingot",  true, true,  false);
+        addSmelt(db, "deepslate_copper_ore", "copper_ingot",  true, true,  false);
+        addSmelt(db, "raw_copper",           "copper_ingot",  true, true,  false);
+        addSmelt(db, "nether_gold_ore",      "gold_ingot",    true, true,  false);
+        addSmelt(db, "coal_ore",             "coal",          true, true,  false);
+        addSmelt(db, "deepslate_coal_ore",   "coal",          true, true,  false);
+        addSmelt(db, "diamond_ore",          "diamond",       true, true,  false);
+        addSmelt(db, "deepslate_diamond_ore","diamond",       true, true,  false);
+        addSmelt(db, "emerald_ore",          "emerald",       true, true,  false);
+        addSmelt(db, "deepslate_emerald_ore","emerald",       true, true,  false);
+        addSmelt(db, "lapis_ore",            "lapis_lazuli",  true, true,  false);
+        addSmelt(db, "deepslate_lapis_ore",  "lapis_lazuli",  true, true,  false);
+        addSmelt(db, "redstone_ore",         "redstone",      true, true,  false);
+        addSmelt(db, "deepslate_redstone_ore","redstone",     true, true,  false);
+        addSmelt(db, "nether_quartz_ore",    "quartz",        true, true,  false);
+        addSmelt(db, "ancient_debris",       "netherite_scrap", true, true, false);
+
+        // ── Stone / sand / clay / brick family. ─────────────────────────
+        addSmelt(db, "sand",             "glass",           true, false, false);
+        addSmelt(db, "red_sand",         "glass",           true, false, false);
+        addSmelt(db, "cobblestone",      "stone",           true, false, false);
+        addSmelt(db, "stone",            "smooth_stone",    true, false, false);
+        addSmelt(db, "cobbled_deepslate","deepslate",       true, false, false);
+        addSmelt(db, "sandstone",        "smooth_sandstone",true, false, false);
+        addSmelt(db, "red_sandstone",    "smooth_red_sandstone", true, false, false);
+        addSmelt(db, "quartz_block",     "smooth_quartz",   true, false, false);
+        addSmelt(db, "basalt",           "smooth_basalt",   true, false, false);
+        addSmelt(db, "clay_ball",        "brick",           true, false, false);
+        addSmelt(db, "clay",             "terracotta",      true, false, false);
+        addSmelt(db, "netherrack",       "nether_brick",    true, false, false);
+
+        // ── Misc. ────────────────────────────────────────────────────────
+        addSmelt(db, "kelp",             "dried_kelp",      true, false, true);
+        addSmelt(db, "cactus",           "green_dye",       true, false, false);
+        addSmelt(db, "sea_pickle",       "lime_dye",        true, false, false);
+        addSmelt(db, "chorus_fruit",     "popped_chorus_fruit", true, false, false);
+        addSmelt(db, "wet_sponge",       "sponge",          true, false, false);
+
+        // ── Log → charcoal (all real wood types, including pale_oak). ──
+        for (String wood : lst("oak","spruce","birch","jungle","acacia","dark_oak","mangrove","cherry","pale_oak")) {
+            addSmelt(db, wood + "_log",   "charcoal", true, false, false);
+            addSmelt(db, wood + "_wood",  "charcoal", true, false, false);
+            addSmelt(db, "stripped_" + wood + "_log",  "charcoal", true, false, false);
+            addSmelt(db, "stripped_" + wood + "_wood", "charcoal", true, false, false);
         }
-        for (String food : lst("beef", "chicken", "porkchop", "mutton", "rabbit", "cod", "salmon", "potato")) {
+
+        // ── Food (all smoker-compatible). ───────────────────────────────
+        for (String food : lst("beef","chicken","porkchop","mutton","rabbit","cod","salmon","potato")) {
             String cooked = food.equals("potato") ? "baked_potato" : "cooked_" + food;
             addSmelt(db, food, cooked, true, false, true);
         }
+
+        // ── Tool / armor recovery (furnace-only — turns worn iron/gold gear
+        //    into nuggets). Not commonly used, but documents the path. ───
+        for (String metal : lst("iron","golden")) {
+            String result = metal.equals("golden") ? "gold_nugget" : "iron_nugget";
+            for (String tool : lst("pickaxe","axe","shovel","hoe","sword","helmet","chestplate","leggings","boots")) {
+                addSmelt(db, metal + "_" + tool, result, true, true, false);
+            }
+            addSmelt(db, metal + "_horse_armor", result, true, true, false);
+        }
+        // Chainmail → iron_nugget.
+        for (String piece : lst("helmet","chestplate","leggings","boots")) {
+            addSmelt(db, "chainmail_" + piece, "iron_nugget", true, true, false);
+        }
+
         return db;
     }
 
@@ -1657,6 +2366,28 @@ public class CommandExecutor {
                                  boolean furnace, boolean blast, boolean smoker) {
         db.put(normalizeItemId(input), new SmeltRecipe(normalizeItemId(input), normalizeItemId(output),
                 furnace, blast, smoker));
+    }
+
+    // ─── Smithing recipes ────────────────────────────────────────────────
+    // Every vanilla smithing-table recipe as of 1.21. Execution still
+    // requires a SmithingScreenHandler worker; for now the planner uses
+    // this table only to detect and announce the requirement to the user.
+    private static final Map<String, SmithingRecipe> SMITHING_RECIPES = buildSmithingRecipes();
+
+    private static Map<String, SmithingRecipe> buildSmithingRecipes() {
+        Map<String, SmithingRecipe> db = new HashMap<>();
+        // Netherite upgrades: diamond gear + netherite_upgrade_smithing_template + netherite_ingot.
+        String tmpl = "minecraft:netherite_upgrade_smithing_template";
+        String add  = "minecraft:netherite_ingot";
+        for (String tool : lst("pickaxe","axe","shovel","hoe","sword")) {
+            db.put("netherite_" + tool,
+                new SmithingRecipe("netherite_" + tool, tmpl, "minecraft:diamond_" + tool, add));
+        }
+        for (String piece : lst("helmet","chestplate","leggings","boots")) {
+            db.put("netherite_" + piece,
+                new SmithingRecipe("netherite_" + piece, tmpl, "minecraft:diamond_" + piece, add));
+        }
+        return db;
     }
 
     private static final List<String> WOOD_TYPES = lst(
@@ -1689,6 +2420,32 @@ public class CommandExecutor {
         addGather(providers, "sugar_cane", "sugar_cane");
         addGather(providers, "nether_quartz", "nether_quartz_ore", "nether_quartz");
         addGather(providers, "obsidian", "obsidian");
+        // Flower gather providers — dye recipes above depend on these.
+        addGather(providers, "poppy", "poppy");
+        addGather(providers, "dandelion", "dandelion");
+        addGather(providers, "oxeye_daisy", "oxeye_daisy");
+        addGather(providers, "cornflower", "cornflower");
+        addGather(providers, "pink_tulip", "pink_tulip");
+        addGather(providers, "orange_tulip", "orange_tulip");
+        addGather(providers, "red_tulip", "red_tulip");
+        addGather(providers, "white_tulip", "white_tulip");
+        addGather(providers, "allium", "allium");
+        addGather(providers, "lily_of_the_valley", "lily_of_the_valley");
+        addGather(providers, "azure_bluet", "azure_bluet");
+        addGather(providers, "blue_orchid", "blue_orchid");
+        // Wool: #mine with naturally-placed wool (villages, sheep if stripped,
+        // rare mineshaft variants). Baritone will search the cached world for
+        // any wool block of the requested color. This is a best-effort
+        // fallback; shearing sheep is a planned follow-up (shear_entity action).
+        for (String c : lst("white","orange","magenta","light_blue","yellow","lime","pink","gray","light_gray","cyan","purple","blue","brown","green","red","black")) {
+            addGather(providers, c + "_wool", c + "_wool");
+        }
+        // String from cobweb (mineshafts). Mob-drop path (kill spiders) is a
+        // future feature — right now this is the only recipe-compatible route.
+        addGather(providers, "string", "cobweb", "string");
+        // Bones from mob drops — no gather path yet. Included for visibility;
+        // planner will fail with a clear "no provider for bone" message rather
+        // than silently omitting it.
         for (String wood : WOOD_TYPES) {
             addGather(providers, wood + "_log", wood + "_log");
             addGather(providers, wood + "_wood", wood + "_wood");
@@ -2096,6 +2853,33 @@ public class CommandExecutor {
                 gs(1, lst(c + "_dye")), gs(5, lst("minecraft:white_wool"))
             ), 1));
         }
+
+        // Beds (3 same-color wool top row + 3 *_planks bottom row -> 1)
+        // Colors get their bed name from the wool color. Planks can be any type.
+        for (String c : lst("white","orange","magenta","light_blue","yellow","lime","pink","gray","light_gray","cyan","purple","blue","brown","green","red","black")) {
+            db.put(c + "_bed", new RecipeData(c + "_bed", lst(
+                gs(1, lst("minecraft:" + c + "_wool")),
+                gs(2, lst("minecraft:" + c + "_wool")),
+                gs(3, lst("minecraft:" + c + "_wool")),
+                gs(7, lst("*_planks")),
+                gs(8, lst("*_planks")),
+                gs(9, lst("*_planks"))
+            ), 1));
+        }
+
+        // Dyes from single-flower sources (1 flower -> 1 dye).
+        // These are the ones the build templates actually rely on.
+        db.put("red_dye",        new RecipeData("red_dye",        lst(gs(1, lst("minecraft:poppy"))),              1));
+        db.put("yellow_dye",     new RecipeData("yellow_dye",     lst(gs(1, lst("minecraft:dandelion"))),          1));
+        db.put("light_gray_dye", new RecipeData("light_gray_dye", lst(gs(1, lst("minecraft:oxeye_daisy"))),        1));
+        db.put("blue_dye",       new RecipeData("blue_dye",       lst(gs(1, lst("minecraft:cornflower"))),         1));
+        db.put("pink_dye",       new RecipeData("pink_dye",       lst(gs(1, lst("minecraft:pink_tulip"))),         1));
+        db.put("orange_dye",     new RecipeData("orange_dye",     lst(gs(1, lst("minecraft:orange_tulip"))),       1));
+        db.put("magenta_dye",    new RecipeData("magenta_dye",    lst(gs(1, lst("minecraft:allium"))),             1));
+        db.put("white_dye",      new RecipeData("white_dye",      lst(gs(1, lst("minecraft:lily_of_the_valley"))), 1));
+        // Bone meal also makes white dye: 1 bone -> 3 bone_meal, 1 bone_meal acts as white_dye in recipes.
+        // The planner treats them as distinct items; if you want bone_meal as fallback it should be wired separately.
+        db.put("bone_meal",      new RecipeData("bone_meal",      lst(gs(1, lst("minecraft:bone"))),               3));
 
         // Book (3 paper Z + leather -> 1)
         db.put("book", new RecipeData("book", lst(
@@ -2571,7 +3355,140 @@ public class CommandExecutor {
             gs(7, lst("minecraft:iron_ingot")), gs(8, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
         ), 1));
 
+        // ── Overlay generated recipes ─────────────────────────────────────
+        // Fill in every vanilla recipe we didn't explicitly curate above,
+        // using the generated JSON extracted from minecraft-data. Existing
+        // hand-written entries take priority — they use richer wildcards
+        // (*_planks, *_logs) than the explicit enumerations in the JSON.
+        loadGeneratedRecipes(db);
+
         return db;
+    }
+
+    /**
+     * Load recipes_1.21.11.json from the mod's resources and merge any
+     * recipes whose output isn't already in the curated map. Silently skips
+     * on any parse failure — the hand-written table is enough to keep the
+     * build pipeline running.
+     */
+    private static void loadGeneratedRecipes(Map<String, RecipeData> db) {
+        try (java.io.InputStream in = CommandExecutor.class.getResourceAsStream("/recipes_1.21.11.json")) {
+            if (in == null) {
+                System.out.println("[mindcraft-bridge] recipes_1.21.11.json not found on classpath; using curated defaults only");
+                return;
+            }
+            String json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            int added = 0;
+            int skipped = 0;
+            // Top-level object: { "<item>": {"out":N, "slots":[{"i":idx,"p":[...]}, ...]} }
+            // Parse by scanning for the top-level keys. Our embedded JSON is
+            // deterministic (no whitespace) so we can do this with a simple
+            // balance-tracking walk rather than pulling in a full parser.
+            for (String[] entry : iterateTopLevelEntries(json)) {
+                String key = entry[0];
+                String body = entry[1];
+                if (key.contains("__alt")) { skipped++; continue; } // only primary variant for now
+                if (db.containsKey(key)) { skipped++; continue; }    // curated wins
+                // Skip smithing outputs — minecraft-data emits a legacy fake
+                // crafting recipe for netherite_ingot that would bypass the
+                // smithing gate above. SMITHING_RECIPES handles them.
+                if (SMITHING_RECIPES.containsKey(key)) { skipped++; continue; }
+                RecipeData parsed = parseGeneratedRecipe(key, body);
+                if (parsed != null) {
+                    db.put(key, parsed);
+                    added++;
+                }
+            }
+            System.out.println("[mindcraft-bridge] loaded " + added + " generated recipes (" + skipped + " skipped as duplicates/alts)");
+        } catch (Throwable t) {
+            System.out.println("[mindcraft-bridge] failed to load generated recipes: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Iterate key/body pairs from a single-level JSON object, yielding pairs
+     * where body is the raw substring of the value (including surrounding
+     * braces). Handles strings and nested structures via brace/bracket depth.
+     */
+    private static List<String[]> iterateTopLevelEntries(String json) {
+        List<String[]> out = new ArrayList<>();
+        int i = 0;
+        int n = json.length();
+        while (i < n && json.charAt(i) != '{') i++;
+        if (i >= n) return out;
+        i++; // past outer {
+        while (i < n) {
+            // Skip whitespace + commas
+            while (i < n && (Character.isWhitespace(json.charAt(i)) || json.charAt(i) == ',')) i++;
+            if (i >= n || json.charAt(i) == '}') break;
+            if (json.charAt(i) != '"') break;
+            int keyStart = ++i;
+            while (i < n && json.charAt(i) != '"') {
+                if (json.charAt(i) == '\\') i++;
+                i++;
+            }
+            String key = json.substring(keyStart, i);
+            i++; // past closing quote
+            while (i < n && (Character.isWhitespace(json.charAt(i)) || json.charAt(i) == ':')) i++;
+            if (i >= n) break;
+            int valStart = i;
+            int depth = 0;
+            boolean inStr = false;
+            while (i < n) {
+                char c = json.charAt(i);
+                if (inStr) {
+                    if (c == '\\') { i += 2; continue; }
+                    if (c == '"') inStr = false;
+                } else {
+                    if (c == '"') inStr = true;
+                    else if (c == '{' || c == '[') depth++;
+                    else if (c == '}' || c == ']') {
+                        depth--;
+                        if (depth == 0) { i++; break; }
+                    }
+                }
+                i++;
+            }
+            out.add(new String[]{ key, json.substring(valStart, i) });
+        }
+        return out;
+    }
+
+    /**
+     * Parse a single recipe body of shape {"out":N,"slots":[{"i":n,"p":["a","b"]}, ...]}
+     * into a RecipeData. Returns null on any structural issue.
+     */
+    private static RecipeData parseGeneratedRecipe(String key, String body) {
+        try {
+            Integer outCount = parseIntSafe(extractJsonPrimitive(body, "out"));
+            if (outCount == null || outCount <= 0) outCount = 1;
+            String slotsArr = extractJsonArrayRaw(body, "slots");
+            if (slotsArr == null) return null;
+            List<String> slotObjs = splitJsonArray(slotsArr);
+            List<GridSlot> slots = new ArrayList<>();
+            for (String obj : slotObjs) {
+                Integer idx = parseIntSafe(extractJsonPrimitive(obj, "i"));
+                if (idx == null || idx < 1 || idx > 9) continue;
+                String pArr = extractJsonArrayRaw(obj, "p");
+                if (pArr == null) continue;
+                List<String> pRaw = splitJsonArray(pArr);
+                List<String> patterns = new ArrayList<>(pRaw.size());
+                for (String p : pRaw) {
+                    String s = p.trim();
+                    if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
+                        s = s.substring(1, s.length() - 1);
+                    }
+                    if (s.isEmpty()) continue;
+                    // All our pattern matching handles bare names and minecraft: prefix.
+                    patterns.add("minecraft:" + s.replaceAll("^minecraft:", ""));
+                }
+                if (!patterns.isEmpty()) slots.add(new GridSlot(idx, patterns));
+            }
+            if (slots.isEmpty()) return null;
+            return new RecipeData(key, slots, outCount);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // â”€â”€â”€ Take crafting result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2736,7 +3653,7 @@ public class CommandExecutor {
             + "\"supports_typed_actions\":true,"
             + "\"default_provider\":\"baritone_chat\","
             + "\"providers\":[\"baritone_chat\"],"
-            + "\"action_types\":[\"move\",\"mine\",\"follow\",\"cancel\",\"raw_command\",\"craft\",\"attack\"],"
+            + "\"action_types\":[\"move\",\"mine\",\"follow\",\"cancel\",\"raw_command\",\"craft\",\"attack\",\"build_schematic\",\"cancel_build\"],"
             + "\"version\":\"1.0.0\""
             + "}";
     }
@@ -2750,6 +3667,8 @@ public class CommandExecutor {
             + "\"#follow player <name>\","
             + "\"#cancel\","
             + "\"attack <target_type>\","
+            + "\"build_schematic <payload>\","
+            + "\"cancel_build\","
             + "\"chat: <message>\""
             + "]";
     }
@@ -2909,5 +3828,44 @@ public class CommandExecutor {
                 || type.contains("ghast") || type.contains("magma_cube") || type.contains("piglin")
                 || type.contains("hoglin") || type.contains("zoglin") || type.contains("wither_skeleton")
                 || type.contains("guardian") || type.contains("elder_guardian");
+    }
+
+    /**
+     * Read block identifier strings for a box (x..x+w-1, y..y+h-1, z..z+l-1)
+     * in XZY order. Returns a JSON object:
+     *   {"origin":[x,y,z],"size":[w,h,l],"blocks":["minecraft:air",...]}
+     * or {@code null} when the client isn't connected.
+     */
+    public static String readBlocksInBox(int x, int y, int z, int w, int h, int l) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null || client.world == null) return null;
+        ClientWorld world = client.world;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"origin\":[").append(x).append(",").append(y).append(",").append(z).append("],");
+        sb.append("\"size\":[").append(w).append(",").append(h).append(",").append(l).append("],");
+        sb.append("\"blocks\":[");
+
+        BlockPos.Mutable pos = new BlockPos.Mutable();
+        boolean first = true;
+        for (int yy = 0; yy < h; yy++) {
+            for (int zz = 0; zz < l; zz++) {
+                for (int xx = 0; xx < w; xx++) {
+                    pos.set(x + xx, y + yy, z + zz);
+                    String id;
+                    try {
+                        BlockState state = world.getBlockState(pos);
+                        id = net.minecraft.registry.Registries.BLOCK.getId(state.getBlock()).toString();
+                    } catch (Throwable t) {
+                        id = "minecraft:air";
+                    }
+                    if (!first) sb.append(",");
+                    first = false;
+                    sb.append("\"").append(id).append("\"");
+                }
+            }
+        }
+        sb.append("]}");
+        return sb.toString();
     }
 }

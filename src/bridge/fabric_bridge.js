@@ -266,6 +266,25 @@ export class FabricBridge {
     }
 
     /**
+     * Read block identifier strings from an axis-aligned box on the client.
+     * Returns { origin:[x,y,z], size:[w,h,l], blocks:[id,...] } or null.
+     * Mod-side clamps w/h/l to 24 each to avoid oversized responses.
+     * @returns {Promise<{origin:number[],size:number[],blocks:string[]}|null>}
+     */
+    async readBlocks({ x, y, z, w, h, l }) {
+        try {
+            const query = `x=${x}&y=${y}&z=${z}&w=${w}&h=${h}&l=${l}`;
+            const res = await fetch(`${this.url}/read_blocks?${query}`, {
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Format a FabricState snapshot as a compact, human-readable summary
      * suitable for injection into the LLM's conversation history.
      * @param {FabricState} state

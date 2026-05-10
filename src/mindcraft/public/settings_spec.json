@@ -97,6 +97,12 @@
         "description": "Enable reactive world events — the bot reacts to nightfall, rain, hostiles, low HP, dimension changes, etc. Requires bridge_proactive_enabled.",
         "default": true
     },
+    "bridge_auto_defend": {
+        "type": "boolean",
+        "section": "Proactive Behavior",
+        "description": "When armed and HP >= 14, auto-attack hostiles that enter range instead of flagging them for the LLM. Disable for a passive bot.",
+        "default": true
+    },
     "bridge_ambient_budget_per_hour": {
         "type": "number",
         "section": "Proactive Behavior",

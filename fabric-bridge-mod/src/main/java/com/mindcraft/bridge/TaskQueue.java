@@ -332,7 +332,7 @@ public class TaskQueue {
                     || lower.contains("end_portal"))) {
             return 10_000L;
         }
-        if (lower.startsWith("#goto ")) return 1_500L;
+        if (lower.startsWith("#goto ")) return 300L;
         return 0L;
     }
 
@@ -554,7 +554,7 @@ public class TaskQueue {
     private void maybeIdleBleed(PendingTask task, String reason) {
         if (task.kind() != TaskKind.BARITONE_TASK && task.kind() != TaskKind.RAW_BARITONE) return;
         if (reason != null && (reason.contains("timeout") || reason.contains("failed"))) return;
-        long bleed = 300L + (long) (Math.random() * 500L);
+        long bleed = 150L + (long) (Math.random() * 250L);
         sleepQuietly(bleed);
         maybeLookAtNearestPlayer(task);
     }

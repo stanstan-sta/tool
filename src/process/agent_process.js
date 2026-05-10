@@ -83,11 +83,35 @@ export class AgentProcess {
             // Flag so the auto-exit handler defers to the .once('exit') below.
             this._awaitingManualRestart = true;
 
+            let resolved = false;
             const restartTimeout = setTimeout(() => {
-                console.warn(`Agent ${this.name} did not stop in time. It might be stuck.`);
-            }, 5000); // 5 seconds to exit
+                if (resolved) return;
+                // SIGINT is advisory on Windows and often ignored when the
+                // child is mid-await on an HTTP call. Escalate to SIGKILL
+                // so the restart actually happens.
+                console.warn(`Agent ${this.name} did not stop after SIGINT. Escalating to SIGKILL.`);
+                try {
+                    if (this.process && !this.process.killed) {
+                        this.process.kill('SIGKILL');
+                    }
+                } catch (err) {
+                    console.error(`Failed to SIGKILL ${this.name}:`, err);
+                }
+                // If SIGKILL also doesn't take for some reason (e.g. process
+                // already gone), start the replacement after a short delay so
+                // we don't deadlock the caller waiting for .once('exit').
+                setTimeout(() => {
+                    if (resolved) return;
+                    resolved = true;
+                    console.warn(`Agent ${this.name} still not exited 3s after SIGKILL. Starting replacement anyway.`);
+                    this._awaitingManualRestart = false;
+                    this.start(true, 'Agent process restarted.', this.count_id);
+                }, 3000);
+            }, 5000);
 
             this.process.once('exit', () => {
+                 if (resolved) return;
+                 resolved = true;
                  clearTimeout(restartTimeout);
                  console.log(`Stopped hanging agent ${this.name}. Now restarting.`);
                  this.start(true, 'Agent process restarted.', this.count_id);

@@ -8,6 +8,23 @@ import { wiki } from '../utils/MinecraftWiki.js';
 import settings from '../agent/settings.js';
 import { EventDetector } from './event_detector.js';
 import { DriveModel } from './drive_model.js';
+import {
+    resolveBuildRequest,
+    mergeBuildRequest,
+    validateHouse,
+    buildBoxReadParams,
+    tallySchematicMaterials,
+    computeMaterialShortages,
+    planBuildMaterialActions,
+    readbackToSchematic,
+    saveTemplate,
+    listSavedTemplates,
+    recordBuildRating,
+    summarizeRatings,
+    getTemplatePreference,
+    findBuildableSite,
+    rollUpMaterials,
+} from './house_builder.js';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 
 const POLL_MIN_MS = 800;
@@ -50,7 +67,7 @@ function extractJsonObjectCandidate(text) {
 
 /**
  * Extract all valid JSON objects from a text response.
- * Handles models that emit multiple separate {…} objects.
+ * Handles models that emit multiple separate {â€¦} objects.
  * @param {string} text
  * @returns {Array<object>}
  */
@@ -63,7 +80,7 @@ function extractAllJsonObjects(text) {
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const source = fenced?.[1] ? fenced[1].trim() : trimmed;
 
-    // Scan character by character for balanced {…} pairs
+    // Scan character by character for balanced {â€¦} pairs
     let depth = 0;
     let start = -1;
     for (let i = 0; i < source.length; i++) {
@@ -94,13 +111,13 @@ function extractAllJsonObjects(text) {
 }
 
 function stripChatFormatting(text) {
-    return String(text || '').replace(/§[0-9A-FK-OR]/gi, '');
+    return String(text || '').replace(/Â§[0-9A-FK-OR]/gi, '');
 }
 
 function normalizeChatText(text) {
     return String(text || '')
         .replace(/\s+/g, ' ')
-        .replace(/§[0-9A-FK-OR]/gi, '')
+        .replace(/Â§[0-9A-FK-OR]/gi, '')
         .trim()
         .toLowerCase();
 }
@@ -342,9 +359,9 @@ export function parseBridgeResponse(response, expectStructured = false) {
     const actions = [];
     const chatLines = [];
 
-    // ── Try extracting ALL JSON objects from the response ──────────────────
+    // â”€â”€ Try extracting ALL JSON objects from the response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Small models often emit separate {"reply":"..."} and {"type":"craft",...}
-    // objects.  Scan for every {…} pair and try to merge them.
+    // objects.  Scan for every {â€¦} pair and try to merge them.
     const jsonObjects = extractAllJsonObjects(response);
     if (jsonObjects.length > 0) {
         // If we found 2+ objects, try to assemble reply + actions from them.
@@ -376,7 +393,7 @@ export function parseBridgeResponse(response, expectStructured = false) {
             }
         }
 
-        // Single object — process normally
+        // Single object â€” process normally
         const parsed = jsonObjects[0];
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             // Lone action object (has type, no reply/actions array)
@@ -425,7 +442,7 @@ export function parseBridgeResponse(response, expectStructured = false) {
                 if (normalized) actions.push(normalized);
             }
         } else if (line.startsWith('THOUGHT:') || line.startsWith('PLAN:')) {
-            // These are internal reasoning lines — don't show in chat but keep for context
+            // These are internal reasoning lines â€” don't show in chat but keep for context
         } else if (line) {
             chatLines.push(line);
         }
@@ -473,15 +490,15 @@ export class BridgeAgent {
         this._bridgeCommands = [];
         this._bridgeReachable = false;
 
-        // ── Prompter / LLM ────────────────────────────────────────────────────
+        // â”€â”€ Prompter / LLM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing bridge agent: ${this.name}`);
         this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '');
-        // ── History ────────────────────────────────────────────────────────────
+        // â”€â”€ History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.history = new History(this);
 
-        // ── Stubs for Prompter compatibility ──────────────────────────────────
+        // â”€â”€ Stubs for Prompter compatibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.self_prompter = new BridgeSelfPrompter();
         this.isBridgeAgent = true;
         this.blocked_actions = settings.blocked_actions || [];
@@ -490,13 +507,13 @@ export class BridgeAgent {
         this.last_sender = null;
         this.shut_up = false;
 
-        // ── Self-continuation state ───────────────────────────────────────────
+        // â”€â”€ Self-continuation state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this._lastHadActions = false;  // did the previous LLM response have actions?
         this._pendingContinuation = false; // waiting for queue to drain before continuing
         this._continuationSource = null; // original source (for continuation history)
         this._lastState = null;  // most recent state snapshot
 
-        // ── Proactive behavior layer ───────────────────────────────────────────
+        // â”€â”€ Proactive behavior layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.eventDetector = new EventDetector();
         this.driveModel = new DriveModel();
         this.episodicMemory = {
@@ -512,7 +529,7 @@ export class BridgeAgent {
         this._ambientLogPath = `./bots/${this.name}/ambient.log`;
         mkdirSync(`./bots/${this.name}`, { recursive: true });
 
-        // ── Fabric bridge HTTP client ──────────────────────────────────────────
+        // â”€â”€ Fabric bridge HTTP client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.bridge = new FabricBridge(settings.bridge_url || 'http://localhost:8765');
         this._lastStateStr = '';
         this._lastStateSeq = null;
@@ -520,7 +537,7 @@ export class BridgeAgent {
         this._capabilities = null;
         this._recentSentChats = [];
 
-        // ── MindServer registration ────────────────────────────────────────────
+        // â”€â”€ MindServer registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.respondFunc = (from, msg) => {
             try {
                 if (msg) this._inboundQueue.push({ source: from, message: msg });
@@ -555,7 +572,7 @@ export class BridgeAgent {
             }
         } else {
             this._bridgeReachable = false;
-            sendLogToUI(`${this.name}: ⚠️  Fabric bridge mod not reachable at ${this.bridge.url} — waiting...`);
+            sendLogToUI(`${this.name}: âš ï¸  Fabric bridge mod not reachable at ${this.bridge.url} â€” waiting...`);
         }
 
         // Log proactive mode
@@ -618,7 +635,7 @@ export class BridgeAgent {
         ctx += `Nearby players: ${nearby}\n`;
         ctx += `Nearby entities: ${entities}`;
 
-        // ── Crafting analysis based on wiki recipe validation ─────────────
+        // â”€â”€ Crafting analysis based on wiki recipe validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctx += this._buildCraftingAnalysis(state.inventory);
 
         return ctx;
@@ -632,7 +649,7 @@ export class BridgeAgent {
      * @returns {string}
      */
     _buildCraftingAnalysis(inventory) {
-        if (!inventory || inventory.length === 0) return '\n\nCRAFTING ANALYSIS:\n  (empty inventory — nothing craftable)';
+        if (!inventory || inventory.length === 0) return '\n\nCRAFTING ANALYSIS:\n  (empty inventory â€” nothing craftable)';
 
         const craftingRecipes = wiki.data?.recipes?.crafting || {};
         const smeltingRecipes = wiki.data?.recipes?.smelting || {};
@@ -841,7 +858,7 @@ export class BridgeAgent {
             let stillNeed = Math.max(0, qtyNeeded - have(name));
             if (stillNeed <= 0) return true;
 
-            // Special: sticks → craft from planks (handled by bridge mod)
+            // Special: sticks â†’ craft from planks (handled by bridge mod)
             if (name === 'stick') {
                 const current = counts.get('stick') || 0;
                 if (current < qtyNeeded) {
@@ -854,7 +871,7 @@ export class BridgeAgent {
                 return true;
             }
 
-            // Special: any planks → mine wood if none available
+            // Special: any planks â†’ mine wood if none available
             if (name.endsWith('_planks')) {
                 if (getAnyPlankCount(counts) < qtyNeeded && getAnyLogCount(counts) <= 0) {
                     addMine('wood', 1);
@@ -903,7 +920,7 @@ export class BridgeAgent {
         }
 
         // Separate action types so we can order them correctly:
-        // portal → mines → portal return → smelts → crafts
+        // portal â†’ mines â†’ portal return â†’ smelts â†’ crafts
         const mines = actions.filter(a => a.type === 'mine');
         const smelts = actions.filter(a => a.type === 'raw_command' && a.command?.startsWith('#task smelt'));
         const crafts = actions.filter(a => a.type === 'craft');
@@ -942,7 +959,7 @@ export class BridgeAgent {
     async _runLoop() {
         while (!this.stopped) {
             try {
-                // ── 1. Poll Fabric mod state ───────────────────────────────────
+                // â”€â”€ 1. Poll Fabric mod state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 const state = await this.bridge.getState(this._lastStateSeq, {
                     includeSurfaceMap: settings.use_textual_topography === true,
                     surfaceRadius: settings.textual_topography_radius || 8
@@ -964,7 +981,10 @@ export class BridgeAgent {
                     this._lastStateStr = stateStr;
                     this._lastState = state;
 
-                    // ── 2. Process chat events ────────────────────────────────
+                    // Post-build validation watcher.
+                    try { await this._tickBuildValidation(state); } catch (err) { console.error('tickBuildValidation failed', err); }
+
+                    // â”€â”€ 2. Process chat events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     const events = Array.isArray(state.chat_events)
                         ? state.chat_events
                         : (Array.isArray(state.chat) ? state.chat.map(msg => ({ type: 'player', message: msg })) : []);
@@ -980,9 +1000,9 @@ export class BridgeAgent {
                         if (eventType === 'baritone_queue') {
                             console.log(`${this.name} queue event: ${message}`);
                             this.history.add('system', `[Baritone] ${message}`);
-                            sendOutputToServer(this.name, `🔄 ${message}`);
+                            sendOutputToServer(this.name, `ðŸ”„ ${message}`);
 
-                            // Detect queue draining → idle transition for self-continuation
+                            // Detect queue draining â†’ idle transition for self-continuation
                             if (this._pendingContinuation && message.includes('All queued tasks complete')) {
                                 this._pendingContinuation = false;
                                 // Schedule continuation after a short delay to let state settle
@@ -991,11 +1011,11 @@ export class BridgeAgent {
                                 }, 500);
                             }
 
-                            // Detect task failure → skip the failed task and auto-recover
+                            // Detect task failure â†’ skip the failed task and auto-recover
                             if (message.includes('Task failed:')) {
                                 const reason = message.substring(message.indexOf('Task failed:') + 'Task failed:'.length).trim();
                                 console.log(`${this.name} task failed: ${reason}`);
-                                sendOutputToServer(this.name, `⚠️ Task failed: ${reason}`);
+                                sendOutputToServer(this.name, `âš ï¸ Task failed: ${reason}`);
 
                                 // Clear the failed batch. Later actions often depend on the
                                 // failed one, so continuing stale pending work is unsafe.
@@ -1007,7 +1027,7 @@ export class BridgeAgent {
                                     console.warn(`${this.name} failed to clear queue: ${cancelResult.error}`);
                                 }
 
-                                // Reset continuation state — the failure broke our plan
+                                // Reset continuation state â€” the failure broke our plan
                                 this._pendingContinuation = false;
                                 this._lastHadActions = false;
 
@@ -1065,7 +1085,7 @@ export class BridgeAgent {
                     }
                 }
 
-                // ── 3. Process any inbound queued message ─────────────────────
+                // â”€â”€ 3. Process any inbound queued message â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if (this._inboundQueue.length > 0) {
                     const { source, message } = this._inboundQueue.shift();
                     console.log(`${this.name} handling message from ${source}: ${message}`);
@@ -1079,20 +1099,20 @@ export class BridgeAgent {
                     continue;
                 }
 
-                // ── 4. World event detection ───────────────────────────────────
-                if (settings.bridge_proactive_enabled !== false && settings.bridge_events_enabled !== false) {
+                // 4. World event detection
+                if (state && settings.bridge_proactive_enabled !== false && settings.bridge_events_enabled !== false) {
                     const worldEvents = this.eventDetector.check(state);
                     for (const ev of worldEvents) {
                         await this._handleEvent(ev, state);
                     }
                 }
 
-                // ── 5. Ambient tick ────────────────────────────────────────────
-                if (settings.bridge_proactive_enabled !== false && settings.bridge_ambient_enabled !== false) {
+                // 5. Ambient tick
+                if (state && settings.bridge_proactive_enabled !== false && settings.bridge_ambient_enabled !== false) {
                     await this._runAmbientTick(state);
                 }
 
-                // ── 6. Self-continuation check ─────────────────────────────────
+                // â”€â”€ 6. Self-continuation check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 // If there are no pending incoming messages but a continuation was
                 // triggered by queue completion, handle it.
                 if (this._pendingContinuation && !this._inboundQueue.length) {
@@ -1124,7 +1144,7 @@ export class BridgeAgent {
         if (queued > 0) {
             this._lastHadActions = true;
             this._pendingContinuation = true;
-            sendOutputToServer(this.name, `⚡ Queued ${queued} ${label}(s) for sequential execution`);
+            sendOutputToServer(this.name, `âš¡ Queued ${queued} ${label}(s) for sequential execution`);
             this.history.add('system', `Queued ${queued} ${label}(s). Queue will advance according to each entry completion policy.`);
             return queued;
         }
@@ -1132,7 +1152,7 @@ export class BridgeAgent {
         this._lastHadActions = false;
         this._pendingContinuation = false;
         const detail = batchResult?.output ? ` (${batchResult.output})` : '';
-        sendOutputToServer(this.name, `⚠️ Queued 0 ${label}(s)${detail}`);
+        sendOutputToServer(this.name, `âš ï¸ Queued 0 ${label}(s)${detail}`);
         this.history.add('system', `Queued 0 ${label}(s)${detail}. Nothing is running; replan from current state.`);
         return 0;
     }
@@ -1194,12 +1214,12 @@ export class BridgeAgent {
         }
 
         if (actions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(actions);
+            const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
                 this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `⚠️ Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `âš ï¸ Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
             }
         }
 
@@ -1209,7 +1229,7 @@ export class BridgeAgent {
                 this._recordQueueDispatch('command', batchResult, commands.length);
             } else {
                 this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `⚠️ Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `âš ï¸ Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
             }
         }
 
@@ -1237,7 +1257,7 @@ export class BridgeAgent {
 
         // Check if queue is truly idle now
         if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {
-            // Queue still busy — wait for next baritone_queue event
+            // Queue still busy â€” wait for next baritone_queue event
             this._pendingContinuation = true;
             return;
         }
@@ -1295,13 +1315,13 @@ export class BridgeAgent {
         }
 
         if (actions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(actions);
+            const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
                 const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+                sendOutputToServer(this.name, `âš ï¸ ${errMsg}`);
             }
         }
 
@@ -1312,7 +1332,7 @@ export class BridgeAgent {
             } else {
                 const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `⚠️ ${errMsg}`);
+                sendOutputToServer(this.name, `âš ï¸ ${errMsg}`);
             }
         }
 
@@ -1398,7 +1418,7 @@ export class BridgeAgent {
 
         // Dispatch actions via the batch queue.
         if (dispatchActions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(dispatchActions);
+            const batchResult = await this._sendBatchWithBuildExpansion(dispatchActions);
             if (batchResult.success) {
                 this._continuationSource = source;
                 this._recordQueueDispatch('action', batchResult, dispatchActions.length);
@@ -1554,7 +1574,7 @@ export class BridgeAgent {
         }
 
         if (decision.actions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(decision.actions);
+            const batchResult = await this._sendBatchWithBuildExpansion(decision.actions);
             if (batchResult.success) {
                 this._continuationSource = source;
                 this._recordQueueDispatch('action', batchResult, decision.actions.length);
@@ -1619,7 +1639,7 @@ export class BridgeAgent {
         setTimeout(() => process.exit(code), 500);
     }
 
-    /** Stub for full-state polling — returns bridge state in a compatible format. */
+    /** Stub for full-state polling â€” returns bridge state in a compatible format. */
     async getFullState() {
         const state = await this.bridge.getState();
         if (!state || !state.connected) return null;
@@ -1652,7 +1672,7 @@ export class BridgeAgent {
         };
     }
 
-    // ── Proactive behavior methods ───────────────────────────────────────────
+    // â”€â”€ Proactive behavior methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     _formatEventPrompt(event, state) {
         const dim = (state.dimension || 'overworld').replace('minecraft:', '').toUpperCase();
@@ -1692,7 +1712,7 @@ export class BridgeAgent {
             case 'entered_end':
                 return `${tag}You entered the End.`;
             default:
-                return `${tag}World event: ${event.type}${event.detail ? ' — ' + event.detail : ''}.`;
+                return `${tag}World event: ${event.type}${event.detail ? ' â€” ' + event.detail : ''}.`;
         }
     }
 
@@ -1709,12 +1729,25 @@ export class BridgeAgent {
             this.driveModel.bump('social', 0.15);
         }
 
-        // Auto-flee for hostile events when unarmed or low HP
+        // Auto-flee or auto-defend for hostile events
         if (event.type === 'hostile_entered_range') {
             const armed = this._hasWeapon(state.inventory);
             const safe = (state.health || 0) >= 14;
             if (!armed || !safe) {
                 await this.bridge.sendAction({ type: 'flee', distance: 24, provider: 'baritone_chat' });
+            } else if (settings.bridge_auto_defend !== false) {
+                const nearestType = state.nearest_hostile?.type || '';
+                const cleanType = nearestType.replace(/^entity\.minecraft\./, '').replace(/[^a-z_]/gi, '');
+                if (cleanType) {
+                    await this.bridge.sendAction({
+                        type: 'attack',
+                        provider: 'baritone_chat',
+                        target_type: cleanType,
+                        count: 1,
+                        search_time_s: 0,
+                        retreat_hp: 8,
+                    });
+                }
             }
         }
 
@@ -1732,6 +1765,7 @@ export class BridgeAgent {
     }
 
     async _runAmbientTick(state) {
+        if (!state) return;
         const now = Date.now();
         if (now < this._nextAmbientTickAt) return;
 
@@ -1822,7 +1856,7 @@ export class BridgeAgent {
         const lastSpokeAgo = mem.lastSpokeAt ? Math.round((Date.now() - mem.lastSpokeAt) / 1000) + 's' : 'never';
         const recentEvents = (state.recent_events || []).slice(-3).map(e => e.type).join(', ') || 'none';
 
-        let base = `AMBIENT TICK — ${flavor.toUpperCase()}\n`;
+        let base = `AMBIENT TICK â€” ${flavor.toUpperCase()}\n`;
         base += `Current state: ${state.day_phase || 'unknown'}, ${state.hostile_count_nearby || 0} hostiles nearby, queue: ${state.queue?.status || 'idle'}.\n`;
         if (hints.length > 0) {
             base += `Drives: ${hints.join(' ')}\n`;
@@ -1897,7 +1931,7 @@ export class BridgeAgent {
         }
 
         if (actions.length > 0) {
-            const batchResult = await this.bridge.sendBatch(actions);
+            const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
@@ -1951,12 +1985,323 @@ export class BridgeAgent {
         }
     }
 
+    /**
+     * Wrapper for bridge.sendBatch that expands high-level actions (build_house)
+     * into low-level ones and may emit a clarifying chat reply before dispatch.
+     */
+    async _sendBatchWithBuildExpansion(actions) {
+        if (!Array.isArray(actions) || actions.length === 0) {
+            return this.bridge.sendBatch(actions);
+        }
+        // Types that need Node-side expansion before anything hits the mod.
+        const nodeHandled = new Set(['build_house', 'scan_building', 'rate_build']);
+        const hasNodeType = actions.some(a => a && nodeHandled.has(a.type));
+        if (!hasNodeType) {
+            return this.bridge.sendBatch(actions);
+        }
+
+        const { actions: expanded, preReply } = await this._expandBuildHouseActions(actions);
+        if (preReply) {
+            // Speak the clarifying question before dispatching anything else.
+            if (settings.chat_ingame === true) {
+                this._trackSentChat(preReply.trim());
+                await this.bridge.sendCommand(`chat: ${preReply.trim()}`);
+            }
+            this.history.add(this.name, preReply);
+            sendOutputToServer(this.name, preReply);
+        }
+        if (expanded.length === 0) {
+            return { success: true, queued: 0, error: preReply ? null : 'all node-handled actions resolved' };
+        }
+        return this.bridge.sendBatch(expanded);
+    }
+
     _ambientLog(entry) {
         try {
             const line = JSON.stringify(entry) + '\n';
             appendFileSync(this._ambientLogPath, line, 'utf8');
         } catch (err) {
             console.error('Failed to write ambient log:', err);
+        }
+    }
+
+    // â”€â”€â”€ House build pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /**
+     * Intercept `build_house` actions, generating a schematic and (optionally)
+     * asking the user for missing slots. Returns the transformed action list
+     * plus an optional `reply` string that should be spoken before dispatch.
+     *
+     * Called by every sendBatch site so the mod never sees a build_house type.
+     *
+     * @param {Array<object>} actions
+     * @returns {Promise<{actions: Array<object>, preReply: string|null, buildMeta: object|null}>}
+     */
+    async _expandBuildHouseActions(actions) {
+        if (!Array.isArray(actions) || actions.length === 0) {
+            return { actions, preReply: null, buildMeta: null };
+        }
+
+        const out = [];
+        let preReply = null;
+        let buildMeta = null;
+        let pending = this.episodicMemory.pendingBuildRequest || null;
+
+        for (const action of actions) {
+            if (!action) continue;
+
+            // scan_building: read a volume near the player, save as a template.
+            if (action.type === 'scan_building') {
+                const savedName = await this._handleScanBuilding(action);
+                if (savedName) {
+                    preReply = `Saved that building as "${savedName}". Ask me to "build saved:${savedName}" any time.`;
+                } else {
+                    preReply = `I couldn't scan that. Make sure I can see the area and try again.`;
+                }
+                continue;
+            }
+
+            // rate_build: record user preference for the most recent build.
+            if (action.type === 'rate_build') {
+                preReply = this._handleRateBuild(action);
+                continue;
+            }
+
+            if (action.type !== 'build_house') {
+                out.push(action);
+                continue;
+            }
+
+            // Merge new fields into any pending dialog state.
+            const merged = mergeBuildRequest(pending, {
+                template: action.template,
+                size: action.size,
+                material: action.material,
+                biome: action.biome,
+                floors: action.floors,
+                origin: action.origin,
+                window: action.window,
+            });
+
+            const resolution = resolveBuildRequest(merged, this._lastState);
+            if (!resolution.ready) {
+                this.episodicMemory.pendingBuildRequest = merged;
+                this._persistEpisodicMemory();
+                preReply = resolution.question;
+                continue;
+            }
+
+            // Site survey. If the LLM/user supplied an explicit origin, trust it.
+            // Otherwise sweep a few candidate spots near the player until we
+            // find one that's level, clear of hazards, and not on top of
+            // existing player structures.
+            let finalOrigin = resolution.origin;
+            let siteNote = null;
+            if (!(merged && merged.origin && Number.isFinite(merged.origin.x))) {
+                const survey = await findBuildableSite(this.bridge, resolution.schematic, resolution.origin, this._lastState);
+                if (!survey.ok) {
+                    // Couldn't find a good site nearby. Stash the request and ask.
+                    this.episodicMemory.pendingBuildRequest = merged;
+                    this._persistEpisodicMemory();
+                    preReply = `I looked for a spot to build — ${survey.reason}. Where should I put it? You can say "here" or give me x y z.`;
+                    continue;
+                }
+                finalOrigin = survey.origin;
+                // The site-search may have returned a rotated schematic that
+                // fits better. If so, re-package the action with the new
+                // schematic + origin; recompute placed-block tally for the
+                // materials planner below.
+                if (survey.schematic && survey.schematic !== resolution.schematic) {
+                    resolution.schematic = survey.schematic;
+                    resolution.required = tallySchematicMaterials(survey.schematic);
+                    resolution.action.size = survey.schematic.size;
+                    resolution.action.blocks = survey.schematic.blocksU16.toString('base64');
+                    resolution.action.palette = survey.schematic.palette;
+                    siteNote = `Rotated the footprint for a better fit.`;
+                }
+                if (survey.stats && Math.abs(finalOrigin.y - resolution.origin.y) > 0) {
+                    const yNote = `Built at y=${finalOrigin.y} on the surface.`;
+                    siteNote = siteNote ? `${siteNote} ${yNote}` : yNote;
+                }
+                // Patch the dispatch action with the surveyed origin.
+                resolution.action.origin = { x: finalOrigin.x, y: finalOrigin.y, z: finalOrigin.z };
+                resolution.origin = finalOrigin;
+            }
+
+            delete this.episodicMemory.pendingBuildRequest;
+            this._persistEpisodicMemory();
+
+            // Material planning: roll up placed blocks through the wiki recipe
+            // graph to capture every intermediate (planks needed for doors +
+            // chests + beds + torches etc.), then subtract current inventory
+            // and prepend a craft action per shortage. Without the rollup, the
+            // bot under-orders logs and craft batches fail mid-build.
+            const inventory = this._lastState?.inventory || [];
+            const { raw, crafts } = rollUpMaterials(resolution.required, wiki.data || {});
+            const required = new Map();
+            for (const [k, v] of raw.entries()) required.set(k, (required.get(k) || 0) + v);
+            for (const [k, v] of crafts.entries()) required.set(k, (required.get(k) || 0) + v);
+            const shortages = computeMaterialShortages(required, inventory);
+            const prereqs = planBuildMaterialActions(shortages);
+            if (prereqs.length > 0) {
+                const summary = [...shortages.entries()]
+                    .map(([item, n]) => `${n}x ${item}`)
+                    .slice(0, 6)
+                    .join(', ');
+                const extra = shortages.size > 6 ? ` (+${shortages.size - 6} more)` : '';
+                const announce = `Need materials first: ${summary}${extra}. Gathering...`;
+                const combined = siteNote ? `${siteNote} ${announce}` : announce;
+                preReply = preReply ? `${preReply} ${combined}` : combined;
+                out.push(...prereqs);
+            } else if (siteNote) {
+                preReply = preReply ? `${preReply} ${siteNote}` : siteNote;
+            }
+
+            out.push(resolution.action);
+            buildMeta = {
+                origin: resolution.origin,
+                size: resolution.schematic.size,
+                name: resolution.schematic.name,
+                templateName: resolution.schematic.name,
+                validateAt: Date.now(),
+            };
+            this._pendingBuildValidation = {
+                origin: resolution.origin,
+                size: resolution.schematic.size,
+                name: resolution.schematic.name,
+                templateName: resolution.schematic.name,
+                dispatchedAt: Date.now(),
+                sawActive: false,
+                validated: false,
+                prereqCount: prereqs.length,
+            };
+        }
+        return { actions: out, preReply, buildMeta };
+    }
+
+    /**
+     * Scan a box near the player and save it as a reusable template.
+     */
+    async _handleScanBuilding(action) {
+        const state = this._lastState;
+        if (!state || !state.connected) return null;
+        const size = action.size || { x: 9, y: 6, z: 9 };
+        let origin = action.origin;
+        if (!origin || !Number.isFinite(origin.x)) {
+            origin = { x: state.x + 1, y: state.y, z: state.z + 1 };
+        }
+        const params = buildBoxReadParams(origin, size);
+        const readback = await this.bridge.readBlocks(params);
+        if (!readback) return null;
+        const schematic = readbackToSchematic(readback, action.name || `scanned_${Date.now()}`);
+        if (!schematic) return null;
+        return saveTemplate(action.name || schematic.name, schematic);
+    }
+
+    /**
+     * Record a rating for the most recently completed build.
+     *
+     * Rejects the rating if:
+     *  - the bot is still working on a build (queue has pending tasks)
+     *  - the build never completed (no lastCompletedBuildName)
+     *  - the last completion has already been rated (guards against the LLM
+     *    rating the same build twice, or rating a phantom build from memory)
+     *
+     * This matters because the LLM routinely declares completion early while
+     * prereq crafts are still draining — "here's your cabin!" with 24 tasks
+     * pending. Without gating, `rate_build` would log a phantom rating
+     * against the previous session's `lastCompletedBuildName`.
+     */
+    _handleRateBuild(action) {
+        // Gate 1: build actually finished?
+        const lastName = this.episodicMemory.lastCompletedBuildName;
+        const lastCompletedAt = this.episodicMemory.lastCompletedAt || 0;
+        if (!lastName || !lastCompletedAt) {
+            return "I haven't finished a build yet — hold on until I'm done.";
+        }
+
+        // Gate 2: not currently building something else?
+        const qs = this._lastState?.queue;
+        if (qs && (qs.status === 'executing' || qs.status === 'draining') && qs.pending > 0) {
+            return `Still working on it — ${qs.pending} tasks left. Tell me after it's finished.`;
+        }
+
+        // Gate 3: this build hasn't been rated already?
+        const lastRatedAt = this.episodicMemory.lastRatedAt || 0;
+        if (lastRatedAt >= lastCompletedAt) {
+            return `Already recorded a rating for ${lastName}. Ask me to build a new one if you want to rate again.`;
+        }
+
+        const templateName = action.template_name || lastName;
+        const score = Number(action.score);
+        const entry = recordBuildRating({ templateName, score, comment: String(action.comment || '') });
+        this.episodicMemory.lastRatedAt = Date.now();
+        this._persistEpisodicMemory();
+        return `Noted — rating ${entry.score} for ${entry.templateName}. Average: ${summarizeRatings()}.`;
+    }
+
+    _persistEpisodicMemory() {
+        try {
+            let data = {};
+            try {
+                if (existsSync(this.history.memory_fp)) {
+                    data = JSON.parse(readFileSync(this.history.memory_fp, 'utf8'));
+                }
+            } catch {}
+            data.episodic = this.episodicMemory;
+            writeFileSync(this.history.memory_fp, JSON.stringify(data, null, 2));
+        } catch (err) {
+            console.error('Failed to persist episodic memory:', err);
+        }
+    }
+
+    /**
+     * Called from the main poll loop after each state fetch. Watches for the
+     * `builder.active` field transitioning true â†’ missing, then reads the
+     * built volume back and runs the layer-1 validator.
+     */
+    async _tickBuildValidation(state) {
+        const meta = this._pendingBuildValidation;
+        if (!meta) return;
+        const isActive = Boolean(state?.builder?.active);
+        if (isActive) {
+            meta.sawActive = true;
+            return;
+        }
+        // Builder is not active. Was it active before, or have we seen enough
+        // time pass to assume it never latched?
+        const elapsed = Date.now() - meta.dispatchedAt;
+        if (!meta.sawActive && elapsed < 15_000) return;
+        if (meta.validated) return;
+
+        meta.validated = true;
+        // Clear the flag so we don't re-validate on future ticks.
+        this._pendingBuildValidation = null;
+
+        try {
+            const { origin, size, name } = meta;
+            const params = buildBoxReadParams(origin, size);
+            const readback = await this.bridge.readBlocks(params);
+            if (!readback) {
+                this.history.add('system', `Build ${name} finished but validator could not read the volume.`);
+                return;
+            }
+            const report = validateHouse(readback, { size });
+            const human = report.pass
+                ? `Build ${name}: passed all ${Object.keys(report.stats).length} checks (score ${(report.score * 100).toFixed(0)}%).`
+                : `Build ${name}: score ${(report.score * 100).toFixed(0)}%. Failures: ${report.failures.join(', ')}.`;
+            this.history.add('system', human);
+            sendOutputToServer(this.name, `ðŸ  ${human}`);
+
+            this.episodicMemory.lastCompletedBuildName = name;
+            this.episodicMemory.lastCompletedBuildScore = report.score;
+            this._persistEpisodicMemory();
+
+            this.episodicMemory.lastCompletedBuildName = name;
+            this.episodicMemory.lastCompletedBuildScore = report.score;
+            this._persistEpisodicMemory();
+        } catch (err) {
+            console.error('House validator failed:', err);
         }
     }
 }

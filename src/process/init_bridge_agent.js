@@ -17,6 +17,19 @@ const argv = yargs(args)
     .argv;
 
 (async () => {
+    // Graceful shutdown. Without this, Node on Windows may ignore SIGINT
+    // while we're mid-await on an HTTP call, causing the parent's restart
+    // flow to time out. With it, SIGINT reliably exits even mid-request.
+    const shutdown = (code = 0) => {
+        try {
+            if (typeof global !== 'undefined' && global.gc) global.gc();
+        } catch {}
+        process.exit(code);
+    };
+    process.on('SIGINT',  () => shutdown(0));
+    process.on('SIGTERM', () => shutdown(0));
+    process.on('SIGHUP',  () => shutdown(0));
+
     try {
         console.log('Bridge agent: Connecting to MindServer...');
         await serverProxy.connect(argv.name, argv.port);

@@ -38,5 +38,16 @@ public class MindcraftBridgeMod implements ClientModInitializer {
         } catch (Exception e) {
             LOGGER.error("Failed to start Mindcraft Bridge HTTP server", e);
         }
+
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(new net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.EndTick() {
+            boolean applied = false;
+            @Override
+            public void onEndTick(net.minecraft.client.MinecraftClient client) {
+                if (applied) return;
+                if (client.world == null || client.player == null) return;
+                BaritoneTuning.applyOpinionatedDefaults();
+                applied = true;
+            }
+        });
     }
 }
