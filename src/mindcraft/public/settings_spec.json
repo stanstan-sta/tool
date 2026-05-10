@@ -6,101 +6,156 @@
     },
     "base_profile": {
         "type": "string",
+        "section": "General",
         "description": "Allowed values: survival, assistant, creative, god_mode. Each has fine tuned settings for different game modes.",
         "default": "survival",
         "options": ["survival", "assistant", "creative", "god_mode"]
     },
     "load_memory": {
         "type": "boolean",
+        "section": "General",
         "description": "Whether to load the bridge agent's previous memory",
         "default": false
     },
     "init_message": {
         "type": "string",
+        "section": "General",
         "description": "The initial message to send to the bridge agent",
         "default": "Respond with hello world and your name"
     },
-    "blocked_actions": {
-        "type": "array",
-        "description": "List of bridge commands or actions that are blocked.",
-        "default": ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"]
-    },
     "max_messages": {
         "type": "number",
+        "section": "General",
         "description": "Maximum number of recent messages to keep in context for LLM",
         "default": 50
     },
     "auto_compact_memory": {
         "type": "boolean",
+        "section": "General",
         "description": "Whether the agent should automatically compact memory when the history grows too large.",
         "default": true
     },
+    "num_examples": {
+        "type": "number",
+        "section": "General",
+        "description": "Number of examples to select to help prompt better LLM responses",
+        "default": 2
+    },
     "persona_preset": {
         "type": "string",
+        "section": "Conversation",
         "description": "Choose a persona preset to shape the agent's behavior and style.",
         "default": "miku_nakano",
         "options": ["miku_nakano", "default"]
     },
-    "num_examples": {
-        "type": "number",
-        "description": "Number of examples to select to help prompt better LLM responses",
-        "default": 2
-    },
-    "log_all_prompts": {
-        "type": "boolean",
-        "description": "Whether to log all prompts to file. Can be very verbose.",
-        "default": false
-    },
     "chat_ingame": {
         "type": "boolean",
+        "section": "Conversation",
         "description": "Whether to send the bridge agent's chat replies to in-game chat.",
         "default": true
     },
     "launch_mode": {
         "type": "string",
+        "section": "Bridge",
         "description": "Fabric Bridge runtime mode. fabric_ui keeps the normal Minecraft client UI; fabric_headless tunes the bridge agent for lower render overhead.",
         "default": "fabric_ui",
         "options": ["fabric_ui", "fabric_headless"]
     },
     "bridge_url": {
         "type": "string",
+        "section": "Bridge",
         "description": "URL of the Fabric Bridge Mod HTTP server.",
         "default": "http://localhost:8765"
     },
     "bridge_queue_enabled": {
         "type": "boolean",
+        "section": "Bridge",
         "description": "Enable sequential task queue in the Fabric bridge. Actions are queued and executed one at a time, advancing on Baritone completion signals. When disabled, all actions fire simultaneously (backward-compat).",
         "default": true
     },
     "bridge_structured_output": {
         "type": "boolean",
+        "section": "Bridge",
         "description": "When true in fabric runtime, requests structured JSON responses ({reply, actions[]}) so actions are executed from parsed data and command text is not leaked into chat output.",
         "default": true
     },
+    "bridge_proactive_enabled": {
+        "type": "boolean",
+        "section": "Proactive Behavior",
+        "description": "Master kill switch for all self-initiated behavior. When false, the agent is pure turn-based — it only responds to player chat. Disables both ambient ticks and world-event reactions.",
+        "default": true
+    },
+    "bridge_ambient_enabled": {
+        "type": "boolean",
+        "section": "Proactive Behavior",
+        "description": "Enable ambient ticks — the bot self-initiates short lines or idle actions every 45–180s when idle. Suppressed if the player is AFK, the queue is busy, or the budget is exhausted. Requires bridge_proactive_enabled.",
+        "default": true
+    },
+    "bridge_events_enabled": {
+        "type": "boolean",
+        "section": "Proactive Behavior",
+        "description": "Enable reactive world events — the bot reacts to nightfall, rain, hostiles, low HP, dimension changes, etc. Requires bridge_proactive_enabled.",
+        "default": true
+    },
+    "bridge_ambient_budget_per_hour": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "Maximum spontaneous ambient lines per hour (token-bucket). Miku-style personas typically run 2; chatty personas 6. Ignored when bridge_ambient_enabled is false.",
+        "default": 4
+    },
+    "bridge_ambient_min_gap_ms": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "Shortest wait between ambient ticks, in milliseconds. Ambient ticks are jittered between min and max.",
+        "default": 45000
+    },
+    "bridge_ambient_max_gap_ms": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "Longest wait between ambient ticks, in milliseconds.",
+        "default": 180000
+    },
     "use_textual_topography": {
         "type": "boolean",
+        "section": "Topography",
         "description": "Enable compact surface map generation for the LLM. Useful for planning navigation and building from terrain data without raw 3D state.",
         "default": false
     },
     "textual_topography_radius": {
         "type": "number",
+        "section": "Topography",
         "description": "Radius around the player for topographic surface mapping when use_textual_topography is enabled.",
         "default": 8
     },
     "textual_topography_format": {
         "type": "string",
+        "section": "Topography",
         "description": "Choose how the surface map is formatted in prompts: coordinate_list or grid.",
         "default": "coordinate_list",
         "options": ["coordinate_list", "grid"]
     },
     "bridge_chat_whitelist": {
         "type": "array",
+        "section": "Chat Filters",
         "description": "If non-empty, only accept in-game chat from these player names in bridge mode. Enter a JSON array of player names, e.g. [\"Alice\", \"Bob\"].",
         "default": []
     },
     "bridge_chat_blacklist": {
         "type": "array",
+        "section": "Chat Filters",
         "description": "If non-empty, reject in-game chat from these player names in bridge mode. Useful for blocking the bridge agent's own username or noisy players.",
         "default": []
+    },
+    "blocked_actions": {
+        "type": "array",
+        "section": "Advanced",
+        "description": "List of bridge commands or actions that are blocked. JSON array like [\"!checkBlueprint\"].",
+        "default": ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"]
+    },
+    "log_all_prompts": {
+        "type": "boolean",
+        "section": "Advanced",
+        "description": "Whether to log all prompts to file. Can be very verbose.",
+        "default": false
     }
 }

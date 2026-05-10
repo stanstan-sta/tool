@@ -28,6 +28,8 @@ public class StateCollector {
 
             static final Queue<ChatEvent> chatQueue = new ConcurrentLinkedQueue<>();
     static final int MAX_CHAT_QUEUE = 200;
+    private static final Queue<WorldEvent> worldEventQueue = new ConcurrentLinkedQueue<>();
+    private static final int MAX_WORLD_EVENTS = 32;
     private static String lastStateHash = "";
     private static final AtomicLong stateSeq = new AtomicLong(0);
 
@@ -35,6 +37,25 @@ public class StateCollector {
     // GAME listener, which otherwise echoes them back and causes a loop.
     private static final Queue<String> recentSentChats = new ConcurrentLinkedQueue<>();
     private static final int MAX_SENT_TRACK = 16;
+
+    // Idle / transition tracking
+    private static long lastPlayerChatMs = System.currentTimeMillis();
+    private static String lastDayPhase = "day";
+    private static boolean lastWasRaining = false;
+    private static boolean lastWasThundering = false;
+    private static int lastHostileCount = 0;
+    private static long lastHostileEventMs = 0;
+    private static String lastDimension = "minecraft:overworld";
+
+    static final int LOW_HP_THRESHOLD = 8;
+    static final int LOW_FOOD_THRESHOLD = 6;
+
+    public static void pushWorldEvent(String type, String detail) {
+        while (worldEventQueue.size() >= MAX_WORLD_EVENTS) {
+            worldEventQueue.poll();
+        }
+        worldEventQueue.add(new WorldEvent(type, detail));
+    }
 
     public static void trackSentChat(String message) {
         while (recentSentChats.size() >= MAX_SENT_TRACK) {
@@ -96,6 +117,7 @@ public class StateCollector {
                     return;
                 }
             }
+            lastPlayerChatMs = System.currentTimeMillis();
             chatQueue.add(new ChatEvent("player", message.getString(), senderName));
         });
 
@@ -147,9 +169,26 @@ public class StateCollector {
         sb.append(String.format("\"x\":%d,\"y\":%d,\"z\":%d,", x, y, z));
 
         // Vitals
-        sb.append(String.format("\"health\":%.1f,", player.getHealth()));
-        sb.append(String.format("\"hunger\":%d,", player.getHungerManager().getFoodLevel()));
+        float health = player.getHealth();
+        int hunger = player.getHungerManager().getFoodLevel();
+        sb.append(String.format("\"health\":%.1f,", health));
+        sb.append(String.format("\"hunger\":%d,", hunger));
         sb.append(String.format("\"saturation\":%.1f,", player.getHungerManager().getSaturationLevel()));
+
+        // Time & weather
+        long timeOfDay = client.world.getTimeOfDay() % 24000L;
+        long dayNumber = client.world.getTimeOfDay() / 24000L;
+        // day: 0..12000, dusk: 12000..13000, night: 13000..23000, dawn: 23000..24000
+        String dayPhase = timeOfDay < 12000 ? "day"
+                : timeOfDay < 13000 ? "dusk"
+                : timeOfDay < 23000 ? "night" : "dawn";
+        boolean raining = client.world.isRaining();
+        boolean thundering = client.world.isThundering();
+        sb.append(String.format("\"time_of_day_ticks\":%d,", timeOfDay));
+        sb.append(String.format("\"day_number\":%d,", dayNumber));
+        sb.append(String.format("\"day_phase\":\"%s\",", dayPhase));
+        sb.append(String.format("\"is_raining\":%b,", raining));
+        sb.append(String.format("\"is_thundering\":%b,", thundering));
 
         // World info
         String dim = client.world.getRegistryKey().getValue().toString();
@@ -227,12 +266,87 @@ public class StateCollector {
         }
         sb.append("],");
 
+        // Hostile mob summary
+        int hostileCount = 0;
+        Entity nearestHostile = null;
+        double nearestHostileDist = Double.MAX_VALUE;
+        for (Entity e : nearbyEntities) {
+            if (isHostile(e)) {
+                hostileCount++;
+                double dist = player.squaredDistanceTo(e);
+                if (dist < nearestHostileDist) {
+                    nearestHostileDist = dist;
+                    nearestHostile = e;
+                }
+            }
+        }
+        sb.append(String.format("\"hostile_count_nearby\":%d,", hostileCount));
+        if (nearestHostile != null) {
+            double hd = Math.sqrt(nearestHostileDist);
+            sb.append(String.format("\"nearest_hostile\":{\"type\":\"%s\",\"distance\":%.1f},",
+                    escape(nearestHostile.getType().toString()), hd));
+        } else {
+            sb.append("\"nearest_hostile\":null,");
+        }
+
+        // Status flags & idle timers
+        boolean lowHp = health <= LOW_HP_THRESHOLD;
+        boolean lowFood = hunger <= LOW_FOOD_THRESHOLD;
+        long now = System.currentTimeMillis();
+        long botIdle = now - TaskQueue.getInstance().getLastActivityMs();
+        long playerIdle = now - lastPlayerChatMs;
+        sb.append(String.format("\"low_hp_flag\":%b,", lowHp));
+        sb.append(String.format("\"low_food_flag\":%b,", lowFood));
+        sb.append(String.format("\"bot_idle_ms\":%d,", botIdle));
+        sb.append(String.format("\"player_idle_ms\":%d,", playerIdle));
+
         if (includeSurfaceMap) {
             appendSurfaceMap(sb, player, client.world, surfaceRadius);
         }
 
-        String stateHash = x + "|" + y + "|" + z + "|" + player.getHealth() + "|" +
-                player.getHungerManager().getFoodLevel() + "|" + dim + "|" + mode + "|" +
+        // Emit world events for state transitions
+        if (!dayPhase.equals(lastDayPhase)) {
+            if ("night".equals(dayPhase)) pushWorldEvent("night_start", "");
+            if ("dawn".equals(dayPhase)) pushWorldEvent("sunrise", "");
+            lastDayPhase = dayPhase;
+        }
+        if (raining && !lastWasRaining) {
+            pushWorldEvent("weather_start_rain", "");
+        } else if (!raining && lastWasRaining) {
+            pushWorldEvent("weather_end_rain", "");
+        }
+        if (thundering && !lastWasThundering) {
+            pushWorldEvent("weather_start_thunder", "");
+        } else if (!thundering && lastWasThundering) {
+            pushWorldEvent("weather_end_thunder", "");
+        }
+        lastWasRaining = raining;
+        lastWasThundering = thundering;
+
+        if (hostileCount > 0 && lastHostileCount == 0) {
+            pushWorldEvent("hostile_entered_range", String.valueOf(hostileCount));
+            lastHostileEventMs = now;
+        } else if (hostileCount > lastHostileCount && hostileCount > 0
+                && (now - lastHostileEventMs) > 30_000L) {
+            pushWorldEvent("hostile_entered_range", String.valueOf(hostileCount));
+            lastHostileEventMs = now;
+        }
+        if (hostileCount == 0 && lastHostileCount > 0) {
+            // quiet window reset
+        }
+        lastHostileCount = hostileCount;
+
+        // Dimension transition events
+        if (!dim.equals(lastDimension)) {
+            if (dim.contains("nether")) pushWorldEvent("entered_nether", "");
+            else if (dim.contains("end")) pushWorldEvent("entered_end", "");
+            else pushWorldEvent("entered_overworld", "");
+            lastDimension = dim;
+        }
+
+        String stateHash = x + "|" + y + "|" + z + "|" + health + "|" + hunger + "|" +
+                dim + "|" + mode + "|" + dayPhase + "|" + raining + "|" + thundering + "|" +
+                hostileCount + "|" + lowHp + "|" + lowFood + "|" +
                 invSig + "|" + playersSig + "|" + entitiesSig;
         if (!stateHash.equals(lastStateHash)) {
             lastStateHash = stateHash;
@@ -240,8 +354,8 @@ public class StateCollector {
         }
         long seq = stateSeq.get();
 
-        if (sinceSeq != null && sinceSeq == seq && chatQueue.isEmpty()) {
-            return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[]}";
+        if (sinceSeq != null && sinceSeq == seq && chatQueue.isEmpty() && worldEventQueue.isEmpty()) {
+            return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[],\"recent_events\":[]}";
         }
 
         // Chat messages received since last poll — drain the queue into both legacy and structured arrays.
@@ -265,7 +379,21 @@ public class StateCollector {
         eventArray.append("]");
 
         sb.append("\"chat\":").append(chatArray).append(",");
-        sb.append("\"chat_events\":").append(eventArray);
+        sb.append("\"chat_events\":").append(eventArray).append(",");
+
+        // World events emitted since last poll
+        StringBuilder worldEventArray = new StringBuilder();
+        worldEventArray.append("[");
+        boolean firstWorldEvent = true;
+        WorldEvent we;
+        while ((we = worldEventQueue.poll()) != null) {
+            if (!firstWorldEvent) worldEventArray.append(",");
+            firstWorldEvent = false;
+            worldEventArray.append(we.toJson());
+        }
+        worldEventArray.append("]");
+        sb.append("\"recent_events\":").append(worldEventArray);
+
         sb.append(",\"seq\":").append(seq);
         sb.append(",\"unchanged\":false");
 
@@ -491,6 +619,19 @@ public class StateCollector {
 
     private static String round(double v) {
         return String.format(Locale.ROOT, "%.2f", v);
+    }
+
+    private static boolean isHostile(Entity e) {
+        String type = e.getType().toString().toLowerCase();
+        return type.contains("zombie") || type.contains("skeleton") || type.contains("creeper")
+                || type.contains("spider") || type.contains("enderman") || type.contains("witch")
+                || type.contains("phantom") || type.contains("slime") || type.contains("drowned")
+                || type.contains("husk") || type.contains("stray") || type.contains("pillager")
+                || type.contains("vindicator") || type.contains("evoker") || type.contains("ravager")
+                || type.contains("vex") || type.contains("silverfish") || type.contains("blaze")
+                || type.contains("ghast") || type.contains("magma_cube") || type.contains("piglin")
+                || type.contains("hoglin") || type.contains("zoglin") || type.contains("wither_skeleton")
+                || type.contains("guardian") || type.contains("elder_guardian");
     }
 
     // ─── ID helpers ──────────────────────────────────────────────────────────

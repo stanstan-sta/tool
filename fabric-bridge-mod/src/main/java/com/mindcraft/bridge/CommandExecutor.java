@@ -7,8 +7,10 @@ import net.minecraft.client.world.ClientWorld;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.BlockState;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.math.Box;
 import net.minecraft.screen.AbstractFurnaceScreenHandler;
 import net.minecraft.screen.CraftingScreenHandler;
 import net.minecraft.screen.ScreenHandler;
@@ -19,6 +21,8 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.text.Text;
+import net.minecraft.world.World;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -72,6 +76,15 @@ public class CommandExecutor {
         if ("craft".equals(type)) {
             return executeCraftAction(actionJson);
         }
+        if ("flee".equals(type)) {
+            return executeFleeAction(actionJson);
+        }
+        if ("sleep_try".equals(type)) {
+            return executeSleepTryAction(actionJson);
+        }
+        if ("attack".equals(type)) {
+            return executeAttackAction(actionJson);
+        }
         String command = extractRawBaritoneCommand(actionJson, type);
         if (command != null) {
             return type + ": " + command;
@@ -84,6 +97,582 @@ public class CommandExecutor {
     }
 
     // â”€â”€â”€ Craft action orchestration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private static String executeFleeAction(String actionJson) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.world == null) return "flee: not connected";
+
+        String distStr = extractJsonPrimitive(actionJson, "distance");
+        double distance = 24.0;
+        if (distStr != null) {
+            try { distance = Double.parseDouble(distStr); } catch (NumberFormatException ignored) {}
+        }
+
+        // Find nearest hostile entity
+        Box searchBox = player.getBoundingBox().expand(32);
+        List<Entity> entities = client.world.getOtherEntities(player, searchBox, e -> isHostile(e));
+        Entity nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        for (Entity e : entities) {
+            double d = player.squaredDistanceTo(e);
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = e;
+            }
+        }
+
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        Vec3d dest;
+        if (nearest != null) {
+            Vec3d hostilePos = new Vec3d(nearest.getX(), nearest.getY(), nearest.getZ());
+            Vec3d away = playerPos.subtract(hostilePos).normalize().multiply(distance);
+            dest = playerPos.add(away);
+        } else {
+            // No hostile found — flee in a random direction
+            double yaw = Math.toRadians(player.getYaw());
+            dest = playerPos.add(new Vec3d(-Math.sin(yaw) * distance, 0, Math.cos(yaw) * distance));
+        }
+
+        int tx = (int) Math.floor(dest.x);
+        int ty = (int) Math.floor(dest.y);
+        int tz = (int) Math.floor(dest.z);
+        return "flee: #goto " + tx + " " + ty + " " + tz;
+    }
+
+    private static String executeSleepTryAction(String actionJson) {
+        Thread worker = new Thread(() -> sleepTryWorker(), "mindcraft-sleep-try");
+        worker.setDaemon(true);
+        worker.start();
+        return "sleep_try: queued cascade";
+    }
+
+    private static void sleepTryWorker() {
+        sendBridgeMessage("[Bridge] Sleep cascade: trying #sleep ...");
+        TaskQueue.getInstance().enqueue("#sleep");
+        String result = waitForActiveTaskComplete(35_000L);
+        if ("success".equals(result)) {
+            sendBridgeMessage("[Bridge] Sleep cascade: #sleep succeeded");
+            return;
+        }
+
+        sendBridgeMessage("[Bridge] Sleep cascade: #sleep failed (" + result + "); checking cache ...");
+        BlockPos cached = findCachedBed();
+        if (cached != null) {
+            sendBridgeMessage("[Bridge] Sleep cascade: cached bed at " + cached.toShortString());
+            TaskQueue.getInstance().discardPausedFailure();
+            TaskQueue.getInstance().enqueue("#goto " + cached.getX() + " " + cached.getY() + " " + cached.getZ());
+            String gotoResult = waitForActiveTaskComplete(120_000L);
+            if ("success".equals(gotoResult)) {
+                TaskQueue.getInstance().enqueue("#sleep");
+                String sleep2 = waitForActiveTaskComplete(35_000L);
+                if ("success".equals(sleep2)) {
+                    sendBridgeMessage("[Bridge] Sleep cascade: cached bed sleep succeeded");
+                    return;
+                }
+            }
+        }
+
+        sendBridgeMessage("[Bridge] Sleep cascade: no cached bed; planning new bed ...");
+        TaskQueue.getInstance().discardPausedFailure();
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player != null && client.world != null) {
+            MakePlan plan = planMakeForInventory(client.player, "red_bed", 1);
+            if (plan.isSuccess() && !plan.steps.isEmpty()) {
+                for (MakeStep step : plan.steps) {
+                    enqueueMakeStep(step);
+                }
+                TaskQueue.getInstance().enqueue("#sleep");
+                String sleep3 = waitForActiveTaskComplete(35_000L);
+                if ("success".equals(sleep3)) {
+                    sendBridgeMessage("[Bridge] Sleep cascade: crafted bed sleep succeeded");
+                    return;
+                }
+            }
+        }
+        sendBridgeMessage("[Bridge] Sleep cascade: exhausted all options.");
+    }
+
+    private static String waitForActiveTaskComplete(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+            if ("idle".equals(qs.status())) {
+                return "success";
+            }
+            if ("paused".equals(qs.status())) {
+                return "failed";
+            }
+            sleepQuietly(500);
+        }
+        return "timeout";
+    }
+
+    private static BlockPos findCachedBed() {
+        try {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (player == null) return null;
+            Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+            Object provider = apiClass.getMethod("getProvider").invoke(null);
+            Object baritone = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+            Object worldProvider = baritone.getClass().getMethod("getWorldProvider").invoke(baritone);
+            Object world = worldProvider.getClass().getMethod("getCurrentWorld").invoke(worldProvider);
+            Object cache = world.getClass().getMethod("getCachedWorld").invoke(world);
+            int cx = player.getBlockPos().getX() >> 4;
+            int cz = player.getBlockPos().getZ() >> 4;
+            List<?> beds = (List<?>) cache.getClass()
+                    .getMethod("getLocationsOf", String.class, int.class, int.class, int.class, int.class)
+                    .invoke(cache, "bed", 1, cx, cz, 64);
+            if (beds == null || beds.isEmpty()) return null;
+            return (BlockPos) beds.get(0);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // ─── Attack action orchestration ──────────────────────────────────────────────────────────────────
+
+    private enum CombatState { SEARCHING, APPROACHING, ENGAGING, LOOTING, DONE }
+
+    private static String executeAttackAction(String actionJson) {
+        Thread worker = new Thread(() -> combatWorker(actionJson), "mindcraft-combat");
+        worker.setDaemon(true);
+        worker.start();
+        return "attack: queued melee combat";
+    }
+
+    private static void combatWorker(String actionJson) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.world == null) {
+            sendBridgeMessage("[Bridge] Combat: not connected");
+            return;
+        }
+
+        String targetTypeRaw = extractJsonString(actionJson, "target_type");
+        String maxDistStr = extractJsonPrimitive(actionJson, "max_distance");
+        String retreatHpStr = extractJsonPrimitive(actionJson, "retreat_hp");
+        String countStr = extractJsonPrimitive(actionJson, "count");
+        String searchTimeStr = extractJsonPrimitive(actionJson, "search_time_s");
+        String untilItemsJson = extractJsonObject(actionJson, "until_items");
+
+        double maxDistance = 48.0;
+        if (maxDistStr != null) {
+            try { maxDistance = Double.parseDouble(maxDistStr); } catch (NumberFormatException ignored) {}
+        }
+        double retreatHp = 10.0;
+        if (retreatHpStr != null) {
+            try { retreatHp = Double.parseDouble(retreatHpStr); } catch (NumberFormatException ignored) {}
+        }
+        int targetCount = 1;
+        if (countStr != null) {
+            try { targetCount = Math.max(1, Integer.parseInt(countStr)); } catch (NumberFormatException ignored) {}
+        }
+        int searchTimeS = 30;
+        if (searchTimeStr != null) {
+            try { searchTimeS = Math.max(0, Math.min(120, Integer.parseInt(searchTimeStr))); } catch (NumberFormatException ignored) {}
+        }
+
+        Map<String, Integer> untilItems = new HashMap<>();
+        boolean useUntilItems = untilItemsJson != null && !untilItemsJson.isBlank();
+        if (useUntilItems) {
+            String inner = untilItemsJson.trim();
+            if (inner.startsWith("{")) inner = inner.substring(1);
+            if (inner.endsWith("}")) inner = inner.substring(0, inner.length() - 1);
+            for (String pair : inner.split(",")) {
+                String[] kv = pair.split(":", 2);
+                if (kv.length == 2) {
+                    String item = kv[0].trim().replace("\"", "");
+                    String count = kv[1].trim().replace("\"", "");
+                    try {
+                        untilItems.put(item, Integer.parseInt(count));
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+
+        int killsRemaining = targetCount;
+        int totalAttempts = 0;
+        int maxAttempts = targetCount * 3;
+        if (useUntilItems && maxAttempts < 30) {
+            maxAttempts = 30;
+        }
+
+        CombatState state = CombatState.SEARCHING;
+        long searchDeadline = System.currentTimeMillis() + (searchTimeS * 1000L);
+        Entity currentTarget = null;
+        Vec3d lastTargetPos = null;
+        long retargetTimer = 0;
+
+        boolean hadWeapon = equipBestWeapon(player);
+        if (!hadWeapon) {
+            sendBridgeMessage("[Bridge] Combat: no weapon in hotbar — punching with fist");
+        }
+
+        while (state != CombatState.DONE && totalAttempts < maxAttempts) {
+            player = client.player;
+            if (player == null || client.world == null) {
+                sendBridgeMessage("[Bridge] Combat: not connected");
+                return;
+            }
+
+            if (player.isDead() || player.getHealth() <= 0) {
+                sendBridgeMessage("[Bridge] Combat: player died");
+                return;
+            }
+            if (player.getHealth() <= retreatHp) {
+                sendBridgeMessage("[Bridge] Combat: retreating — HP too low");
+                return;
+            }
+
+            switch (state) {
+                case SEARCHING: {
+                    if (useUntilItems) {
+                        boolean allMet = true;
+                        for (Map.Entry<String, Integer> entry : untilItems.entrySet()) {
+                            int have = countItemInInventory(player, normalizeItemId(entry.getKey()));
+                            if (have < entry.getValue()) {
+                                allMet = false;
+                                break;
+                            }
+                        }
+                        if (allMet) {
+                            sendBridgeMessage("[Bridge] Hunt: all item goals met");
+                            state = CombatState.DONE;
+                            continue;
+                        }
+                    } else if (killsRemaining <= 0) {
+                        sendBridgeMessage("[Bridge] Hunt: kill count reached");
+                        state = CombatState.DONE;
+                        continue;
+                    }
+
+                    currentTarget = findNearestHostileOfType(client, player, targetTypeRaw, maxDistance);
+                    if (currentTarget != null) {
+                        String targetName = currentTarget.getType().toString();
+                        sendBridgeMessage("[Bridge] Hunt: found " + normalizeEntityTypeName(targetName));
+                        lastTargetPos = new Vec3d(currentTarget.getX(), currentTarget.getY(), currentTarget.getZ());
+                        state = CombatState.APPROACHING;
+                        continue;
+                    }
+
+                    if (searchTimeS <= 0 || System.currentTimeMillis() >= searchDeadline) {
+                        sendBridgeMessage("[Bridge] Hunt: no " + (targetTypeRaw != null ? targetTypeRaw : "hostile") + " found after " + searchTimeS + "s");
+                        state = CombatState.DONE;
+                        continue;
+                    }
+
+                    sendBridgeMessage("[Bridge] Hunt: searching via #explore ...");
+                    TaskQueue.getInstance().cancelAll();
+                    sleepQuietly(150);
+                    TaskQueue.getInstance().enqueue("#explore");
+
+                    long exploreDeadline = System.currentTimeMillis() + 8000;
+                    boolean found = false;
+                    while (System.currentTimeMillis() < exploreDeadline) {
+                        player = client.player;
+                        if (player == null || client.world == null) return;
+                        if (player.isDead() || player.getHealth() <= 0) {
+                            sendBridgeMessage("[Bridge] Combat: player died");
+                            return;
+                        }
+                        if (player.getHealth() <= retreatHp) {
+                            sendBridgeMessage("[Bridge] Combat: retreating — HP too low");
+                            return;
+                        }
+
+                        currentTarget = findNearestHostileOfType(client, player, targetTypeRaw, maxDistance);
+                        if (currentTarget != null) {
+                            TaskQueue.getInstance().cancelAll();
+                            sleepQuietly(150);
+                            String targetName = currentTarget.getType().toString();
+                        sendBridgeMessage("[Bridge] Hunt: found " + normalizeEntityTypeName(targetName) + " during explore");
+                        lastTargetPos = new Vec3d(currentTarget.getX(), currentTarget.getY(), currentTarget.getZ());
+                        state = CombatState.APPROACHING;
+                            found = true;
+                            break;
+                        }
+                        sleepQuietly(500);
+                    }
+                    if (!found) {
+                        TaskQueue.getInstance().cancelAll();
+                        sleepQuietly(150);
+                    }
+                    continue;
+                }
+
+                case APPROACHING: {
+                    if (currentTarget == null || currentTarget.isRemoved() || !currentTarget.isAlive()) {
+                        sendBridgeMessage("[Bridge] Hunt: target lost during approach");
+                        state = CombatState.SEARCHING;
+                        continue;
+                    }
+
+                    double dist = player.squaredDistanceTo(currentTarget);
+                    if (dist <= 16.0) {
+                        sendBridgeMessage("[Bridge] Hunt: target in melee range, engaging");
+                        TaskQueue.getInstance().cancelAll();
+                        sleepQuietly(200);
+                        state = CombatState.ENGAGING;
+                        retargetTimer = System.currentTimeMillis();
+                        continue;
+                    }
+
+                    String followCmd = "#follow entity " + currentTarget.getId();
+                    TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+                    String active = qs.active();
+                    if (active == null || !active.equals(followCmd)) {
+                        TaskQueue.getInstance().cancelAll();
+                        sleepQuietly(150);
+                        TaskQueue.getInstance().enqueue(followCmd);
+                    }
+
+                    sleepQuietly(500);
+                    continue;
+                }
+
+                case ENGAGING: {
+                    if (currentTarget == null || currentTarget.isRemoved() || !currentTarget.isAlive()) {
+                        sendBridgeMessage("[Bridge] Hunt: target killed");
+                        totalAttempts++;
+                        if (!useUntilItems) {
+                            killsRemaining--;
+                        }
+                        if (currentTarget != null) {
+                            lastTargetPos = new Vec3d(currentTarget.getX(), currentTarget.getY(), currentTarget.getZ());
+                        }
+                        state = CombatState.LOOTING;
+                        continue;
+                    }
+
+                    double dist = player.squaredDistanceTo(currentTarget);
+                    if (dist > 36.0) {
+                        sendBridgeMessage("[Bridge] Hunt: target moved away, re-approaching");
+                        state = CombatState.APPROACHING;
+                        continue;
+                    }
+
+                    if (System.currentTimeMillis() - retargetTimer >= 2000) {
+                        retargetTimer = System.currentTimeMillis();
+                        Entity better = findBetterTarget(client, player, currentTarget, targetTypeRaw, maxDistance);
+                        if (better != null && better != currentTarget) {
+                            currentTarget = better;
+                        }
+                    }
+
+                    final ClientPlayerEntity fp = player;
+                    final Entity t = currentTarget;
+                    client.execute(() -> {
+                        lookAtEntity(fp, t);
+                        if (client.interactionManager != null) {
+                            client.interactionManager.attackEntity(fp, t);
+                            fp.swingHand(Hand.MAIN_HAND);
+                        }
+                    });
+
+                    int cooldownMs = getAttackCooldownMs(player);
+                    sleepQuietly(cooldownMs);
+                    continue;
+                }
+
+                case LOOTING: {
+                    sendBridgeMessage("[Bridge] Hunt: looting drops ...");
+                    sleepQuietly(1500);
+
+                    if (lastTargetPos != null) {
+                        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+                        Vec3d toTarget = lastTargetPos.subtract(playerPos);
+                        double len = toTarget.length();
+                        if (len > 0.1) {
+                            Vec3d movePos = playerPos.add(toTarget.normalize().multiply(Math.min(len, 2.0)));
+                            int mx = (int) Math.floor(movePos.x);
+                            int my = (int) Math.floor(movePos.y);
+                            int mz = (int) Math.floor(movePos.z);
+                            TaskQueue.getInstance().cancelAll();
+                            sleepQuietly(150);
+                            TaskQueue.getInstance().enqueue("#goto " + mx + " " + my + " " + mz);
+                            waitForActiveTaskComplete(10_000L);
+                            TaskQueue.getInstance().cancelAll();
+                            sleepQuietly(150);
+                        }
+                    }
+
+                    long lootDeadline = System.currentTimeMillis() + 10_000;
+                    boolean itemsMet = false;
+                    while (System.currentTimeMillis() < lootDeadline) {
+                        player = client.player;
+                        if (player == null) break;
+                        if (useUntilItems) {
+                            boolean allMet = true;
+                            for (Map.Entry<String, Integer> entry : untilItems.entrySet()) {
+                                int have = countItemInInventory(player, normalizeItemId(entry.getKey()));
+                                if (have < entry.getValue()) {
+                                    allMet = false;
+                                    break;
+                                }
+                            }
+                            if (allMet) {
+                                itemsMet = true;
+                                break;
+                            }
+                        } else {
+                            itemsMet = true;
+                            break;
+                        }
+                        sleepQuietly(500);
+                    }
+
+                    if (itemsMet) {
+                        if (useUntilItems) {
+                            sendBridgeMessage("[Bridge] Hunt: all item goals met");
+                        }
+                        state = CombatState.DONE;
+                    } else {
+                        sendBridgeMessage("[Bridge] Hunt: need more kills, returning to search");
+                        state = CombatState.SEARCHING;
+                    }
+                    continue;
+                }
+
+                case DONE: {
+                    break;
+                }
+            }
+        }
+
+        if (totalAttempts >= maxAttempts) {
+            sendBridgeMessage("[Bridge] Hunt: max attempts reached (" + maxAttempts + ")");
+        }
+        sendBridgeMessage("[Bridge] Hunt: complete");
+    }
+
+    private static Entity findNearestHostileOfType(MinecraftClient client, ClientPlayerEntity player, String targetType, double maxDistance) {
+        Box box = player.getBoundingBox().expand(maxDistance);
+        List<Entity> entities = client.world.getOtherEntities(player, box, e -> isHostile(e));
+        if (targetType != null && !targetType.isBlank()) {
+            String lowerTarget = targetType.toLowerCase();
+            entities.removeIf(e -> {
+                String typeName = normalizeEntityTypeName(e.getType().toString());
+                return !typeName.equals(lowerTarget);
+            });
+        }
+        Entity nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        for (Entity e : entities) {
+            double d = player.squaredDistanceTo(e);
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = e;
+            }
+        }
+        return nearest;
+    }
+
+    private static Entity findBetterTarget(MinecraftClient client, ClientPlayerEntity player, Entity currentTarget, String targetType, double maxDistance) {
+        if (currentTarget == null || player == null || client.world == null) return null;
+        Box box = player.getBoundingBox().expand(8.0);
+        List<Entity> entities = client.world.getOtherEntities(player, box, e -> isHostile(e));
+        if (targetType != null && !targetType.isBlank()) {
+            String lowerTarget = targetType.toLowerCase();
+            entities.removeIf(e -> {
+                String typeName = normalizeEntityTypeName(e.getType().toString());
+                return !typeName.equals(lowerTarget);
+            });
+        }
+        double bestDist = player.squaredDistanceTo(currentTarget);
+        Entity best = currentTarget;
+        for (Entity e : entities) {
+            double d = player.squaredDistanceTo(e);
+            if (d <= 16.0 && d < bestDist && e != currentTarget) {
+                best = e;
+                bestDist = d;
+            }
+        }
+        return best == currentTarget ? null : best;
+    }
+
+    private static String normalizeEntityTypeName(String raw) {
+        if (raw == null) return "";
+        String s = raw.toLowerCase();
+        // Strip common prefixes/suffixes: "entity.minecraft.zombie" -> "zombie", "minecraft:zombie" -> "zombie"
+        int colon = s.lastIndexOf(':');
+        if (colon >= 0) s = s.substring(colon + 1);
+        int dot = s.lastIndexOf('.');
+        if (dot >= 0) s = s.substring(dot + 1);
+        return s;
+    }
+
+    private static boolean equipBestWeapon(ClientPlayerEntity player) {
+        PlayerInventory inv = player.getInventory();
+        int bestSlot = -1;
+        float bestDamage = -1.0f;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isEmpty()) continue;
+            String itemId = stack.getItem().toString();
+            if (itemId.startsWith("Item{") && itemId.endsWith("}")) {
+                itemId = itemId.substring(5, itemId.length() - 1);
+            }
+            String name = itemId.toLowerCase();
+            float damage = getMeleeDamage(name);
+            if (damage > bestDamage) {
+                bestDamage = damage;
+                bestSlot = i;
+            }
+        }
+        if (bestSlot >= 0) {
+            inv.setSelectedSlot(bestSlot);
+            sendBridgeMessage("[Bridge] Combat: selected slot " + bestSlot + " (damage " + bestDamage + ")");
+            return true;
+        }
+        return false;
+    }
+
+    private static int getAttackCooldownMs(ClientPlayerEntity player) {
+        ItemStack held = player.getMainHandStack();
+        if (held.isEmpty()) return 250; // fist: 4.0 attack speed
+        String itemId = held.getItem().toString();
+        if (itemId.startsWith("Item{") && itemId.endsWith("}")) {
+            itemId = itemId.substring(5, itemId.length() - 1);
+        }
+        String name = itemId.toLowerCase();
+        // 1.21 attack speeds: sword=1.6 (625ms), axe=1.0 (1000ms), pick=1.2 (833ms), shovel=1.0 (1000ms), fist=4.0 (250ms)
+        if (name.contains("sword")) return 625;
+        if (name.contains("axe")) return 1000;
+        if (name.contains("pickaxe")) return 833;
+        if (name.contains("shovel")) return 1000;
+        return 250;
+    }
+
+    private static float getMeleeDamage(String itemName) {
+        if (itemName.contains("netherite_sword")) return 8.0f;
+        if (itemName.contains("diamond_sword")) return 7.0f;
+        if (itemName.contains("iron_sword")) return 6.0f;
+        if (itemName.contains("stone_sword")) return 5.0f;
+        if (itemName.contains("wooden_sword")) return 4.0f;
+        if (itemName.contains("golden_sword")) return 4.0f;
+        if (itemName.contains("netherite_axe")) return 10.0f;
+        if (itemName.contains("diamond_axe")) return 9.0f;
+        if (itemName.contains("iron_axe")) return 9.0f;
+        if (itemName.contains("stone_axe")) return 9.0f;
+        if (itemName.contains("wooden_axe")) return 7.0f;
+        if (itemName.contains("golden_axe")) return 7.0f;
+        if (itemName.contains("pickaxe")) return 3.0f;
+        if (itemName.contains("shovel")) return 2.5f;
+        return 1.0f; // fist / miscellaneous
+    }
+
+    private static void lookAtEntity(ClientPlayerEntity player, Entity target) {
+        double dx = target.getX() - player.getX();
+        double dy = (target.getY() + target.getHeight() * 0.5) - player.getEyeY();
+        double dz = target.getZ() - player.getZ();
+        double distXZ = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+        float pitch = (float) (Math.toDegrees(Math.atan2(-dy, distXZ)));
+        player.setYaw(yaw);
+        player.setPitch(pitch);
+    }
 
     private static String executeCraftAction(String actionJson) {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -106,13 +695,14 @@ public class CommandExecutor {
         // after #craft opens the crafting table.
         final String targetItem = itemName;
         final int targetCount = count;
-        java.util.concurrent.CompletableFuture<String> future = new java.util.concurrent.CompletableFuture<>();
 
+        // ── Phase 1: seed the plan on the render thread (fast — inventory + cheap scans)
+        java.util.concurrent.CompletableFuture<Object> seedFuture = new java.util.concurrent.CompletableFuture<>();
         client.execute(() -> {
             try {
                 ClientPlayerEntity player = client.player;
                 if (player == null || client.world == null) {
-                    future.complete("craft: not connected");
+                    seedFuture.complete("craft: not connected");
                     return;
                 }
 
@@ -120,7 +710,7 @@ public class CommandExecutor {
                         ? Identifier.tryParse(targetItem)
                         : Identifier.of("minecraft", targetItem);
                 if (itemId == null) {
-                    future.complete("craft: invalid item " + targetItem);
+                    seedFuture.complete("craft: invalid item " + targetItem);
                     return;
                 }
                 String itemKey = itemId.toString();
@@ -134,30 +724,62 @@ public class CommandExecutor {
                                     + " based on inventory."), false);
                     itemKey = normalizedItemKey;
                 }
-                MakePlan plan = planMakeForInventory(player, itemKey, targetCount);
-                if (!plan.isSuccess()) {
-                    future.complete("craft: could not plan " + targetItem + " - "
-                            + String.join("; ", plan.errors));
-                    return;
+
+                MakePlan seed = new MakePlan();
+                snapshotInventory(player, seed);
+                // Narrow probe only — full world scans were stalling the render thread.
+                if (findNearestStationNear(client.world, player, "crafting_table") != null) {
+                    seed.nearbyStations.add("crafting_table");
+                }
+                if (findNearestStationNear(client.world, player, "furnace") != null) {
+                    seed.nearbyStations.add("furnace");
                 }
 
-                player.sendMessage(net.minecraft.text.Text.literal(
-                        "[Bridge] Queued make plan: " + describeMakePlan(plan.steps)), false);
-                for (MakeStep step : plan.steps) {
-                    enqueueMakeStep(step);
-                }
-                future.complete("craft: queued " + plan.steps.size() + " step(s); "
-                        + describeMakePlan(plan.steps));
+                seedFuture.complete(new Object[] { seed, itemKey });
             } catch (Exception e) {
-                future.complete("craft: error â€” " + e.getMessage());
+                seedFuture.complete("craft: error — " + e.getMessage());
             }
         });
 
+        MakePlan plan;
+        String planKey;
         try {
-            return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            Object result = seedFuture.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (result instanceof String str) {
+                return str;
+            }
+            Object[] pair = (Object[]) result;
+            plan = (MakePlan) pair[0];
+            planKey = (String) pair[1];
         } catch (Exception e) {
-            return "craft: timeout waiting for render thread â€” " + e.getMessage();
+            return "craft: timeout seeding plan — " + e.getMessage();
         }
+
+        // ── Phase 2: recursive planning on the HTTP thread (no render-thread work)
+        try {
+            makeItem(plan, normalizeItemId(planKey), targetCount, 0);
+        } catch (Exception e) {
+            return "craft: error — " + e.getMessage();
+        }
+        if (!plan.isSuccess()) {
+            return "craft: could not plan " + targetItem + " - "
+                    + String.join("; ", plan.errors);
+        }
+
+        // ── Phase 3: enqueue steps and post the plan summary back to the client
+        final MakePlan finalPlan = plan;
+        final String summary = describeMakePlan(plan.steps);
+        client.execute(() -> {
+            ClientPlayerEntity player = client.player;
+            if (player != null) {
+                player.sendMessage(net.minecraft.text.Text.literal(
+                        "[Bridge] Queued make plan: " + summary), false);
+            }
+            for (MakeStep step : finalPlan.steps) {
+                enqueueMakeStep(step);
+            }
+        });
+        return "craft: queued " + plan.steps.size() + " step(s); " + summary;
     }
 
     private static void watchForCraftingScreen(MinecraftClient client, Runnable craftAction) {
@@ -199,6 +821,13 @@ public class CommandExecutor {
         final List<MakeStep> steps = new ArrayList<>();
         final List<String> errors = new ArrayList<>();
         final Map<String, Integer> virtualInventory = new HashMap<>();
+        final Set<String> reservedTools = new HashSet<>();
+        final Set<String> stations = new HashSet<>();
+        // Stations already present in the world near the player, pre-probed on the
+        // render thread so the off-thread planner never has to scan blocks.
+        final Set<String> nearbyStations = new HashSet<>();
+        // Items currently being planned — used for cycle detection. Normalized ids.
+        final Set<String> inProgress = new HashSet<>();
 
         boolean isSuccess() {
             return errors.isEmpty();
@@ -241,6 +870,27 @@ public class CommandExecutor {
             }
             return remaining;
         }
+
+        boolean hasItem(String itemId) {
+            String norm = normalizeItemId(itemId);
+            if (virtualInventory.getOrDefault(norm, 0) > 0) return true;
+            if (reservedTools.contains(norm)) return true;
+            return false;
+        }
+
+        boolean hasEquivalentOrBetterTool(String minTool) {
+            if (!minTool.endsWith("_pickaxe")) return hasItem(minTool);
+            int minIdx = PICKAXE_TIERS.indexOf(minTool);
+            if (minIdx < 0) return hasItem(minTool);
+            for (int i = minIdx; i < PICKAXE_TIERS.size(); i++) {
+                if (hasItem(PICKAXE_TIERS.get(i))) return true;
+            }
+            return false;
+        }
+
+        void reserveTool(String toolId) {
+            reservedTools.add(normalizeItemId(toolId));
+        }
     }
 
     private static void enqueueBridgeCraft(String itemName, int count) {
@@ -271,14 +921,47 @@ public class CommandExecutor {
     private static boolean makeItem(MakePlan plan, String itemId, int count, int depth) {
         if (!plan.errors.isEmpty()) return false;
         if (count <= 0) return true;
-        if (depth > 12) {
+        // Hard cap is only a safety net for runaway recursion. Real cycles are caught
+        // by plan.inProgress below. Diamond's full chain (6+ tiers × ~4 frames each)
+        // fits comfortably under 32.
+        if (depth > 32) {
             plan.errors.add("recipe chain too deep at " + stripMinecraftNamespace(itemId));
             return false;
         }
 
         String normalized = normalizeItemId(itemId);
+
+        // Cycle detection: if we're already trying to plan this exact item further up
+        // the stack, we have a real dependency loop (e.g. A needs B, B needs A).
+        if (!plan.inProgress.add(normalized)) {
+            plan.errors.add("recipe cycle detected at " + stripMinecraftNamespace(normalized));
+            return false;
+        }
+        try {
+            return makeItemInner(plan, normalized, count, depth);
+        } finally {
+            plan.inProgress.remove(normalized);
+        }
+    }
+
+    private static boolean makeItemInner(MakePlan plan, String normalized, int count, int depth) {
         int missing = plan.consumeItem(normalized, count);
         if (missing <= 0) return true;
+
+        // If the item is an ore drop, check if we have the raw ore block in inventory
+        List<String> oreBlocks = ORE_BLOCK_ALIASES.get(normalized);
+        if (oreBlocks != null && missing > 0) {
+            for (String oreBlock : oreBlocks) {
+                int oreHave = plan.countVirtual(oreBlock);
+                if (oreHave > 0) {
+                    int toConsume = Math.min(oreHave, missing);
+                    plan.consumeItem(oreBlock, toConsume);
+                    plan.addVirtual(normalized, toConsume);
+                    missing -= toConsume;
+                    if (missing <= 0) return true;
+                }
+            }
+        }
 
         String itemKey = stripMinecraftNamespace(normalized);
         RecipeData recipe = RECIPE_DATABASE.get(itemKey);
@@ -290,6 +973,7 @@ public class CommandExecutor {
                     return false;
                 }
             }
+            ensureStation(plan, "crafting_table");
             plan.steps.add(new MakeStep(MakeStepKind.CRAFT, itemKey, missing, null));
             plan.addVirtual(normalized, batches * outputCount);
             plan.consumeItem(normalized, missing);
@@ -302,9 +986,13 @@ public class CommandExecutor {
                 return false;
             }
             int fuelNeeded = fuelItemsNeededForPlan(plan, missing, smelt.input());
-            if (fuelNeeded > 0 && !makeItem(plan, "minecraft:coal", fuelNeeded, depth + 1)) {
-                return false;
+            if (fuelNeeded > 0) {
+                if (!makeItem(plan, "minecraft:coal", fuelNeeded, depth + 1)) {
+                    return false;
+                }
+                plan.consumeItem("minecraft:coal", fuelNeeded);
             }
+            ensureStation(plan, "furnace");
             String inputKey = stripMinecraftNamespace(smelt.input());
             plan.steps.add(new MakeStep(MakeStepKind.SMELT, inputKey, missing,
                     "#task smelt " + inputKey + " " + missing));
@@ -315,10 +1003,35 @@ public class CommandExecutor {
 
         GatherProvider gather = GATHER_PROVIDERS.get(normalized);
         if (gather != null) {
+            String requiredTool = MINE_TOOL_REQUIREMENTS.get(gather.mineTarget());
+            if (requiredTool != null && !plan.hasEquivalentOrBetterTool(requiredTool)) {
+                if (!makeItem(plan, requiredTool, 1, depth + 1)) {
+                    plan.errors.add("Need " + requiredTool + " to mine " + gather.mineTarget()
+                            + " but couldn't plan one");
+                    return false;
+                }
+                plan.reserveTool(requiredTool);
+            }
+            boolean inNether = playerIsInNether();
+            boolean isNetherTarget = isNetherGatherTarget(gather.mineTarget());
+            boolean needsEnterPortal = isNetherTarget && !inNether;
+            boolean needsExitPortal = !isNetherTarget && inNether;
+            if (needsEnterPortal) {
+                plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
+            }
+            if (needsExitPortal) {
+                plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
+            }
             plan.steps.add(new MakeStep(MakeStepKind.MINE, stripMinecraftNamespace(gather.producedItem()), missing,
                     "#mine " + missing + " " + gather.mineTarget()));
             plan.addVirtual(gather.producedItem(), missing);
             plan.consumeItem(normalized, missing);
+            if (needsEnterPortal) {
+                plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
+            }
+            if (needsExitPortal) {
+                plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
+            }
             return true;
         }
 
@@ -541,6 +1254,16 @@ public class CommandExecutor {
                             "smelt: failed to load furnace at " + plan.info.pos.toShortString());
                     return;
                 }
+            }
+
+            // Pull any pre-existing output out of each furnace BEFORE we measure the
+            // baseline. Otherwise the first collect pass sweeps those items into the
+            // player inventory and the delta (afterOutput - beforeOutput) credits
+            // them as if we just smelted them, causing the task to signal "complete"
+            // before our loaded input has actually cooked.
+            // Unconditional — collectFurnaceOutput is a no-op when slot 2 is empty.
+            for (FurnacePlan plan : plans) {
+                collectFurnaceOutput(plan.info.pos, recipe);
             }
 
             long waitMs = plans.stream().mapToLong(FurnacePlan::etaMs).max().orElse(0L) + 1_500L;
@@ -958,6 +1681,14 @@ public class CommandExecutor {
         addGather(providers, "raw_gold", "gold_ore", "raw_gold");
         addGather(providers, "raw_copper", "copper_ore", "raw_copper");
         addGather(providers, "ancient_debris", "ancient_debris");
+        // Phase 4: crop / ore gather providers
+        addGather(providers, "wheat", "wheat");
+        addGather(providers, "carrot", "carrot");
+        addGather(providers, "pumpkin", "pumpkin");
+        addGather(providers, "cocoa_beans", "cocoa_beans");
+        addGather(providers, "sugar_cane", "sugar_cane");
+        addGather(providers, "nether_quartz", "nether_quartz_ore", "nether_quartz");
+        addGather(providers, "obsidian", "obsidian");
         for (String wood : WOOD_TYPES) {
             addGather(providers, wood + "_log", wood + "_log");
             addGather(providers, wood + "_wood", wood + "_wood");
@@ -972,6 +1703,104 @@ public class CommandExecutor {
     private static void addGather(Map<String, GatherProvider> providers, String item,
                                   String mineTarget, String producedItem) {
         providers.put(normalizeItemId(item), new GatherProvider(mineTarget, normalizeItemId(producedItem)));
+    }
+
+    // Maps ore-drop items to their source ore blocks for inventory checking
+    private static final Map<String, List<String>> ORE_BLOCK_ALIASES = Map.of(
+            "minecraft:raw_iron", List.of("minecraft:iron_ore", "minecraft:deepslate_iron_ore"),
+            "minecraft:raw_gold", List.of("minecraft:gold_ore", "minecraft:deepslate_gold_ore"),
+            "minecraft:raw_copper", List.of("minecraft:copper_ore", "minecraft:deepslate_copper_ore")
+    );
+
+    // Minimum tool needed to successfully #mine this block.
+    // Missing entries => no tool required (wood, sand, dirt, crops, etc.)
+    private static final Map<String, String> MINE_TOOL_REQUIREMENTS = Map.ofEntries(
+        Map.entry("stone",              "wooden_pickaxe"),
+        Map.entry("cobblestone",        "wooden_pickaxe"),
+        Map.entry("cobbled_deepslate",  "wooden_pickaxe"),
+        Map.entry("coal_ore",           "wooden_pickaxe"),
+        Map.entry("iron_ore",           "stone_pickaxe"),
+        Map.entry("copper_ore",         "stone_pickaxe"),
+        Map.entry("lapis_ore",          "stone_pickaxe"),
+        Map.entry("gold_ore",           "iron_pickaxe"),
+        Map.entry("redstone_ore",       "iron_pickaxe"),
+        Map.entry("diamond_ore",        "iron_pickaxe"),
+        Map.entry("emerald_ore",        "iron_pickaxe"),
+        Map.entry("obsidian",           "diamond_pickaxe"),
+        Map.entry("ancient_debris",     "diamond_pickaxe"),
+        Map.entry("nether_quartz_ore",  "wooden_pickaxe"),
+        Map.entry("blackstone",         "wooden_pickaxe")
+    );
+
+    private static final List<String> PICKAXE_TIERS = List.of(
+        "wooden_pickaxe", "stone_pickaxe", "iron_pickaxe",
+        "diamond_pickaxe", "netherite_pickaxe"
+    );
+
+    // Nether-only gather targets that require portal travel
+    private static final Set<String> NETHER_GATHER_TARGETS = Set.of(
+            "ancient_debris", "netherrack", "nether_quartz_ore", "glowstone",
+            "soul_sand", "magma_block", "nether_gold_ore", "blackstone",
+            "basalt", "crimson_stem", "warped_stem"
+    );
+
+    private static boolean isNetherGatherTarget(String mineTarget) {
+        return NETHER_GATHER_TARGETS.contains(mineTarget);
+    }
+
+    private static boolean playerIsInNether() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client != null && client.world != null && client.world.getRegistryKey() == World.NETHER;
+    }
+
+    private static boolean playerIsInEnd() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client != null && client.world != null && client.world.getRegistryKey() == World.END;
+    }
+
+    /**
+     * Narrow, render-thread-only scan for a nearby station (crafting_table / furnace).
+     * XZ range 16, Y range ±6 — ~4.5k getBlockState calls, typically <30 ms.
+     * Caller MUST already be on the Minecraft client thread.
+     */
+    private static BlockPos findNearestStationNear(ClientWorld world, ClientPlayerEntity player, String station) {
+        if (world == null || player == null) return null;
+        String blockId = "minecraft:" + station;
+        BlockPos origin = player.getBlockPos();
+        BlockPos.Mutable m = new BlockPos.Mutable();
+        BlockPos best = null;
+        double bestDistSq = Double.MAX_VALUE;
+        for (int dx = -16; dx <= 16; dx++) {
+            for (int dz = -16; dz <= 16; dz++) {
+                for (int dy = -6; dy <= 6; dy++) {
+                    m.set(origin.getX() + dx, origin.getY() + dy, origin.getZ() + dz);
+                    net.minecraft.block.BlockState state = world.getBlockState(m);
+                    if (state.isAir()) continue;
+                    if (getBlockId(state.getBlock()).equals(blockId)) {
+                        double d = m.getSquaredDistance(origin);
+                        if (d < bestDistSq) {
+                            bestDistSq = d;
+                            best = m.toImmutable();
+                        }
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private static void ensureStation(MakePlan plan, String station) {
+        if (plan.stations.contains(station)) return;
+        if (plan.hasItem(station)) { plan.stations.add(station); return; }
+        // Pre-probed on the render thread before planning starts — off-thread-safe.
+        if (plan.nearbyStations.contains(station)) { plan.stations.add(station); return; }
+        // Mark as in-progress before recursing so sub-plans that also want this
+        // station (e.g. planks recipe → ensureStation("crafting_table")) don't
+        // recurse back into makeItem and trip the cycle guard.
+        plan.stations.add(station);
+        if (!makeItem(plan, station, 1, 0)) {
+            plan.stations.remove(station);
+        }
     }
 
     private static int countRecipeIngredientSlots(RecipeData recipe, String itemId) {
@@ -989,7 +1818,9 @@ public class CommandExecutor {
         List<String> parts = new ArrayList<>();
         for (MakeStep step : plan) {
             String name = step.itemName();
-            if (step.kind() == MakeStepKind.MINE) {
+            if (step.command() != null && step.command().startsWith("#goto")) {
+                parts.add("goto " + name);
+            } else if (step.kind() == MakeStepKind.MINE) {
                 parts.add("mine " + step.count() + "x " + name);
             } else if (step.kind() == MakeStepKind.SMELT) {
                 parts.add("smelt " + step.count() + "x " + name);
@@ -1433,6 +2264,313 @@ public class CommandExecutor {
             gs(1, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:flint"))
         ), 1));
 
+        // ---- Phase 1: Essentials ----
+
+        // Netherite Ingot (4 scrap + 4 gold ingot -> 1, shapeless approximated)
+        db.put("netherite_ingot", new RecipeData("netherite_ingot", lst(
+            gs(1, lst("minecraft:netherite_scrap")), gs(2, lst("minecraft:netherite_scrap")),
+            gs(3, lst("minecraft:netherite_scrap")), gs(4, lst("minecraft:netherite_scrap")),
+            gs(5, lst("minecraft:gold_ingot")), gs(6, lst("minecraft:gold_ingot")),
+            gs(7, lst("minecraft:gold_ingot")), gs(8, lst("minecraft:gold_ingot"))
+        ), 1));
+
+        // Gold Nugget (1 gold ingot -> 9)
+        db.put("gold_nugget", new RecipeData("gold_nugget", lst(
+            gs(1, lst("minecraft:gold_ingot"))
+        ), 9));
+
+        // Compressed blocks
+        db.put("gold_block", new RecipeData("gold_block", lst(
+            gs(1, lst("minecraft:gold_ingot")), gs(2, lst("minecraft:gold_ingot")), gs(3, lst("minecraft:gold_ingot")),
+            gs(4, lst("minecraft:gold_ingot")), gs(5, lst("minecraft:gold_ingot")), gs(6, lst("minecraft:gold_ingot")),
+            gs(7, lst("minecraft:gold_ingot")), gs(8, lst("minecraft:gold_ingot")), gs(9, lst("minecraft:gold_ingot"))
+        ), 1));
+        db.put("diamond_block", new RecipeData("diamond_block", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(5, lst("minecraft:diamond")), gs(6, lst("minecraft:diamond")),
+            gs(7, lst("minecraft:diamond")), gs(8, lst("minecraft:diamond")), gs(9, lst("minecraft:diamond"))
+        ), 1));
+        db.put("emerald_block", new RecipeData("emerald_block", lst(
+            gs(1, lst("minecraft:emerald")), gs(2, lst("minecraft:emerald")), gs(3, lst("minecraft:emerald")),
+            gs(4, lst("minecraft:emerald")), gs(5, lst("minecraft:emerald")), gs(6, lst("minecraft:emerald")),
+            gs(7, lst("minecraft:emerald")), gs(8, lst("minecraft:emerald")), gs(9, lst("minecraft:emerald"))
+        ), 1));
+        db.put("copper_block", new RecipeData("copper_block", lst(
+            gs(1, lst("minecraft:copper_ingot")), gs(2, lst("minecraft:copper_ingot")), gs(3, lst("minecraft:copper_ingot")),
+            gs(4, lst("minecraft:copper_ingot")), gs(5, lst("minecraft:copper_ingot")), gs(6, lst("minecraft:copper_ingot")),
+            gs(7, lst("minecraft:copper_ingot")), gs(8, lst("minecraft:copper_ingot")), gs(9, lst("minecraft:copper_ingot"))
+        ), 1));
+
+        // Netherite Block (9 netherite ingots -> 1)
+        db.put("netherite_block", new RecipeData("netherite_block", lst(
+            gs(1, lst("minecraft:netherite_ingot")), gs(2, lst("minecraft:netherite_ingot")), gs(3, lst("minecraft:netherite_ingot")),
+            gs(4, lst("minecraft:netherite_ingot")), gs(5, lst("minecraft:netherite_ingot")), gs(6, lst("minecraft:netherite_ingot")),
+            gs(7, lst("minecraft:netherite_ingot")), gs(8, lst("minecraft:netherite_ingot")), gs(9, lst("minecraft:netherite_ingot"))
+        ), 1));
+
+        // Bread (3 wheat -> 1)
+        db.put("bread", new RecipeData("bread", lst(
+            gs(1, lst("minecraft:wheat")), gs(2, lst("minecraft:wheat")), gs(3, lst("minecraft:wheat"))
+        ), 1));
+
+        // Cookie (2 wheat + 1 cocoa_beans -> 8)
+        db.put("cookie", new RecipeData("cookie", lst(
+            gs(1, lst("minecraft:wheat")), gs(2, lst("minecraft:cocoa_beans")), gs(3, lst("minecraft:wheat"))
+        ), 8));
+
+        // Pumpkin Pie (pumpkin + sugar + egg -> 1)
+        db.put("pumpkin_pie", new RecipeData("pumpkin_pie", lst(
+            gs(1, lst("minecraft:pumpkin")), gs(2, lst("minecraft:sugar")), gs(3, lst("minecraft:egg"))
+        ), 1));
+
+        // Golden Carrot (8 gold nuggets + carrot -> 1)
+        db.put("golden_carrot", new RecipeData("golden_carrot", lst(
+            gs(1, lst("minecraft:gold_nugget")), gs(2, lst("minecraft:gold_nugget")), gs(3, lst("minecraft:gold_nugget")),
+            gs(4, lst("minecraft:gold_nugget")), gs(5, lst("minecraft:carrot")), gs(6, lst("minecraft:gold_nugget")),
+            gs(7, lst("minecraft:gold_nugget")), gs(8, lst("minecraft:gold_nugget")), gs(9, lst("minecraft:gold_nugget"))
+        ), 1));
+
+        // Bow (3 sticks + 3 string -> 1)
+        db.put("bow", new RecipeData("bow", lst(
+            gs(1, lst("minecraft:string")), gs(2, lst("minecraft:string")), gs(4, lst("minecraft:string")),
+            gs(5, lst("minecraft:stick")), gs(7, lst("minecraft:string")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
+
+        // Arrow (flint + stick + feather -> 4)
+        db.put("arrow", new RecipeData("arrow", lst(
+            gs(1, lst("minecraft:flint")), gs(4, lst("minecraft:stick")), gs(7, lst("minecraft:feather"))
+        ), 4));
+
+        // Ladder (7 sticks in H shape -> 3)
+        db.put("ladder", new RecipeData("ladder", lst(
+            gs(1, lst("minecraft:stick")), gs(3, lst("minecraft:stick")),
+            gs(4, lst("minecraft:stick")), gs(5, lst("minecraft:stick")), gs(6, lst("minecraft:stick")),
+            gs(7, lst("minecraft:stick")), gs(9, lst("minecraft:stick"))
+        ), 3));
+
+        // Shield (6 planks + 1 iron ingot -> 1)
+        db.put("shield", new RecipeData("shield", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(5, lst("minecraft:iron_ingot")), gs(6, lst("*_planks")),
+            gs(8, lst("*_planks"))
+        ), 1));
+
+        // Boat (5 planks U shape -> 1)
+        db.put("boat", new RecipeData("boat", lst(
+            gs(1, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(5, lst("*_planks")), gs(6, lst("*_planks"))
+        ), 1));
+
+        // Golden Pickaxe (3 gold ingots + 2 sticks -> 1)
+        db.put("golden_pickaxe", new RecipeData("golden_pickaxe", lst(
+            gs(1, lst("minecraft:gold_ingot")), gs(2, lst("minecraft:gold_ingot")), gs(3, lst("minecraft:gold_ingot")),
+            gs(5, lst("minecraft:stick")),
+            gs(8, lst("minecraft:stick"))
+        ), 1));
+
+        // Iron Tools
+        db.put("iron_shovel", new RecipeData("iron_shovel", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(4, lst("minecraft:stick")), gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("iron_axe", new RecipeData("iron_axe", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:stick")),
+            gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("iron_sword", new RecipeData("iron_sword", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(4, lst("minecraft:iron_ingot")), gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("iron_hoe", new RecipeData("iron_hoe", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:stick")), gs(7, lst("minecraft:stick"))
+        ), 1));
+
+        // Diamond Tools
+        db.put("diamond_sword", new RecipeData("diamond_sword", lst(
+            gs(1, lst("minecraft:diamond")), gs(4, lst("minecraft:diamond")), gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("diamond_axe", new RecipeData("diamond_axe", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(5, lst("minecraft:stick")),
+            gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("diamond_shovel", new RecipeData("diamond_shovel", lst(
+            gs(1, lst("minecraft:diamond")), gs(4, lst("minecraft:stick")), gs(7, lst("minecraft:stick"))
+        ), 1));
+        db.put("diamond_hoe", new RecipeData("diamond_hoe", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:stick")), gs(7, lst("minecraft:stick"))
+        ), 1));
+
+        // Iron Armor
+        db.put("iron_helmet", new RecipeData("iron_helmet", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
+        ), 1));
+        db.put("iron_chestplate", new RecipeData("iron_chestplate", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 1));
+        db.put("iron_leggings", new RecipeData("iron_leggings", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 1));
+        db.put("iron_boots", new RecipeData("iron_boots", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // Diamond Armor
+        db.put("diamond_helmet", new RecipeData("diamond_helmet", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(6, lst("minecraft:diamond"))
+        ), 1));
+        db.put("diamond_chestplate", new RecipeData("diamond_chestplate", lst(
+            gs(1, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(5, lst("minecraft:diamond")), gs(6, lst("minecraft:diamond")),
+            gs(7, lst("minecraft:diamond")), gs(8, lst("minecraft:diamond")), gs(9, lst("minecraft:diamond"))
+        ), 1));
+        db.put("diamond_leggings", new RecipeData("diamond_leggings", lst(
+            gs(1, lst("minecraft:diamond")), gs(2, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(6, lst("minecraft:diamond")),
+            gs(7, lst("minecraft:diamond")), gs(9, lst("minecraft:diamond"))
+        ), 1));
+        db.put("diamond_boots", new RecipeData("diamond_boots", lst(
+            gs(1, lst("minecraft:diamond")), gs(3, lst("minecraft:diamond")),
+            gs(4, lst("minecraft:diamond")), gs(6, lst("minecraft:diamond"))
+        ), 1));
+
+        // ---- Phase 2: Redstone / Utility ----
+
+        // Note Block (8 planks + redstone -> 1)
+        db.put("note_block", new RecipeData("note_block", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(5, lst("minecraft:redstone")), gs(6, lst("*_planks")),
+            gs(7, lst("*_planks")), gs(8, lst("*_planks")), gs(9, lst("*_planks"))
+        ), 1));
+
+        // Dispenser (7 cobblestone + bow + redstone -> 1)
+        db.put("dispenser", new RecipeData("dispenser", lst(
+            gs(1, lst("minecraft:cobblestone")), gs(2, lst("minecraft:cobblestone")), gs(3, lst("minecraft:cobblestone")),
+            gs(4, lst("minecraft:cobblestone")), gs(5, lst("minecraft:bow")), gs(6, lst("minecraft:cobblestone")),
+            gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:redstone")), gs(9, lst("minecraft:cobblestone"))
+        ), 1));
+
+        // Dropper (7 cobblestone + redstone -> 1)
+        db.put("dropper", new RecipeData("dropper", lst(
+            gs(1, lst("minecraft:cobblestone")), gs(2, lst("minecraft:cobblestone")), gs(3, lst("minecraft:cobblestone")),
+            gs(4, lst("minecraft:cobblestone")), gs(6, lst("minecraft:cobblestone")),
+            gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:redstone")), gs(9, lst("minecraft:cobblestone"))
+        ), 1));
+
+        // Observer (6 cobblestone + redstone + quartz -> 1)
+        db.put("observer", new RecipeData("observer", lst(
+            gs(1, lst("minecraft:cobblestone")), gs(2, lst("minecraft:cobblestone")), gs(3, lst("minecraft:cobblestone")),
+            gs(4, lst("minecraft:redstone")), gs(5, lst("minecraft:redstone")), gs(6, lst("minecraft:nether_quartz")),
+            gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:cobblestone")), gs(9, lst("minecraft:cobblestone"))
+        ), 1));
+
+        // Piston (3 planks + 4 cobblestone + iron + redstone -> 1)
+        db.put("piston", new RecipeData("piston", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("minecraft:cobblestone")), gs(5, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:cobblestone")),
+            gs(7, lst("minecraft:cobblestone")), gs(8, lst("minecraft:redstone")), gs(9, lst("minecraft:cobblestone"))
+        ), 1));
+
+        // Sticky Piston (piston + slime_ball -> 1)
+        // NOTE: slime_ball requires mob kill; not automatically craftable
+        // db.put("sticky_piston", ...)  -- SKIPPED: no slime_ball source
+
+        // Hopper (5 iron + chest -> 1)
+        db.put("hopper", new RecipeData("hopper", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:chest")), gs(6, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot"))
+        ), 1));
+
+        // TNT (4 sand + 5 gunpowder -> 1)
+        db.put("tnt", new RecipeData("tnt", lst(
+            gs(1, lst("minecraft:gunpowder")), gs(2, lst("minecraft:sand")), gs(3, lst("minecraft:gunpowder")),
+            gs(4, lst("minecraft:sand")), gs(5, lst("minecraft:gunpowder")), gs(6, lst("minecraft:sand")),
+            gs(7, lst("minecraft:gunpowder")), gs(8, lst("minecraft:sand")), gs(9, lst("minecraft:gunpowder"))
+        ), 1));
+
+        // ---- Phase 3: Building / Decoration ----
+
+        // Stone Bricks (2x2 stone -> 4)
+        db.put("stone_bricks", new RecipeData("stone_bricks", lst(
+            gs(1, lst("minecraft:stone")), gs(2, lst("minecraft:stone")),
+            gs(4, lst("minecraft:stone")), gs(5, lst("minecraft:stone"))
+        ), 4));
+
+        // Bricks (2x2 brick -> 4)
+        db.put("bricks", new RecipeData("bricks", lst(
+            gs(1, lst("minecraft:brick")), gs(2, lst("minecraft:brick")),
+            gs(4, lst("minecraft:brick")), gs(5, lst("minecraft:brick"))
+        ), 4));
+
+        // Nether Bricks (2x2 nether_brick -> 4)
+        db.put("nether_bricks", new RecipeData("nether_bricks", lst(
+            gs(1, lst("minecraft:nether_brick")), gs(2, lst("minecraft:nether_brick")),
+            gs(4, lst("minecraft:nether_brick")), gs(5, lst("minecraft:nether_brick"))
+        ), 4));
+
+        // Quartz Block (2x2 quartz -> 4)
+        db.put("quartz_block", new RecipeData("quartz_block", lst(
+            gs(1, lst("minecraft:quartz")), gs(2, lst("minecraft:quartz")),
+            gs(4, lst("minecraft:quartz")), gs(5, lst("minecraft:quartz"))
+        ), 4));
+
+        // Glass Pane (6 glass in bottom 2 rows -> 16)
+        db.put("glass_pane", new RecipeData("glass_pane", lst(
+            gs(1, lst("minecraft:glass")), gs(2, lst("minecraft:glass")), gs(3, lst("minecraft:glass")),
+            gs(4, lst("minecraft:glass")), gs(5, lst("minecraft:glass")), gs(6, lst("minecraft:glass"))
+        ), 16));
+
+        // Iron Bars (6 iron ingots in bottom 2 rows -> 16)
+        db.put("iron_bars", new RecipeData("iron_bars", lst(
+            gs(1, lst("minecraft:iron_ingot")), gs(2, lst("minecraft:iron_ingot")), gs(3, lst("minecraft:iron_ingot")),
+            gs(4, lst("minecraft:iron_ingot")), gs(5, lst("minecraft:iron_ingot")), gs(6, lst("minecraft:iron_ingot"))
+        ), 16));
+
+        // Sign (6 planks + stick -> 3)
+        db.put("sign", new RecipeData("sign", lst(
+            gs(1, lst("*_planks")), gs(2, lst("*_planks")), gs(3, lst("*_planks")),
+            gs(4, lst("*_planks")), gs(5, lst("*_planks")), gs(6, lst("*_planks")),
+            gs(8, lst("minecraft:stick"))
+        ), 3));
+
+        // Item Frame (8 sticks + leather -> 1)
+        db.put("item_frame", new RecipeData("item_frame", lst(
+            gs(1, lst("minecraft:stick")), gs(2, lst("minecraft:stick")), gs(3, lst("minecraft:stick")),
+            gs(4, lst("minecraft:stick")), gs(5, lst("minecraft:leather")), gs(6, lst("minecraft:stick")),
+            gs(7, lst("minecraft:stick")), gs(8, lst("minecraft:stick")), gs(9, lst("minecraft:stick"))
+        ), 1));
+
+        // Painting (8 sticks + wool -> 1)
+        db.put("painting", new RecipeData("painting", lst(
+            gs(1, lst("minecraft:stick")), gs(2, lst("minecraft:stick")), gs(3, lst("minecraft:stick")),
+            gs(4, lst("minecraft:stick")), gs(5, lst("minecraft:white_wool")), gs(6, lst("minecraft:stick")),
+            gs(7, lst("minecraft:stick")), gs(8, lst("minecraft:stick")), gs(9, lst("minecraft:stick"))
+        ), 1));
+
+        // Enchanting Table (book + 2 diamond + 4 obsidian -> 1)
+        db.put("enchanting_table", new RecipeData("enchanting_table", lst(
+            gs(2, lst("minecraft:book")),
+            gs(4, lst("minecraft:diamond")), gs(5, lst("minecraft:obsidian")), gs(6, lst("minecraft:diamond")),
+            gs(7, lst("minecraft:obsidian")), gs(8, lst("minecraft:obsidian")), gs(9, lst("minecraft:obsidian"))
+        ), 1));
+
+        // Anvil (3 iron_block + 4 iron_ingot -> 1)
+        db.put("anvil", new RecipeData("anvil", lst(
+            gs(1, lst("minecraft:iron_block")), gs(2, lst("minecraft:iron_block")), gs(3, lst("minecraft:iron_block")),
+            gs(5, lst("minecraft:iron_ingot")),
+            gs(7, lst("minecraft:iron_ingot")), gs(8, lst("minecraft:iron_ingot")), gs(9, lst("minecraft:iron_ingot"))
+        ), 1));
+
         return db;
     }
 
@@ -1598,7 +2736,7 @@ public class CommandExecutor {
             + "\"supports_typed_actions\":true,"
             + "\"default_provider\":\"baritone_chat\","
             + "\"providers\":[\"baritone_chat\"],"
-            + "\"action_types\":[\"move\",\"mine\",\"follow\",\"cancel\",\"raw_command\",\"craft\"],"
+            + "\"action_types\":[\"move\",\"mine\",\"follow\",\"cancel\",\"raw_command\",\"craft\",\"attack\"],"
             + "\"version\":\"1.0.0\""
             + "}";
     }
@@ -1611,6 +2749,7 @@ public class CommandExecutor {
             + "\"#mine count block\","
             + "\"#follow player <name>\","
             + "\"#cancel\","
+            + "\"attack <target_type>\","
             + "\"chat: <message>\""
             + "]";
     }
@@ -1731,5 +2870,44 @@ public class CommandExecutor {
             end++;
         }
         return (end > i) ? json.substring(i, end) : null;
+    }
+
+    private static String extractJsonObject(String json, String key) {
+        String search = "\"" + key + "\"";
+        int ki = json.indexOf(search);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + search.length());
+        if (colon < 0) return null;
+        int start = json.indexOf('{', colon + 1);
+        if (start < 0) return null;
+        int depth = 0;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return json.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void sleepQuietly(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
+
+    private static boolean isHostile(net.minecraft.entity.Entity e) {
+        String type = e.getType().toString().toLowerCase();
+        return type.contains("zombie") || type.contains("skeleton") || type.contains("creeper")
+                || type.contains("spider") || type.contains("enderman") || type.contains("witch")
+                || type.contains("phantom") || type.contains("slime") || type.contains("drowned")
+                || type.contains("husk") || type.contains("stray") || type.contains("pillager")
+                || type.contains("vindicator") || type.contains("evoker") || type.contains("ravager")
+                || type.contains("vex") || type.contains("silverfish") || type.contains("blaze")
+                || type.contains("ghast") || type.contains("magma_cube") || type.contains("piglin")
+                || type.contains("hoglin") || type.contains("zoglin") || type.contains("wither_skeleton")
+                || type.contains("guardian") || type.contains("elder_guardian");
     }
 }

@@ -6,6 +6,9 @@ import { buildBridgeTopographySystemMessage } from './topography.js';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import { wiki } from '../utils/MinecraftWiki.js';
 import settings from '../agent/settings.js';
+import { EventDetector } from './event_detector.js';
+import { DriveModel } from './drive_model.js';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 
 const POLL_MIN_MS = 800;
 const POLL_DEFAULT_MS = 2000;
@@ -183,6 +186,72 @@ function getAnyLogCount(counts) {
     return total;
 }
 
+const NETHER_BLOCKS = new Set([
+    'ancient_debris', 'netherrack', 'nether_quartz_ore', 'glowstone', 'soul_sand', 'soul_soil',
+    'magma_block', 'nether_gold_ore', 'blackstone', 'basalt', 'smooth_basalt',
+    'crimson_nylium', 'warped_nylium', 'crimson_stem', 'warped_stem',
+    'crimson_hyphae', 'warped_hyphae', 'crimson_planks', 'warped_planks',
+    'nether_bricks', 'red_nether_bricks', 'cracked_nether_bricks', 'chiseled_nether_bricks',
+    'nether_brick_fence', 'nether_brick_slab', 'nether_brick_stairs', 'nether_brick_wall',
+    'red_nether_brick_slab', 'red_nether_brick_stairs', 'red_nether_brick_wall',
+    'quartz_block', 'chiseled_quartz_block', 'quartz_pillar', 'quartz_bricks',
+    'quartz_slab', 'quartz_stairs', 'smooth_quartz', 'smooth_quartz_slab', 'smooth_quartz_stairs',
+    'shroomlight', 'weeping_vines', 'twisting_vines', 'nether_sprouts', 'crimson_roots', 'warped_roots',
+    'crimson_fungus', 'warped_fungus', 'soul_fire', 'soul_torch', 'soul_lantern', 'soul_campfire',
+    'netherite_block', 'nether_wart_block', 'warped_wart_block',
+    'gilded_blackstone', 'polished_blackstone', 'polished_blackstone_bricks',
+    'cracked_polished_blackstone_bricks', 'chiseled_polished_blackstone',
+    'polished_blackstone_slab', 'polished_blackstone_stairs', 'polished_blackstone_wall',
+    'polished_blackstone_brick_slab', 'polished_blackstone_brick_stairs', 'polished_blackstone_brick_wall',
+    'polished_blackstone_button', 'polished_blackstone_pressure_plate',
+]);
+
+const MINEABLE_BLOCK_MAP = {
+    'diamond': 'diamond_ore',
+    'emerald': 'emerald_ore',
+    'redstone': 'redstone_ore',
+    'lapis_lazuli': 'lapis_ore',
+    'coal': 'coal_ore',
+    'iron_ingot': 'iron_ore',
+    'gold_ingot': 'gold_ore',
+    'copper_ingot': 'copper_ore',
+    'netherite_scrap': 'ancient_debris',
+    'raw_iron': 'iron_ore',
+    'raw_gold': 'gold_ore',
+    'raw_copper': 'copper_ore',
+    'coal': 'coal_ore',
+    'cobblestone': 'cobblestone',
+    'stone': 'stone',
+    'netherrack': 'netherrack',
+    'glowstone': 'glowstone',
+    'soul_sand': 'soul_sand',
+    'magma_block': 'magma_block',
+    'nether_quartz': 'nether_quartz_ore',
+    'quartz': 'nether_quartz_ore',
+    'ancient_debris': 'ancient_debris',
+    'obsidian': 'obsidian',
+    'blackstone': 'blackstone',
+    'basalt': 'basalt',
+    'crimson_stem': 'crimson_stem',
+    'warped_stem': 'warped_stem',
+    'nether_gold_ore': 'nether_gold_ore',
+};
+
+const END_BLOCKS = new Set([
+    'end_stone', 'end_stone_bricks', 'end_stone_brick_slab', 'end_stone_brick_stairs', 'end_stone_brick_wall',
+    'purpur_block', 'purpur_pillar', 'purpur_slab', 'purpur_stairs',
+    'chorus_plant', 'chorus_flower', 'chorus_fruit', 'popped_chorus_fruit',
+    'end_rod', 'dragon_head', 'dragon_egg',
+    'shulker_shell', 'elytra',
+]);
+
+function getItemDimension(itemName) {
+    const name = normalizeItemName(itemName);
+    if (NETHER_BLOCKS.has(name)) return 'nether';
+    if (END_BLOCKS.has(name)) return 'end';
+    return 'overworld';
+}
+
 function findRequestedCraftItem(message) {
     const lower = String(message || '').toLowerCase();
     if (!/\b(make|craft|get|create|build)\b/.test(lower)) return null;
@@ -191,7 +260,16 @@ function findRequestedCraftItem(message) {
     const candidates = Object.keys(recipes)
         .filter(item => normalizedMessage.includes(normalizeItemName(item)))
         .sort((a, b) => b.length - a.length);
-    return candidates[0] || null;
+    if (candidates[0]) return candidates[0];
+    // Also check smelting recipes that are crafted (e.g. netherite_ingot)
+    const smelting = wiki.data?.recipes?.smelting || {};
+    const smeltCandidates = Object.keys(smelting)
+        .filter(item => {
+            const r = smelting[item];
+            return r.method === 'crafting_table' && normalizedMessage.includes(normalizeItemName(item));
+        })
+        .sort((a, b) => b.length - a.length);
+    return smeltCandidates[0] || null;
 }
 
 function inferActiveTaskDecision(message) {
@@ -418,6 +496,22 @@ export class BridgeAgent {
         this._continuationSource = null; // original source (for continuation history)
         this._lastState = null;  // most recent state snapshot
 
+        // ── Proactive behavior layer ───────────────────────────────────────────
+        this.eventDetector = new EventDetector();
+        this.driveModel = new DriveModel();
+        this.episodicMemory = {
+            lastSpokeAt: 0,
+            lastSpokeTopic: '',
+            lastSatisfiedDrive: '',
+            lastEventReacted: '',
+            lastPlayerChatAnsweredAt: 0,
+        };
+        this._nextAmbientTickAt = 0;
+        this._ambientBucketCredits = settings.bridge_ambient_budget_per_hour || 4;
+        this._ambientLastRefillMs = Date.now();
+        this._ambientLogPath = `./bots/${this.name}/ambient.log`;
+        mkdirSync(`./bots/${this.name}`, { recursive: true });
+
         // ── Fabric bridge HTTP client ──────────────────────────────────────────
         this.bridge = new FabricBridge(settings.bridge_url || 'http://localhost:8765');
         this._lastStateStr = '';
@@ -440,7 +534,10 @@ export class BridgeAgent {
         await this.prompter.initExamples();
 
         if (load_mem) {
-            this.history.load();
+            const loadedData = this.history.load();
+            if (loadedData && loadedData.episodic) {
+                this.episodicMemory = { ...this.episodicMemory, ...loadedData.episodic };
+            }
         }
 
         // Verify mod reachability
@@ -459,6 +556,16 @@ export class BridgeAgent {
         } else {
             this._bridgeReachable = false;
             sendLogToUI(`${this.name}: ⚠️  Fabric bridge mod not reachable at ${this.bridge.url} — waiting...`);
+        }
+
+        // Log proactive mode
+        const proactive = settings.bridge_proactive_enabled !== false;
+        const ambient = settings.bridge_ambient_enabled !== false;
+        const events = settings.bridge_events_enabled !== false;
+        if (proactive) {
+            sendLogToUI(`${this.name}: proactive=on, ambient=${ambient ? 'on' : 'off'}, events=${events ? 'on' : 'off'}`);
+        } else {
+            sendLogToUI(`${this.name}: proactive=OFF (turn-based only)`);
         }
 
         if (init_message) {
@@ -677,12 +784,31 @@ export class BridgeAgent {
         const item = findRequestedCraftItem(message);
         if (!item) return [];
 
-        const recipe = wiki.data?.recipes?.crafting?.[item];
+        // Check crafting recipes first, then smelting recipes with method crafting_table
+        let recipe = wiki.data?.recipes?.crafting?.[item];
+        if (!recipe?.ingredients) {
+            const smelt = wiki.data?.recipes?.smelting?.[item];
+            if (smelt?.method === 'crafting_table' && smelt.input) {
+                // Convert smithing-table-style recipe to ingredients map
+                const parts = smelt.input.split('+').map(s => s.trim());
+                const ingredients = {};
+                // Try to parse quantities from notes (e.g. "4 netherite_scrap + 4 gold_ingot")
+                const notes = smelt.notes || '';
+                for (const p of parts) {
+                    const qtyMatch = notes.match(new RegExp(`(\\d+)\\s*${p.replace(/_/g, '[_ ]')}`));
+                    ingredients[p] = qtyMatch ? Number(qtyMatch[1]) : 1;
+                }
+                recipe = { ingredients };
+            }
+        }
         if (!recipe?.ingredients) return [];
 
         const counts = countInventoryItems(state?.inventory || []);
+        const currentDim = (state?.dimension || 'minecraft:overworld').replace('minecraft:', '');
         const actions = [];
         const plannedCrafts = new Set();
+        const plannedMines = new Set();
+        const plannedSmelts = new Set();
 
         const addCraft = (craftItem, count = 1) => {
             const key = `${craftItem}:${count}`;
@@ -691,54 +817,114 @@ export class BridgeAgent {
             actions.push({ type: 'craft', provider: 'baritone_chat', item: craftItem, count });
         };
 
+        const addMine = (target, count) => {
+            const key = `${target}:${count}`;
+            if (plannedMines.has(key)) return;
+            plannedMines.add(key);
+            actions.push({ type: 'mine', provider: 'baritone_chat', target, count });
+        };
+
+        const addSmelt = (target) => {
+            if (plannedSmelts.has(target)) return;
+            plannedSmelts.add(target);
+            actions.push({ type: 'raw_command', provider: 'baritone_chat', command: `#task smelt ${target}` });
+        };
+
         const have = (ingredient) => {
             const name = normalizeItemName(ingredient);
             if (name === 'oak_planks') return getAnyPlankCount(counts);
             return counts.get(name) || 0;
         };
 
-        const ensureSticks = (needed) => {
-            const current = counts.get('stick') || 0;
-            const missing = Math.max(0, needed - current);
-            if (missing <= 0) return true;
+        const resolveIngredient = (name, qtyNeeded, depth = 0) => {
+            if (depth > 3) return false; // prevent infinite recursion
+            let stillNeed = Math.max(0, qtyNeeded - have(name));
+            if (stillNeed <= 0) return true;
 
-            const planksAvailable = getAnyPlankCount(counts);
-            const logsAvailable = getAnyLogCount(counts);
-            if (planksAvailable <= 0 && logsAvailable <= 0) {
-                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'wood', count: 1 });
+            // Special: sticks → craft from planks (handled by bridge mod)
+            if (name === 'stick') {
+                const current = counts.get('stick') || 0;
+                if (current < qtyNeeded) {
+                    const planksAvailable = getAnyPlankCount(counts);
+                    const logsAvailable = getAnyLogCount(counts);
+                    if (planksAvailable <= 0 && logsAvailable <= 0) {
+                        addMine('wood', 1);
+                    }
+                }
+                return true;
             }
+
+            // Special: any planks → mine wood if none available
+            if (name.endsWith('_planks')) {
+                if (getAnyPlankCount(counts) < qtyNeeded && getAnyLogCount(counts) <= 0) {
+                    addMine('wood', 1);
+                }
+                addCraft(name, stillNeed);
+                return true;
+            }
+
+            // Is this item produced by smelting something?
+            const smeltRecipe = wiki.data?.recipes?.smelting?.[name];
+            if (smeltRecipe?.input && smeltRecipe.method === 'furnace') {
+                const smeltInputRaw = normalizeItemName(smeltRecipe.input);
+                const smeltInputBlock = MINEABLE_BLOCK_MAP[smeltInputRaw] || smeltInputRaw;
+
+                // Count everything we have that can become this item
+                const haveOutput = counts.get(name) || 0;
+                const haveRaw = counts.get(smeltInputRaw) || 0;
+                const haveOre = counts.get(smeltInputBlock) || 0;
+                const haveCombined = haveOutput + haveRaw + haveOre;
+
+                stillNeed = Math.max(0, qtyNeeded - haveCombined);
+
+                // Only smelt if we're short on the finished output
+                const outputMissing = Math.max(0, qtyNeeded - haveOutput);
+                if (outputMissing > 0) {
+                    addSmelt(smeltInputRaw);
+                }
+
+                if (stillNeed > 0) {
+                    addMine(smeltInputBlock, stillNeed);
+                }
+                return true;
+            }
+
+            // Not a smelting output, mine directly
+            const mineTarget = MINEABLE_BLOCK_MAP[name] || name;
+            addMine(mineTarget, stillNeed);
             return true;
         };
 
+        // Resolve all ingredients
         for (const [ingredient, rawQty] of Object.entries(recipe.ingredients)) {
             const name = normalizeItemName(ingredient);
             const qtyNeeded = Number(rawQty) || 1;
-            const qtyHave = have(name);
-            const missing = Math.max(0, qtyNeeded - qtyHave);
-            if (missing <= 0) continue;
-
-            if (name === 'stick') {
-                ensureSticks(qtyNeeded);
-            } else if (name === 'oak_planks') {
-                if (getAnyPlankCount(counts) < qtyNeeded && getAnyLogCount(counts) <= 0) {
-                    actions.push({ type: 'mine', provider: 'baritone_chat', target: 'wood', count: 1 });
-                }
-                addCraft('oak_planks', missing);
-            } else if (name === 'cobblestone') {
-                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'cobblestone', count: missing });
-            } else if (name === 'iron_ingot') {
-                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'iron_ore', count: missing });
-                actions.push({ type: 'raw_command', provider: 'baritone_chat', command: '#task smelt iron_ore' });
-            } else if (name === 'coal') {
-                actions.push({ type: 'mine', provider: 'baritone_chat', target: 'coal_ore', count: missing });
-            } else {
-                return [];
-            }
+            if (!resolveIngredient(name, qtyNeeded)) return [];
         }
 
-        if (!actions.length) return [];
-        addCraft(item, 1);
-        return actions;
+        // Separate action types so we can order them correctly:
+        // portal → mines → portal return → smelts → crafts
+        const mines = actions.filter(a => a.type === 'mine');
+        const smelts = actions.filter(a => a.type === 'raw_command' && a.command?.startsWith('#task smelt'));
+        const crafts = actions.filter(a => a.type === 'craft');
+
+        const ordered = [];
+        const nonOverworldMines = mines.filter(a => getItemDimension(a.target) !== 'overworld');
+
+        if (nonOverworldMines.length > 0) {
+            if (currentDim === 'overworld') {
+                ordered.push({ type: 'raw_command', provider: 'baritone_chat', command: '#goto nether_portal' });
+            }
+            ordered.push(...mines);
+            ordered.push({ type: 'raw_command', provider: 'baritone_chat', command: '#goto nether_portal' });
+        } else {
+            ordered.push(...mines);
+        }
+        ordered.push(...smelts);
+        ordered.push(...crafts);
+
+        ordered.push({ type: 'craft', provider: 'baritone_chat', item, count: 1 });
+        return ordered;
     }
 
     _buildActiveTaskCraftActions(message, state) {
@@ -893,7 +1079,20 @@ export class BridgeAgent {
                     continue;
                 }
 
-                // ── 4. Self-continuation check ─────────────────────────────────
+                // ── 4. World event detection ───────────────────────────────────
+                if (settings.bridge_proactive_enabled !== false && settings.bridge_events_enabled !== false) {
+                    const worldEvents = this.eventDetector.check(state);
+                    for (const ev of worldEvents) {
+                        await this._handleEvent(ev, state);
+                    }
+                }
+
+                // ── 5. Ambient tick ────────────────────────────────────────────
+                if (settings.bridge_proactive_enabled !== false && settings.bridge_ambient_enabled !== false) {
+                    await this._runAmbientTick(state);
+                }
+
+                // ── 6. Self-continuation check ─────────────────────────────────
                 // If there are no pending incoming messages but a continuation was
                 // triggered by queue completion, handle it.
                 if (this._pendingContinuation && !this._inboundQueue.length) {
@@ -1226,6 +1425,22 @@ export class BridgeAgent {
             this.history.add('system', 'Invalid structured response: expected JSON object with reply/actions.');
         }
 
+        this.episodicMemory.lastPlayerChatAnsweredAt = Date.now();
+        // Extract topic/satisfied_drive from structured response if present
+        let topic = '';
+        let satisfiedDrive = '';
+        try {
+            const json = extractJsonObjectCandidate(response);
+            if (json) {
+                const parsed = JSON.parse(json);
+                if (parsed.topic) topic = String(parsed.topic);
+                if (parsed.satisfied_drive) satisfiedDrive = String(parsed.satisfied_drive);
+            }
+        } catch {}
+        if (chat.trim() || dispatchActions.length > 0 || commands.length > 0) {
+            this._updateEpisodicMemory(response, topic, satisfiedDrive || 'social');
+        }
+
         this.history.save();
     }
 
@@ -1367,6 +1582,7 @@ export class BridgeAgent {
             this.history.add('system', `Active-task decision ${decision.decision} returned no actions or commands.`);
         }
 
+        this.episodicMemory.lastPlayerChatAnsweredAt = Date.now();
         this.history.save();
     }
 
@@ -1434,5 +1650,313 @@ export class BridgeAgent {
             },
             action: { current: 'Baritone' },
         };
+    }
+
+    // ── Proactive behavior methods ───────────────────────────────────────────
+
+    _formatEventPrompt(event, state) {
+        const dim = (state.dimension || 'overworld').replace('minecraft:', '').toUpperCase();
+        const pos = `x=${state.x}, y=${state.y}, z=${state.z}`;
+        const tag = `[${dim}] `;
+        switch (event.type) {
+            case 'night_start':
+                return `${tag}It just turned to night in Minecraft. You're at ${pos}. Hostile mobs can spawn now. React naturally: sleep if you can, comment on the darkness, mine deeper, or say nothing.`;
+            case 'sunrise':
+                return `${tag}The sun is rising. Morning has come at ${pos}.`;
+            case 'weather_start_rain':
+                return `${tag}It started raining.`;
+            case 'weather_end_rain':
+                return `${tag}The rain stopped.`;
+            case 'weather_start_thunder':
+                return `${tag}A thunderstorm started.`;
+            case 'hostile_entered_range':
+                return `${tag}Hostile mobs are nearby (${event.detail} seen). You're at ${pos}. The bot is fleeing automatically if unarmed or low HP. Narrate what you do or stay silent.`;
+            case 'low_hp':
+                return `${tag}Your health is low (${event.detail}). Consider eating, retreating, or asking for help.`;
+            case 'low_food':
+                return `${tag}Your hunger is low (${event.detail}). You should eat soon.`;
+            case 'queue_complete':
+                return `${tag}Your queued task just finished: ${event.detail}.`;
+            case 'queue_failed':
+                return `${tag}A queued task failed: ${event.detail}.`;
+            case 'new_player_nearby':
+                return `${tag}A player named "${event.detail}" is now nearby.`;
+            case 'player_left_nearby':
+                return `${tag}Player "${event.detail}" left the area.`;
+            case 'player_idle':
+                return `${tag}The player has been quiet for a while.`;
+            case 'entered_nether':
+                return `${tag}You just entered the Nether. Piglins are hostile without gold armor. Beds explode. No water.`;
+            case 'entered_overworld':
+                return `${tag}You returned to the Overworld.`;
+            case 'entered_end':
+                return `${tag}You entered the End.`;
+            default:
+                return `${tag}World event: ${event.type}${event.detail ? ' — ' + event.detail : ''}.`;
+        }
+    }
+
+    async _handleEvent(event, state) {
+        if (!state || !state.connected) return;
+        this.episodicMemory.lastEventReacted = event.type;
+        // Bump relevant drive
+        if (event.type === 'night_start' || event.type === 'hostile_entered_range') {
+            this.driveModel.bump('safety', 0.3);
+            this.driveModel.bump('rest', 0.2);
+        } else if (event.type === 'new_player_nearby') {
+            this.driveModel.bump('social', 0.3);
+        } else if (event.type === 'queue_complete') {
+            this.driveModel.bump('social', 0.15);
+        }
+
+        // Auto-flee for hostile events when unarmed or low HP
+        if (event.type === 'hostile_entered_range') {
+            const armed = this._hasWeapon(state.inventory);
+            const safe = (state.health || 0) >= 14;
+            if (!armed || !safe) {
+                await this.bridge.sendAction({ type: 'flee', distance: 24, provider: 'baritone_chat' });
+            }
+        }
+
+        const prompt = this._formatEventPrompt(event, state);
+        this.history.add('system', prompt);
+        await this._dispatchProactiveTurn(state, `event:${event.type}`);
+    }
+
+    _hasWeapon(inventory = []) {
+        for (const stack of inventory) {
+            const name = String(stack.item || '').toLowerCase();
+            if (name.includes('sword') || name.includes('axe')) return true;
+        }
+        return false;
+    }
+
+    async _runAmbientTick(state) {
+        const now = Date.now();
+        if (now < this._nextAmbientTickAt) return;
+
+        // Baseline re-eval: if suppressed, re-check in 10s. Overridden below on actual fire.
+        this._nextAmbientTickAt = now + 10_000;
+
+        this._maybeRefillAmbientBucket();
+        if (this._ambientBucketCredits <= 0) {
+            this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'budget', decision: 'silent' });
+            return;
+        }
+
+        // Suppressors
+        const queue = state.queue || {};
+        if (queue.status === 'executing' || queue.status === 'draining' || queue.paused) {
+            this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'queue_busy', decision: 'silent' });
+            return;
+        }
+        if ((state.player_idle_ms || 0) > 300_000) {
+            this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'player_afk', decision: 'silent' });
+            return;
+        }
+        if (now - this.episodicMemory.lastSpokeAt < 90_000) {
+            this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'recent_speech', decision: 'silent' });
+            return;
+        }
+        if (now - this.episodicMemory.lastPlayerChatAnsweredAt < 60_000) {
+            this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'conversation_turn', decision: 'silent' });
+            return;
+        }
+
+        // Tick drives and decide
+        const dtMs = now - this.driveModel.lastTickMs;
+        this.driveModel.tick(dtMs);
+
+        const flavors = ['observation', 'recall', 'intent'];
+        const flavor = flavors[Math.floor(Math.random() * flavors.length)];
+        const prompt = this._formatAmbientPrompt(state, flavor);
+        this.history.add('system', prompt);
+
+        const response = await this._dispatchProactiveTurn(state, 'ambient');
+
+        // Determine decision from parsed response
+        let decision = 'silent';
+        let suppressedBy = null;
+        if (!response || !response.trim()) {
+            decision = 'silent';
+            suppressedBy = 'empty_response';
+        } else {
+            const wantStructured = settings.bridge_structured_output === true;
+            const parsed = parseBridgeResponse(response, wantStructured);
+            const hasChat = parsed.chat && parsed.chat.trim().length > 0
+                && !/^(no response needed|no reply|none|n\/a)$/i.test(parsed.chat.trim());
+            if (hasChat) {
+                decision = 'speak';
+            } else if (parsed.actions.length > 0 || parsed.commands.length > 0) {
+                decision = 'silent';
+                suppressedBy = 'action_only';
+            } else {
+                decision = 'silent';
+                suppressedBy = 'empty_response';
+            }
+        }
+
+        this._ambientLog({
+            t: now, dt_ms,
+            drives: this.driveModel.getSummary(),
+            suppressed_by: suppressedBy,
+            decision,
+            satisfied_drive: this.episodicMemory.lastSatisfiedDrive,
+            topic: this.episodicMemory.lastSpokeTopic,
+            event_reacted: this.episodicMemory.lastEventReacted,
+            recent_events: (state.recent_events || []).map(e => e.type),
+        });
+
+        if (decision === 'speak') {
+            this._ambientBucketCredits -= 1;
+            // Schedule real jitter window only when tick actually fired
+            const minGap = settings.bridge_ambient_min_gap_ms || 45_000;
+            const maxGap = settings.bridge_ambient_max_gap_ms || 180_000;
+            this._nextAmbientTickAt = now + minGap + Math.random() * (maxGap - minGap);
+        }
+    }
+
+    _formatAmbientPrompt(state, flavor) {
+        const hints = this.driveModel.getActiveHints();
+        const mem = this.episodicMemory;
+        const lastSpokeAgo = mem.lastSpokeAt ? Math.round((Date.now() - mem.lastSpokeAt) / 1000) + 's' : 'never';
+        const recentEvents = (state.recent_events || []).slice(-3).map(e => e.type).join(', ') || 'none';
+
+        let base = `AMBIENT TICK — ${flavor.toUpperCase()}\n`;
+        base += `Current state: ${state.day_phase || 'unknown'}, ${state.hostile_count_nearby || 0} hostiles nearby, queue: ${state.queue?.status || 'idle'}.\n`;
+        if (hints.length > 0) {
+            base += `Drives: ${hints.join(' ')}\n`;
+        }
+        base += `Episodic memory: last spoke ${lastSpokeAgo} ago about "${mem.lastSpokeTopic || 'nothing'}".\n`;
+        base += `Recent events: ${recentEvents}.\n`;
+        base += `You may reply briefly in character, act via a single craft/mine/move action, or stay completely silent.`;
+        return base;
+    }
+
+    async _dispatchProactiveTurn(state, sourceLabel) {
+        const stateContext = this._buildStateContext(state);
+        if (stateContext) {
+            this.history.add('system', stateContext);
+        }
+
+        const history = this.history.getHistory();
+        if (settings.use_textual_topography === true && state?.surface_map) {
+            history.push({
+                role: 'system',
+                content: buildBridgeTopographySystemMessage(state.surface_map, {
+                    format: settings.textual_topography_format || 'coordinate_list'
+                })
+            });
+        }
+        const wantStructured = settings.bridge_structured_output === true;
+        if (wantStructured) {
+            history.push({
+                role: 'system',
+                content: buildBridgeSystemPrompt(settings, this.history.memory),
+            });
+        }
+
+        let response;
+        try {
+            response = await this.prompter.promptConvo(history);
+        } catch (err) {
+            console.error(`LLM error in ${sourceLabel}:`, err);
+            return '';
+        }
+        if (!response || response.trim().length === 0) return '';
+        console.log(`${this.name} ${sourceLabel} LLM response: ${response}`);
+
+        const { chat, commands, actions } = parseBridgeResponse(response, wantStructured);
+        const suppressChat = /^(no response needed|no reply|none|n\/a)$/i.test(chat.trim());
+        const chatText = suppressChat ? '' : chat;
+
+        this.history.add(this.name, response);
+
+        // Extract optional topic from structured response
+        let topic = '';
+        let satisfiedDrive = '';
+        try {
+            const json = extractJsonObjectCandidate(response);
+            if (json) {
+                const parsed = JSON.parse(json);
+                if (parsed.topic) topic = String(parsed.topic);
+                if (parsed.satisfied_drive) satisfiedDrive = String(parsed.satisfied_drive);
+            }
+        } catch {}
+
+        if (chatText.trim()) {
+            const trimmedChat = chatText.trim();
+            sendOutputToServer(this.name, trimmedChat);
+            if (settings.chat_ingame === true) {
+                this._trackSentChat(trimmedChat);
+                await this.bridge.sendCommand(`chat: ${trimmedChat}`);
+            }
+            this._updateEpisodicMemory(response, topic, satisfiedDrive || 'social');
+        } else if (actions.length > 0 || commands.length > 0) {
+            this._updateEpisodicMemory(response, topic, satisfiedDrive || 'curiosity');
+        }
+
+        if (actions.length > 0) {
+            const batchResult = await this.bridge.sendBatch(actions);
+            if (batchResult.success) {
+                this._recordQueueDispatch('action', batchResult, actions.length);
+            } else {
+                this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+            }
+        }
+        if (commands.length > 0) {
+            const batchResult = await this.bridge.sendBatchCommands(commands);
+            if (batchResult.success) {
+                this._recordQueueDispatch('command', batchResult, commands.length);
+            } else {
+                this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+            }
+        }
+
+        this.history.save();
+        return response;
+    }
+
+    _updateEpisodicMemory(response, topic, satisfiedDrive) {
+        this.episodicMemory.lastSpokeAt = Date.now();
+        if (topic) this.episodicMemory.lastSpokeTopic = topic;
+        if (satisfiedDrive) {
+            this.episodicMemory.lastSatisfiedDrive = satisfiedDrive;
+            this.driveModel.satisfy(satisfiedDrive);
+        }
+        // Persist episodic memory into the shared memory file
+        try {
+            let data = {};
+            try {
+                if (existsSync(this.history.memory_fp)) {
+                    data = JSON.parse(readFileSync(this.history.memory_fp, 'utf8'));
+                }
+            } catch {}
+            data.episodic = this.episodicMemory;
+            writeFileSync(this.history.memory_fp, JSON.stringify(data, null, 2));
+        } catch (err) {
+            console.error('Failed to persist episodic memory:', err);
+        }
+    }
+
+    _maybeRefillAmbientBucket() {
+        const budget = settings.bridge_ambient_budget_per_hour || 4;
+        const now = Date.now();
+        const refillInterval = 3_600_000 / Math.max(1, budget);
+        const elapsed = now - this._ambientLastRefillMs;
+        if (elapsed >= refillInterval) {
+            const credits = Math.floor(elapsed / refillInterval);
+            this._ambientBucketCredits = Math.min(budget, this._ambientBucketCredits + credits);
+            this._ambientLastRefillMs = now;
+        }
+    }
+
+    _ambientLog(entry) {
+        try {
+            const line = JSON.stringify(entry) + '\n';
+            appendFileSync(this._ambientLogPath, line, 'utf8');
+        } catch (err) {
+            console.error('Failed to write ambient log:', err);
+        }
     }
 }

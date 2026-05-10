@@ -90,9 +90,17 @@ export class FabricBridge {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ actions }),
-                signal: AbortSignal.timeout(8000),
+                signal: AbortSignal.timeout(25000),
             });
-            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+            if (!res.ok) {
+                // Surface the planner's actual error message instead of just the status code.
+                let detail = `HTTP ${res.status}`;
+                try {
+                    const body = await res.text();
+                    if (body) detail += `: ${body}`;
+                } catch {}
+                return { success: false, error: detail };
+            }
             return await res.json();
         } catch (err) {
             return { success: false, error: err.message };

@@ -6,6 +6,7 @@ export class AgentProcess {
         this.name = name;
         this.port = port;
         this.bridge_mode = bridge_mode;
+        this._awaitingManualRestart = false;
     }
 
     start(load_memory=false, init_message=null, count_id=0) {
@@ -35,10 +36,20 @@ export class AgentProcess {
             console.log(`Agent process exited with code ${code} and signal ${signal}`);
             this.running = false;
             logoutAgent(this.name);
-            
+
+            // Skip ALL auto-restart logic if forceRestart() is driving the
+            // lifecycle — it attaches its own .once('exit') handler.
+            if (this._awaitingManualRestart) {
+                this._awaitingManualRestart = false;
+                return;
+            }
+
+            // An exit code > 1 used to kill the parent MindServer ("if my
+            // child dies messily, so do I"). That turns a child-side bug
+            // into total system failure. Log loudly and move on.
             if (code > 1) {
-                console.log(`Ending task`);
-                process.exit(code);
+                console.error(`Agent ${this.name} exited with code ${code}. Not restarting (manual restart required).`);
+                return;
             }
 
             if (code !== 0 && signal !== 'SIGINT') {
@@ -48,7 +59,7 @@ export class AgentProcess {
                     return;
                 }
                 console.log('Restarting agent...');
-                this.start(true, 'Agent process restarted.', count_id, this.port);
+                this.start(true, 'Agent process restarted.', count_id);
                 last_restart = Date.now();
             }
         });
@@ -68,7 +79,10 @@ export class AgentProcess {
     forceRestart() {
         if (this.running && this.process && !this.process.killed) {
             console.log(`Agent process for ${this.name} is still running. Attempting to force restart.`);
-            
+
+            // Flag so the auto-exit handler defers to the .once('exit') below.
+            this._awaitingManualRestart = true;
+
             const restartTimeout = setTimeout(() => {
                 console.warn(`Agent ${this.name} did not stop in time. It might be stuck.`);
             }, 5000); // 5 seconds to exit

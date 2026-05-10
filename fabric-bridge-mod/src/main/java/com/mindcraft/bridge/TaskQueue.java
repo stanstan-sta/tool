@@ -55,8 +55,13 @@ public class TaskQueue {
     private volatile boolean paused = false;
     private volatile String lastFailureReason = null;
     private volatile boolean enabled = true;
+    private volatile long lastActivityMs = System.currentTimeMillis();
 
     private TaskQueue() {}
+
+    public long getLastActivityMs() {
+        return lastActivityMs;
+    }
 
     public boolean isEnabled() {
         return enabled;
@@ -88,6 +93,7 @@ public class TaskQueue {
             pending.add(classify(command, null));
             queued++;
         }
+        lastActivityMs = System.currentTimeMillis();
         dispatchIfIdle();
         return queued;
     }
@@ -107,6 +113,7 @@ public class TaskQueue {
         discardPausedFailure();
 
         pending.add(classify(command, postAction));
+        lastActivityMs = System.currentTimeMillis();
         dispatchIfIdle();
         return 1;
     }
@@ -146,6 +153,8 @@ public class TaskQueue {
             paused = true;
             activePostActionStarted = false;
             activeSettleStarted = false;
+            lastActivityMs = System.currentTimeMillis();
+            StateCollector.pushWorldEvent("queue_failed", active.command() + " - " + reason);
             return;
         }
 
@@ -160,6 +169,7 @@ public class TaskQueue {
         activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
+        lastActivityMs = System.currentTimeMillis();
         CommandExecutor.execute("#cancel");
     }
 
@@ -190,6 +200,8 @@ public class TaskQueue {
         paused = true;
         activePostActionStarted = false;
         activeSettleStarted = false;
+        lastActivityMs = System.currentTimeMillis();
+        StateCollector.pushWorldEvent("queue_failed", active.command() + " - " + reason);
         return true;
     }
 
@@ -539,6 +551,51 @@ public class TaskQueue {
         } catch (InterruptedException ignored) {}
     }
 
+    private void maybeIdleBleed(PendingTask task, String reason) {
+        if (task.kind() != TaskKind.BARITONE_TASK && task.kind() != TaskKind.RAW_BARITONE) return;
+        if (reason != null && (reason.contains("timeout") || reason.contains("failed"))) return;
+        long bleed = 300L + (long) (Math.random() * 500L);
+        sleepQuietly(bleed);
+        maybeLookAtNearestPlayer(task);
+    }
+
+    private void maybeLookAtNearestPlayer(PendingTask task) {
+        if (task == null) return;
+        String cmd = String.valueOf(task.command()).trim().toLowerCase();
+        boolean nextIsSocial = cmd.startsWith("chat:") || task.kind() == TaskKind.BRIDGE_CRAFT;
+        if (!nextIsSocial) return;
+        lookAtNearestPlayer();
+    }
+
+    private static void lookAtNearestPlayer() {
+        try {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client == null || client.world == null || client.player == null) return;
+            net.minecraft.entity.player.PlayerEntity self = client.player;
+            net.minecraft.util.math.Box box = self.getBoundingBox().expand(32);
+            java.util.List<net.minecraft.entity.Entity> players = client.world.getOtherEntities(self, box,
+                    e -> e instanceof net.minecraft.entity.player.PlayerEntity);
+            net.minecraft.entity.player.PlayerEntity nearest = null;
+            double nearestDist = Double.MAX_VALUE;
+            for (net.minecraft.entity.Entity e : players) {
+                double d = e.squaredDistanceTo(self);
+                if (d < nearestDist) {
+                    nearestDist = d;
+                    nearest = (net.minecraft.entity.player.PlayerEntity) e;
+                }
+            }
+            if (nearest == null) return;
+            double dx = nearest.getX() - self.getX();
+            double dy = nearest.getY() - self.getY();
+            double dz = nearest.getZ() - self.getZ();
+            double distXZ = Math.sqrt(dx * dx + dz * dz);
+            float yaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+            float pitch = (float) (Math.toDegrees(Math.atan2(-dy, distXZ)));
+            self.setYaw(yaw);
+            self.setPitch(pitch);
+        } catch (Throwable ignored) {}
+    }
+
     private boolean completeActiveId(long id, String reason) {
         PendingTask active = activeTask;
         if (active == null || active.id() != id) return false;
@@ -572,9 +629,14 @@ public class TaskQueue {
         activeSettleStarted = false;
         paused = false;
         lastFailureReason = null;
+        lastActivityMs = System.currentTimeMillis();
         if (reason != null) {
             chatDebug("[Bridge] DEBUG: completed " + active.command() + " by " + reason);
         }
+        if (reason == null || !(reason.contains("timeout") || reason.contains("failed"))) {
+            StateCollector.pushWorldEvent("queue_complete", active.command());
+        }
+        maybeIdleBleed(active, reason);
         dispatchIfIdle();
         return true;
     }

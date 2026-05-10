@@ -1,299 +1,638 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mindcraft</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
+        :root {
+            --bg: #0f0f11;
+            --bg-elevated: #16161a;
+            --bg-card: #1a1a1f;
+            --bg-hover: #22222a;
+            --border: #2a2a32;
+            --border-subtle: #1e1e24;
+            --text: #e2e2e8;
+            --text-secondary: #8b8b9a;
+            --text-muted: #5a5a6a;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --radius: 10px;
+            --radius-sm: 6px;
+            --shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            --font-mono: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background: #1a1a1a;
-            color: #e0e0e0;
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            min-height: 100vh;
+            padding: 24px 24px 100px;
         }
-        #agents {
-            background: #2d2d2d;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }
-        h1 {
-            color: #ffffff;
-        }
-        .agent {
-            margin: 10px 0;
-            padding: 10px;
-            background: #363636;
-            border-radius: 4px;
-            display: flex;
-            flex-direction: column;
-            align-items: stretch;
-        }
-        .restart-btn, .start-btn, .stop-btn {
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin-left: 5px;
-        }
-        .restart-btn {
-            background: #4CAF50;
-        }
-        .start-btn {
-            background: #2196F3;
-        }
-        .stop-btn {
-            background: #f44336;
-        }
-        .restart-btn:hover { background: #45a049; }
-        .start-btn:hover { background: #1976D2; }
-        .stop-btn:hover { background: #d32f2f; }
-        .gear-btn {
-            background: #505050;
-            color: #fff;
-            border: none;
-            border-radius: 4px;
-            padding: 2px 6px;
-            cursor: pointer;
-            margin-left: 6px;
-            font-size: 0.9em;
-        }
-        .gear-btn:hover { background: #5a5a5a; }
-        .status-icon {
-            font-size: 12px;
-            margin-right: 8px;
-        }
-        .status-icon.online {
-            color: #4CAF50;
-        }
-        .status-icon.offline {
-            color: #f44336;
-        }
-        #settingsForm {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 8px;
-            margin-top: 10px;
-        }
-        .setting-wrapper {
+
+        /* ── Header ─────────────────────────────────────────────── */
+        .app-header {
             display: flex;
             align-items: center;
-            gap: 6px;
-            background: #3a3a3a;
-            padding: 6px 8px;
-            border-radius: 4px;
-            width: 100%;
-            box-sizing: border-box;
-            min-width: 0;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-subtle);
         }
-        .setting-wrapper label {
-            flex: 0 0 50%;
-            font-size: 0.9em;
+        .app-header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+        .status-pill {
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--bg-elevated);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .status-pill.online {
+            background: rgba(34,197,94,0.1);
+            color: var(--success);
+            border-color: rgba(34,197,94,0.2);
+        }
+        .status-pill.offline {
+            background: rgba(239,68,68,0.1);
+            color: var(--danger);
+            border-color: rgba(239,68,68,0.2);
+        }
+
+        /* ── Agent Cards ────────────────────────────────────────── */
+        #agents {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .agent-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
             overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
-        .setting-wrapper input[type="text"],
-        .setting-wrapper input[type="number"] {
-            flex: 1 1 0;
-            background: #262626;
-            border: 1px solid #555;
-            color: #e0e0e0;
-            border-radius: 4px;
-            padding: 4px 6px;
-            max-width: 100%;
-            min-width: 0;
+        .agent-card:hover {
+            border-color: #33333d;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
         }
-        .setting-wrapper input[type="checkbox"] {
-            transform: scale(1.2);
+
+        .agent-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            background: rgba(255,255,255,0.015);
+            border-bottom: 1px solid var(--border-subtle);
         }
-        .last-message {
+        .agent-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .agent-status-dot.online { background: var(--success); box-shadow: 0 0 8px rgba(34,197,94,0.35); }
+        .agent-status-dot.offline { background: var(--danger); }
+        .agent-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: var(--text);
+        }
+        .agent-joining {
+            font-size: 0.75rem;
+            color: var(--warning);
+            margin-left: 4px;
+        }
+        .agent-action {
+            margin-left: auto;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            background: var(--bg-elevated);
+            padding: 3px 10px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+        }
+
+        /* ── Stats Row ──────────────────────────────────────────── */
+        .agent-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1px;
+            background: var(--border-subtle);
+        }
+        .agent-stats .stat {
+            background: var(--bg-card);
+            padding: 10px 14px;
+            font-size: 0.78rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .agent-stats .stat-label {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .agent-stats .stat-value {
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+        }
+
+        /* ── Message Row ────────────────────────────────────────── */
+        .agent-message-row {
+            padding: 10px 18px;
+            border-bottom: 1px solid var(--border-subtle);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
             font-style: italic;
-            color: #aaa;
-            margin-top: 5px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            width: 100%;
         }
-        .start-btn:disabled {
+        .agent-message-row strong {
+            color: var(--text-muted);
+            font-style: normal;
+            font-weight: 500;
+        }
+
+        /* ── Controls Row ───────────────────────────────────────── */
+        .agent-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 18px;
+            background: rgba(255,255,255,0.01);
+        }
+        .agent-controls input[type="text"] {
+            flex: 1;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 7px 12px;
+            font-size: 0.85rem;
+            outline: none;
+            transition: border-color 0.2s;
+            min-width: 0;
+        }
+        .agent-controls input[type="text"]:focus {
+            border-color: var(--accent);
+        }
+        .agent-controls input[type="text"]:disabled {
             opacity: 0.4;
             cursor: not-allowed;
         }
-        .agent-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 8px;
-            width: 100%;
-            align-items: start;
+        .btn {
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 500;
+            padding: 7px 14px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
         }
-        .agent-grid .cell {
-            background: #3a3a3a;
-            padding: 6px 8px;
-            border-radius: 4px;
+        .btn:hover {
+            background: var(--bg-hover);
+            color: var(--text);
+            border-color: #3a3a48;
         }
-        .agent-grid .cell.title {
-            background: transparent;
-            padding: 0;
+        .btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
         }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            border-color: var(--accent-hover);
+        }
+        .btn-danger {
+            color: var(--danger);
+            border-color: rgba(239,68,68,0.25);
+        }
+        .btn-danger:hover {
+            background: rgba(239,68,68,0.1);
+            border-color: rgba(239,68,68,0.4);
+        }
+        .btn-icon {
+            padding: 7px 10px;
+            font-size: 0.9rem;
+            line-height: 1;
+        }
+        .btn-group {
+            display: flex;
+            gap: 4px;
+        }
+
+        /* ── Inventory ──────────────────────────────────────────── */
         .agent-inventory {
-            margin-top: 8px;
-            background: #2f2f2f;
-            border-radius: 6px;
-            padding: 8px;
+            padding: 14px 18px;
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(255,255,255,0.01);
         }
-        .agent-inventory h3 { margin: 0 0 6px 0; font-size: 1em; }
+        .agent-inventory h3 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+        }
+        .inv-armor {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+            font-family: var(--font-mono);
+        }
         .inventory-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
             gap: 6px;
         }
-        .agent-details-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 6px;
-            width: 100%;
+        .inv-item {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
         }
-        .controls-row {
-            margin-top: 8px;
-            display: grid;
-            grid-template-columns: auto minmax(100px, 1fr) repeat(5, auto);
-            gap: 8px;
+
+        /* ── Empty State ────────────────────────────────────────── */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* ── Live Console ───────────────────────────────────────── */
+        #consoleSection {
+            margin-top: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        #consoleHeader {
+            display: flex;
             align-items: center;
-        }
-        .msg-input {
-            width: calc(100% - 8px);
-            background: #262626;
-            border: 1px solid #555;
-            color: #e0e0e0;
-            border-radius: 4px;
-            padding: 4px 6px;
-        }
-        .neutral-btn {
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
+            gap: 12px;
+            padding: 12px 18px;
+            background: rgba(255,255,255,0.015);
+            border-bottom: 1px solid var(--border-subtle);
+            user-select: none;
             cursor: pointer;
-            margin-left: 5px;
-            background: #505050;
         }
-        .neutral-btn:hover { background: #5a5a5a; }
-        .neutral-btn:disabled {
-            background: #383838;
-            color: #666;
-            cursor: not-allowed;
+        #consoleHeader h2 {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin: 0;
+            flex: 1;
         }
-        .msg-input:disabled {
-            background: #1a1a1a;
-            color: #666;
-            cursor: not-allowed;
+        .console-badge {
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--bg-elevated);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
         }
+        #consoleControls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #consoleControls label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+        }
+        #consoleLog {
+            height: 240px;
+            overflow-y: auto;
+            padding: 10px 16px;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: #a3e6a3;
+            background: #13131a;
+            line-height: 1.6;
+            word-break: break-all;
+        }
+        #consoleLog .log-line { margin: 0; padding: 1px 0; }
+        #consoleLog .log-ts { color: #555; margin-right: 6px; }
+        #consoleLog .log-agent { color: #7dd3fc; margin-right: 6px; font-weight: 600; }
+
+        /* ── Footer ─────────────────────────────────────────────── */
         .page-footer {
             position: fixed;
             bottom: 0;
             left: 0;
             right: 0;
-            background: #2d2d2d;
-            padding: 16px;
+            background: rgba(15,15,17,0.92);
+            backdrop-filter: blur(12px);
+            border-top: 1px solid var(--border);
+            padding: 14px 24px;
             display: flex;
             gap: 12px;
             justify-content: space-between;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.2);
-        }
-        body {
-            padding-bottom: 80px;  /* Make room for footer */
-        }
-        .agent-stats-row {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 8px;
-            margin: 6px 0;
-            font-size: 0.9em;
-            color: #cccccc;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        .agent-stats-row .stat {
-            background: #3a3a3a;
-            padding: 6px 8px;
-            border-radius: 4px;
-        }
-        .status-badge {
-            font-size: 0.75em;
-            margin-left: 8px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: #3a3a3a;
-            color: #cccccc;
-            text-transform: lowercase;
-        }
-        .status-badge.online { color: #4CAF50; }
-        .status-badge.offline { color: #f44336; }
-        .title-row {
-            display: flex;
             align-items: center;
-            gap: 10px;
+            z-index: 100;
         }
-        .title-left {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+
+        /* ── Debug Panel ────────────────────────────────────────── */
+        #debugPanel {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: rgba(15,15,17,0.95);
+            backdrop-filter: blur(12px);
+            color: var(--text-secondary);
+            padding: 14px 18px;
+            border-radius: var(--radius);
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            z-index: 9999;
+            min-width: 220px;
+            max-width: 360px;
+            border: 1px solid var(--border);
+            line-height: 1.7;
+            overflow-wrap: break-word;
+            box-shadow: var(--shadow);
         }
-        .title-spacer { flex: 1; }
-        /* Modal styles */
+        #debugPanel .debug-title {
+            font-weight: 700;
+            color: var(--success);
+            margin-bottom: 6px;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        #debugPanel .debug-row { margin: 3px 0; }
+        #debugPanel .debug-label { color: var(--text-muted); }
+
+        /* ── Modals ─────────────────────────────────────────────── */
         .modal-backdrop {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.5);
+            background: rgba(0,0,0,0.6);
             display: none;
             align-items: center;
             justify-content: center;
             z-index: 1000;
+            backdrop-filter: blur(4px);
         }
         .modal {
-            background: #2d2d2d;
-            border-radius: 8px;
+            background: var(--bg-card);
+            border-radius: var(--radius);
             width: 80vw;
             height: 80vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            border: 1px solid var(--border);
         }
         .modal-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 16px;
-            border-bottom: 1px solid #3a3a3a;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        .modal-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
         }
         .modal-close-btn {
-            background: #f44336;
-            color: #fff;
-            border: none;
-            border-radius: 4px;
-            padding: 4px 8px;
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px 12px;
             cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.15s;
+        }
+        .modal-close-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text);
         }
         .modal-body {
             flex: 1 1 auto;
             overflow: auto;
-            padding: 12px 16px;
+            padding: 16px 20px;
         }
         .modal-footer {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 16px;
-            border-top: 1px solid #3a3a3a;
+            padding: 14px 20px;
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(255,255,255,0.01);
         }
-        .footer-left { color: #cccccc; font-style: italic; }
+        .footer-left { color: var(--text-muted); font-style: italic; font-size: 0.8rem; }
 
-        /* ── Profile editor section inside settings modal ─────────── */
+        /* ── Settings Form ──────────────────────────────────────── */
+        #settingsForm, #agentSettingsForm {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+        .setting-section {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .setting-section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 16px;
+            background: rgba(255,255,255,0.02);
+            border-bottom: 1px solid var(--border-subtle);
+            cursor: pointer;
+            user-select: none;
+        }
+        .setting-section-header h3 {
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text);
+            margin: 0;
+        }
+        .setting-section-header .section-sub {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-left: 10px;
+            flex: 1;
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .setting-section-header .section-toggle {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            margin-left: 8px;
+        }
+        .setting-section-body {
+            padding: 12px 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+            gap: 10px;
+        }
+        .setting-section-body.collapsed { display: none; }
+        .setting-row {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: var(--bg);
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-subtle);
+        }
+        .setting-row .setting-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .setting-row label {
+            font-size: 0.82rem;
+            color: var(--text);
+            font-weight: 500;
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: normal;
+            font-family: var(--font-mono);
+        }
+        .setting-row .setting-desc {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+        .setting-row input[type="text"],
+        .setting-row input[type="number"],
+        .setting-row select {
+            flex: 0 0 auto;
+            min-width: 140px;
+            max-width: 60%;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 5px 10px;
+            font-size: 0.82rem;
+            outline: none;
+            font-family: var(--font-mono);
+        }
+        .setting-row input:focus, .setting-row select:focus {
+            border-color: var(--accent);
+        }
+        .setting-row input[type="checkbox"] {
+            transform: scale(1.15);
+            accent-color: var(--accent);
+            flex: 0 0 auto;
+        }
+        /* Long text/array inputs span the full row below the label */
+        .setting-row.setting-row-wide .setting-top {
+            flex-wrap: wrap;
+        }
+        .setting-row.setting-row-wide label {
+            flex: 1 1 100%;
+        }
+        .setting-row.setting-row-wide input[type="text"] {
+            max-width: none;
+            width: 100%;
+            margin-top: 2px;
+        }
+        .setting-section-empty {
+            padding: 14px 16px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+        /* Legacy wrapper class kept as a fallback for any leftover renderers */
+        .setting-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg-elevated);
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-subtle);
+        }
+        .setting-wrapper label {
+            flex: 0 0 50%;
+            font-size: 0.85em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+        }
+        .setting-wrapper input[type="text"],
+        .setting-wrapper input[type="number"],
+        .setting-wrapper select {
+            flex: 1 1 0;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 5px 8px;
+            font-size: 0.85em;
+            outline: none;
+            min-width: 0;
+        }
+        .setting-wrapper input:focus, .setting-wrapper select:focus {
+            border-color: var(--accent);
+        }
+        .setting-wrapper input[type="checkbox"] {
+            transform: scale(1.2);
+            accent-color: var(--accent);
+        }
+
+        /* ── Profile Section ────────────────────────────────────── */
         .profile-section {
             margin-top: 16px;
-            border-top: 1px solid #3a3a3a;
+            border-top: 1px solid var(--border-subtle);
             padding-top: 12px;
         }
         .profile-section-header {
@@ -302,204 +641,163 @@
             gap: 8px;
             cursor: pointer;
             user-select: none;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
+            padding: 4px 0;
         }
         .profile-section-header h3 {
             margin: 0;
-            font-size: 0.95em;
-            color: #e0e0e0;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text);
         }
         .profile-section-header .section-toggle {
-            color: #aaa;
-            font-size: 0.8em;
+            color: var(--text-muted);
+            font-size: 0.75rem;
         }
         .profile-fields { display: block; }
         .profile-fields.collapsed { display: none; }
         .profile-field-row {
-            margin-bottom: 10px;
+            margin-bottom: 12px;
         }
         .profile-field-row label {
             display: block;
-            font-size: 0.85em;
-            color: #aaa;
-            margin-bottom: 3px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            font-weight: 500;
         }
         .profile-field-row input[type="text"],
-        .profile-field-row textarea {
+        .profile-field-row textarea,
+        .profile-field-row select {
             width: 100%;
             box-sizing: border-box;
-            background: #262626;
-            border: 1px solid #555;
-            color: #e0e0e0;
-            border-radius: 4px;
-            padding: 6px 8px;
-            font-size: 0.85em;
-            font-family: 'Courier New', Courier, monospace;
-            resize: vertical;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-size: 0.85rem;
+            font-family: var(--font-mono);
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .profile-field-row input:focus,
+        .profile-field-row textarea:focus,
+        .profile-field-row select:focus {
+            border-color: var(--accent);
         }
         .profile-field-row textarea {
             min-height: 80px;
+            resize: vertical;
+            font-family: var(--font);
         }
         .profile-field-row .field-hint {
-            font-size: 0.75em;
-            color: #777;
-            margin-top: 2px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 4px;
         }
 
-        /* ── Live Console ─────────────────────────────────────────── */
-        #consoleSection {
-            margin-top: 20px;
-            background: #1e1e1e;
-            border: 1px solid #3a3a3a;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        #consoleHeader {
+        /* ── API Keys Modal ─────────────────────────────────────── */
+        #apiKeysList .key-row {
             display: flex;
             align-items: center;
             gap: 10px;
+            margin-bottom: 8px;
             padding: 8px 12px;
-            background: #2d2d2d;
-            border-bottom: 1px solid #3a3a3a;
-            user-select: none;
-            cursor: pointer;
+            background: var(--bg-elevated);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-subtle);
         }
-        #consoleHeader h2 {
-            margin: 0;
-            font-size: 0.95em;
-            color: #e0e0e0;
+        #apiKeysList .key-label {
+            flex: 0 0 200px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+        }
+        #apiKeysList input[type="password"] {
             flex: 1;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            outline: none;
         }
-        #consoleHeader .console-badge {
-            font-size: 0.75em;
-            padding: 2px 7px;
-            border-radius: 10px;
-            background: #3a3a3a;
-            color: #aaa;
+        #apiKeysList input[type="password"]:focus {
+            border-color: var(--accent);
         }
-        #consoleControls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+        #apiKeysList .key-status {
+            flex: 0 0 160px;
+            font-size: 0.75rem;
         }
-        #consoleControls label {
-            font-size: 0.8em;
-            color: #aaa;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            cursor: pointer;
-        }
-        #consoleLog {
-            height: 260px;
-            overflow-y: auto;
-            padding: 8px 12px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 0.78em;
-            color: #c8e6c9;
-            background: #1e1e1e;
-            line-height: 1.5;
-            word-break: break-all;
-        }
-        #consoleLog .log-line { margin: 0; padding: 0; }
-        #consoleLog .log-ts  { color: #555; margin-right: 4px; }
-        #consoleLog .log-agent { color: #81d4fa; margin-right: 4px; font-weight: bold; }
-
-        /* ── Debug Panel ──────────────────────────────────────────── */
-        #debugPanel {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            background: rgba(0, 0, 0, 0.82);
-            color: #00ff00;
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 12px;
-            z-index: 9999;
-            min-width: 220px;
-            max-width: 360px;
-            border: 1px solid #1a3a1a;
-            line-height: 1.6;
-            overflow-wrap: break-word;
-        }
-        #debugPanel .debug-title {
-            font-weight: bold;
-            color: #80ff80;
-            margin-bottom: 4px;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        #debugPanel .debug-row { margin: 2px 0; }
-        #debugPanel .debug-label { color: #aaffaa; }
     </style>
 </head>
 <body>
     <!-- Debug Panel -->
     <div id="debugPanel">
-        <div class="debug-title">🛠 Debug Stats</div>
-        <div class="debug-row"><span class="debug-label">🤖 Models:</span> <span id="debugModels">Loading...</span></div>
-        <div class="debug-row"><span class="debug-label">💾 VRAM/RAM:</span> <span id="debugRam">Loading...</span></div>
+        <div class="debug-title">Debug Stats</div>
+        <div class="debug-row"><span class="debug-label">Models:</span> <span id="debugModels">Loading...</span></div>
+        <div class="debug-row"><span class="debug-label">VRAM/RAM:</span> <span id="debugRam">Loading...</span></div>
     </div>
 
-    <div class="title-row">
-        <div class="title-left">
-            <h1 style="margin: 0;">Mindcraft</h1>
-            <span id="msStatus" class="status-badge offline">mindserver offline</span>
+    <div class="app-header">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <h1>Mindcraft</h1>
+            <span id="msStatus" class="status-pill offline">mindserver offline</span>
         </div>
-        <div class="title-spacer"></div>
     </div>
+
     <div id="agents"></div>
 
     <!-- Live Console -->
     <div id="consoleSection">
         <div id="consoleHeader" onclick="toggleConsole()">
-            <h2>&#x1F4BB; Live Console</h2>
+            <h2>Live Console</h2>
             <span class="console-badge" id="consoleMsgCount">0 lines</span>
             <div id="consoleControls" onclick="event.stopPropagation()">
                 <label title="Automatically scroll to the newest log line">
                     <input type="checkbox" id="autoScrollChk" checked>
                     Auto-scroll
                 </label>
-                <button class="stop-btn" style="padding:3px 8px;font-size:0.8em;" onclick="clearConsole()">Clear</button>
+                <button class="btn btn-danger" style="padding:4px 10px;font-size:0.75rem;" onclick="clearConsole()">Clear</button>
             </div>
-            <span id="consoleToggleIcon" style="color:#aaa;font-size:0.85em;">▼</span>
+            <span id="consoleToggleIcon" style="color:var(--text-muted);font-size:0.8rem;">▼</span>
         </div>
         <div id="consoleLog"></div>
     </div>
 
     <div class="page-footer">
-        <div>
-            <button id="openCreateAgentBtn" class="start-btn">New Bridge Agent</button>
-            <button id="openApiKeysBtn" class="neutral-btn" style="margin-left:8px;">🔑 API Keys</button>
+        <div style="display:flex;gap:8px;">
+            <button id="openCreateAgentBtn" class="btn btn-primary">New Bridge Agent</button>
+            <button id="openApiKeysBtn" class="btn">API Keys</button>
         </div>
-        <div style="display:flex; gap:12px;">
-            <button class="stop-btn" onclick="disconnectAllAgents()">Disconnect Bridge Agents</button>
-            <button class="stop-btn" onclick="confirmShutdown()">Full Shutdown</button>
+        <div style="display:flex;gap:8px;">
+            <button class="btn" onclick="disconnectAllAgents()">Disconnect Bridge Agents</button>
+            <button class="btn btn-danger" onclick="confirmShutdown()">Full Shutdown</button>
         </div>
     </div>
 
-    <!-- Modal -->
+    <!-- Create Agent Modal -->
     <div id="createAgentModal" class="modal-backdrop">
         <div class="modal">
             <div class="modal-header">
-                <h2 style="margin:0;">Create Bridge Agent</h2>
+                <h2>Create Bridge Agent</h2>
                 <button id="closeCreateAgentBtn" class="modal-close-btn">Close</button>
             </div>
             <div class="modal-body">
                 <div id="createAgentSection">
-                    <div id="profileStatus" style="margin:6px 0;">Profile: Not uploaded</div>
+                    <div id="profileStatus" style="margin:6px 0;color:var(--text-secondary);font-size:0.85rem;">Profile: Not uploaded</div>
                     <div id="settingsForm"></div>
-                    <div id="createError" style="color:#f44336;margin-top:10px;"></div>
+                    <div id="createError" style="color:var(--danger);margin-top:12px;font-size:0.85rem;"></div>
                     <input type="file" id="profileFileInput" accept=".json,application/json" style="display:none">
                 </div>
             </div>
             <div class="modal-footer">
                 <div class="footer-left" id="footerStatus">Configure bridge settings, then upload a profile and create the agent.</div>
-                <div class="footer-actions">
-                    <button id="uploadProfileBtn" class="start-btn">Upload Profile</button>
-                    <button id="submitCreateAgentBtn" class="start-btn" disabled>Create Bridge Agent</button>
+                <div class="footer-actions" style="display:flex;gap:8px;">
+                    <button id="uploadProfileBtn" class="btn btn-primary">Upload Profile</button>
+                    <button id="submitCreateAgentBtn" class="btn btn-primary" disabled>Create Bridge Agent</button>
                 </div>
             </div>
         </div>
@@ -509,16 +807,15 @@
     <div id="agentSettingsModal" class="modal-backdrop">
         <div class="modal">
             <div class="modal-header">
-                <h2 id="agentSettingsTitle" style="margin:0;">Agent Settings</h2>
+                <h2 id="agentSettingsTitle">Agent Settings</h2>
                 <button id="closeAgentSettingsBtn" class="modal-close-btn">Close</button>
             </div>
             <div class="modal-body">
                 <div id="agentSettingsSection">
                     <div id="agentSettingsForm"></div>
-                    <!-- Profile editor: model, personality, system prompt -->
                     <div class="profile-section">
                         <div class="profile-section-header" onclick="toggleProfileSection()">
-                            <h3>🤖 Profile Settings</h3>
+                            <h3>Profile Settings</h3>
                             <span class="section-toggle" id="profileSectionToggle">▼ expand</span>
                         </div>
                         <div class="profile-fields collapsed" id="profileFields">
@@ -546,14 +843,14 @@
                             </div>
                         </div>
                     </div>
-                    <div id="agentSettingsError" style="color:#f44336;margin-top:10px;"></div>
+                    <div id="agentSettingsError" style="color:var(--danger);margin-top:10px;font-size:0.85rem;"></div>
                 </div>
             </div>
             <div class="modal-footer">
                 <div class="footer-left" id="agentSettingsFooter">Modify settings then apply to restart the agent.</div>
-                <div class="footer-actions">
-                    <button id="discardAgentSettingsBtn" class="stop-btn" style="background:#777;">Discard Changes</button>
-                    <button id="applyAgentSettingsBtn" class="start-btn" disabled>Apply & Restart</button>
+                <div class="footer-actions" style="display:flex;gap:8px;">
+                    <button id="discardAgentSettingsBtn" class="btn">Discard Changes</button>
+                    <button id="applyAgentSettingsBtn" class="btn btn-primary" disabled>Apply & Restart</button>
                 </div>
             </div>
         </div>
@@ -563,24 +860,24 @@
     <div id="importantMemoryModal" class="modal-backdrop" style="display:none;">
         <div class="modal">
             <div class="modal-header">
-                <h2 style="margin:0;">Edit Pinned Facts</h2>
+                <h2>Edit Pinned Facts</h2>
                 <button id="closeImportantMemoryBtn" class="modal-close-btn">Close</button>
             </div>
             <div class="modal-body">
                 <div class="profile-field-row">
                     <label for="importantMemoryTextarea">Pinned facts / important memory</label>
-                    <textarea id="importantMemoryTextarea" rows="10" style="width:100%;font-family:monospace;white-space:pre-wrap;"></textarea>
+                    <textarea id="importantMemoryTextarea" rows="10" style="width:100%;font-family:var(--font-mono);white-space:pre-wrap;"></textarea>
                 </div>
-                <div style="margin-top:8px; font-size:0.95em; color:#ddd;">
+                <div style="margin-top:10px; font-size:0.9rem; color:var(--text-secondary);">
                     Select any lines or text and click Delete Selected to remove them. Then click Save to update the agent's pinned facts.
                 </div>
             </div>
             <div class="modal-footer">
                 <div class="footer-left">Edit the pinned facts and save the updated memory for this agent.</div>
-                <div class="footer-actions">
-                    <button id="deleteSelectedMemoryBtn" class="stop-btn">Delete Selected</button>
-                    <button id="clearImportantMemoryBtn" class="neutral-btn">Clear All</button>
-                    <button id="saveImportantMemoryBtn" class="start-btn">Save</button>
+                <div class="footer-actions" style="display:flex;gap:8px;">
+                    <button id="deleteSelectedMemoryBtn" class="btn btn-danger">Delete Selected</button>
+                    <button id="clearImportantMemoryBtn" class="btn">Clear All</button>
+                    <button id="saveImportantMemoryBtn" class="btn btn-primary">Save</button>
                 </div>
             </div>
         </div>
@@ -590,18 +887,18 @@
     <div id="apiKeysModal" class="modal-backdrop" style="display:none;">
         <div class="modal">
             <div class="modal-header">
-                <h2 style="margin:0;">🔑 API Keys</h2>
+                <h2>API Keys</h2>
                 <button id="closeApiKeysBtn" class="modal-close-btn">Close</button>
             </div>
             <div class="modal-body">
-                <p style="color:#aaa;font-size:0.85em;margin-top:0;">Keys are stored in <code>keys.json</code> (gitignored). Only masked values are shown — keys are never returned in plain text.</p>
-                <div id="apiKeysList" style="margin-top:12px;"></div>
-                <div id="apiKeysStatus" style="margin-top:8px;font-size:0.85em;"></div>
+                <p style="color:var(--text-muted);font-size:0.8rem;margin-top:0;">Keys are stored in <code>keys.json</code> (gitignored). Only masked values are shown — keys are never returned in plain text.</p>
+                <div id="apiKeysList" style="margin-top:14px;"></div>
+                <div id="apiKeysStatus" style="margin-top:10px;font-size:0.8rem;"></div>
             </div>
             <div class="modal-footer">
                 <div class="footer-left">Set your API keys for the providers you use.</div>
-                <div class="footer-actions">
-                    <button id="saveApiKeysBtn" class="start-btn">Save Keys</button>
+                <div class="footer-actions" style="display:flex;gap:8px;">
+                    <button id="saveApiKeysBtn" class="btn btn-primary">Save Keys</button>
                 </div>
             </div>
         </div>
@@ -633,77 +930,184 @@
         function subscribeToState() {
             socket.emit('listen-to-agents');
         }
-        // Initial status
         updateStatus(false);
         socket.on('connect', () => {
             updateStatus(true);
             subscribeToState();
-            // Clear all cached settings on reconnect
             Object.keys(agentSettings).forEach(name => delete agentSettings[name]);
         });
-        socket.on('disconnect', () => {
-            updateStatus(false);
-        });
-        socket.on('connect_error', () => {
-            updateStatus(false);
-        });
+        socket.on('disconnect', () => { updateStatus(false); });
+        socket.on('connect_error', () => { updateStatus(false); });
 
         fetch('/settings_spec.json')
             .then(r => r.json())
-            .then(spec => {
-                settingsSpec = spec;
-                buildSettingsForm();
+            .then(spec => { settingsSpec = spec; buildSettingsForm(); });
+
+        /**
+         * Shared settings renderer used by both the create-agent and
+         * per-agent-settings modals. Groups settings by their `section`
+         * metadata (falling back to "General"). Returns nothing — writes
+         * directly into the target container.
+         *
+         * @param {HTMLElement} container    target DOM node
+         * @param {string} idPrefix          "setting" | "agent-setting"
+         * @param {object} values            initial values per setting key
+         * @param {function} onChange        optional change callback
+         */
+        function renderSettingsSections(container, idPrefix, values, onChange) {
+            container.innerHTML = '';
+
+            // Group spec entries by section (preserving original key order)
+            const defaultSection = 'General';
+            const groups = {};
+            const order = [];
+            Object.keys(settingsSpec).forEach(key => {
+                if (key === 'profile') return;
+                const cfg = settingsSpec[key];
+                const section = cfg.section || defaultSection;
+                if (!groups[section]) {
+                    groups[section] = [];
+                    order.push(section);
+                }
+                groups[section].push(key);
             });
+
+            // Sensible section ordering: put Bridge-related stuff up top, then
+            // behavior toggles, then misc, then advanced. Anything we don't
+            // know about appends at the end in spec order.
+            const preferredOrder = [
+                'General', 'Bridge', 'Proactive Behavior', 'Conversation',
+                'Topography', 'Chat Filters', 'Advanced'
+            ];
+            const sectionOrder = [
+                ...preferredOrder.filter(s => groups[s]),
+                ...order.filter(s => !preferredOrder.includes(s))
+            ];
+
+            sectionOrder.forEach(sectionName => {
+                const section = document.createElement('div');
+                section.className = 'setting-section';
+
+                const header = document.createElement('div');
+                header.className = 'setting-section-header';
+                const title = document.createElement('h3');
+                title.textContent = sectionName;
+                header.appendChild(title);
+
+                const sub = document.createElement('span');
+                sub.className = 'section-sub';
+                sub.textContent = sectionDescriptions[sectionName] || '';
+                header.appendChild(sub);
+
+                const toggle = document.createElement('span');
+                toggle.className = 'section-toggle';
+                toggle.textContent = '▼';
+                header.appendChild(toggle);
+
+                const body = document.createElement('div');
+                body.className = 'setting-section-body';
+
+                header.addEventListener('click', () => {
+                    body.classList.toggle('collapsed');
+                    toggle.textContent = body.classList.contains('collapsed') ? '▶' : '▼';
+                });
+
+                groups[sectionName].forEach(key => {
+                    body.appendChild(buildSettingRow(key, idPrefix, values, onChange));
+                });
+
+                section.appendChild(header);
+                section.appendChild(body);
+                container.appendChild(section);
+            });
+        }
+
+        const sectionDescriptions = {
+            'General': 'Core agent identity and memory.',
+            'Bridge': 'Fabric bridge connection and command pipeline.',
+            'Proactive Behavior': 'Self-initiated chatter and world-event reactions.',
+            'Conversation': 'Persona, prompts, examples, and chat behavior.',
+            'Topography': 'Surface-map injection for navigation-aware prompting.',
+            'Chat Filters': 'Whitelist / blacklist for incoming game chat.',
+            'Advanced': 'Rarely touched tuning knobs.'
+        };
+
+        function buildSettingRow(key, idPrefix, values, onChange) {
+            const cfg = settingsSpec[key];
+            const row = document.createElement('div');
+            row.className = 'setting-row';
+
+            const top = document.createElement('div');
+            top.className = 'setting-top';
+
+            const label = document.createElement('label');
+            label.textContent = key;
+            label.htmlFor = `${idPrefix}-${key}`;
+            top.appendChild(label);
+
+            let input;
+            const currentVal = values && Object.prototype.hasOwnProperty.call(values, key)
+                ? values[key]
+                : cfg.default;
+
+            switch (cfg.type) {
+                case 'boolean':
+                    input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.checked = Boolean(currentVal);
+                    break;
+                case 'number':
+                    input = document.createElement('input');
+                    input.type = 'number';
+                    input.value = currentVal ?? 0;
+                    break;
+                default:
+                    if (Array.isArray(cfg.options) && cfg.options.length > 0) {
+                        input = document.createElement('select');
+                        cfg.options.forEach(opt => {
+                            const optionEl = document.createElement('option');
+                            optionEl.value = String(opt);
+                            optionEl.textContent = String(opt);
+                            input.appendChild(optionEl);
+                        });
+                        input.value = String(currentVal ?? '');
+                    } else {
+                        input = document.createElement('input');
+                        input.type = 'text';
+                        input.value = typeof currentVal === 'object'
+                            ? JSON.stringify(currentVal)
+                            : (currentVal ?? '');
+                        // Array/object inputs and long text fields get the full row
+                        if (cfg.type === 'array' || cfg.type === 'object') {
+                            row.classList.add('setting-row-wide');
+                        } else if (typeof currentVal === 'string' && currentVal.length > 30) {
+                            row.classList.add('setting-row-wide');
+                        }
+                    }
+            }
+
+            input.id = `${idPrefix}-${key}`;
+            input.title = cfg.description || '';
+            if (onChange) {
+                input.addEventListener('input', onChange);
+                if (input.type === 'checkbox') input.addEventListener('change', onChange);
+            }
+            top.appendChild(input);
+            row.appendChild(top);
+
+            if (cfg.description) {
+                const desc = document.createElement('div');
+                desc.className = 'setting-desc';
+                desc.textContent = cfg.description;
+                row.appendChild(desc);
+            }
+
+            return row;
+        }
 
         function buildSettingsForm() {
             const form = document.getElementById('settingsForm');
-            form.innerHTML = '';
-            // ensure grid for multi-column layout
-            form.style.display = 'grid';
-            form.style.gridTemplateColumns = 'repeat(auto-fit, minmax(320px, 1fr))';
-            form.style.gap = '8px';
-            Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return; // profile handled via upload
-                const cfg = settingsSpec[key];
-                const wrapper = document.createElement('div');
-                wrapper.className = 'setting-wrapper';
-                const label = document.createElement('label');
-                label.textContent = key;
-                label.title = cfg.description || '';
-                let input;
-                switch (cfg.type) {
-                    case 'boolean':
-                        input = document.createElement('input');
-                        input.type = 'checkbox';
-                        input.checked = cfg.default === true;
-                        break;
-                    case 'number':
-                        input = document.createElement('input');
-                        input.type = 'number';
-                        input.value = cfg.default;
-                        break;
-                    default:
-                        if (Array.isArray(cfg.options) && cfg.options.length > 0) {
-                            input = document.createElement('select');
-                            cfg.options.forEach(opt => {
-                                const optionEl = document.createElement('option');
-                                optionEl.value = String(opt);
-                                optionEl.textContent = String(opt);
-                                if (String(cfg.default) === String(opt)) optionEl.selected = true;
-                                input.appendChild(optionEl);
-                            });
-                        } else {
-                            input = document.createElement('input');
-                            input.type = 'text';
-                            input.value = typeof cfg.default === 'object' ? JSON.stringify(cfg.default) : cfg.default;
-                        }
-                }
-                input.title = cfg.description || '';
-                input.id = `setting-${key}`;
-                wrapper.appendChild(label);
-                wrapper.appendChild(input);
-                form.appendChild(wrapper);
-            });
+            renderSettingsSections(form, 'setting', {}, null);
         }
 
         document.getElementById('uploadProfileBtn').addEventListener('click', () => {
@@ -752,7 +1156,6 @@
                 if (!res.success) {
                     document.getElementById('createError').textContent = res.error || 'Unknown error';
                 } else {
-                    // reset on success
                     profileData = null;
                     document.getElementById('submitCreateAgentBtn').disabled = true;
                     document.getElementById('profileStatus').textContent = 'Profile: Not uploaded';
@@ -762,25 +1165,18 @@
             });
         });
 
-        // Modal open/close logic
         const modalBackdrop = document.getElementById('createAgentModal');
         document.getElementById('openCreateAgentBtn').addEventListener('click', () => {
             buildSettingsForm();
             modalBackdrop.style.display = 'flex';
         });
-        function hideCreateAgentModal() {
-            modalBackdrop.style.display = 'none';
-        }
+        function hideCreateAgentModal() { modalBackdrop.style.display = 'none'; }
         document.getElementById('closeCreateAgentBtn').addEventListener('click', hideCreateAgentModal);
 
         socket.on('bot-output', (agentName, message) => {
-            // Keep the per-agent "last message" card field up to date
             agentLastMessage[agentName] = message;
             const messageDiv = document.getElementById(`lastMessage-${agentName}`);
-            if (messageDiv) {
-                messageDiv.textContent = message;
-            }
-            // Also append to the live console panel
+            if (messageDiv) { messageDiv.textContent = message; }
             appendConsoleLine(agentName, message);
         });
 
@@ -809,9 +1205,7 @@
                     importantMemoryTextarea.value = response.memory || '';
                 } else {
                     importantMemoryTextarea.value = '';
-                    if (response?.error) {
-                        alert(`Failed to load pinned facts: ${response.error}`);
-                    }
+                    if (response?.error) alert(`Failed to load pinned facts: ${response.error}`);
                 }
                 importantMemoryModal.style.display = 'flex';
                 importantMemoryTextarea.focus();
@@ -849,7 +1243,6 @@
         document.getElementById('deleteSelectedMemoryBtn').addEventListener('click', deleteSelectedImportantMemory);
         document.getElementById('clearImportantMemoryBtn').addEventListener('click', clearImportantMemoryText);
 
-        // Subscribe to aggregated state updates (re-sent on each connect)
         socket.on('state-update', (states) => {
             window.lastStates = states;
             Object.keys(states || {}).forEach(name => {
@@ -859,7 +1252,7 @@
                     const gp = st.gameplay || {};
                     if (healthEl && typeof gp.health === 'number') {
                         const hMax = typeof gp.healthMax === 'number' ? gp.healthMax : 20;
-                        healthEl.textContent = `health: ${gp.health}/${hMax}`;
+                        healthEl.textContent = `${gp.health}/${hMax}`;
                     }
                     const posEl = document.getElementById(`pos-${name}`);
                     const hunEl = document.getElementById(`hunger-${name}`);
@@ -875,18 +1268,18 @@
                     }
                     if (hunEl && typeof gp.hunger === 'number') {
                         const fMax = typeof gp.hungerMax === 'number' ? gp.hungerMax : 20;
-                        hunEl.textContent = `hunger: ${gp.hunger}/${fMax}`;
+                        hunEl.textContent = `${gp.hunger}/${fMax}`;
                     }
-                    if (bioEl && gp.biome) bioEl.textContent = `biome: ${gp.biome}`;
-                    if (modeEl && gp.gamemode) modeEl.textContent = `gamemode: ${gp.gamemode}`;
+                    if (bioEl && gp.biome) bioEl.textContent = gp.biome;
+                    if (modeEl && gp.gamemode) modeEl.textContent = gp.gamemode;
                     if (itemsEl && st.inventory) {
                         const used = st.inventory.stacksUsed ?? 0;
                         const total = st.inventory.totalSlots ?? 0;
-                        itemsEl.textContent = `inventory slots: ${used}/${total}`;
+                        itemsEl.textContent = `${used}/${total}`;
                     }
                     if (equippedEl && st.inventory?.equipment) {
                         const e = st.inventory.equipment;
-                        equippedEl.textContent = `equipped: ${e.mainHand || 'none'}`;
+                        equippedEl.textContent = e.mainHand || 'none';
                     }
                     const armorEl = document.getElementById(`armor-${name}`);
                     if (armorEl && st.inventory?.equipment) {
@@ -896,7 +1289,7 @@
                         if (e.chestplate) armor.push(`chest: ${e.chestplate}`);
                         if (e.leggings) armor.push(`legs: ${e.leggings}`);
                         if (e.boots) armor.push(`feet: ${e.boots}`);
-                        armorEl.textContent = `armor: ${armor.length ? armor.join(', ') : 'none'}`;
+                        armorEl.textContent = armor.length ? armor.join(', ') : 'none';
                     }
                     if (actionEl && st.action) {
                         actionEl.textContent = `${st.action.current || 'Idle'}`;
@@ -904,8 +1297,8 @@
                     if (invGrid && st.inventory?.counts) {
                         const counts = st.inventory.counts;
                         invGrid.innerHTML = Object.keys(counts).length ?
-                            Object.entries(counts).map(([k, v]) => `<div class="cell">${k}: ${v}</div>`).join('') :
-                            '<div class="cell">(empty)</div>';
+                            Object.entries(counts).map(([k, v]) => `<div class="inv-item">${k}: ${v}</div>`).join('') :
+                            '<div class="inv-item">(empty)</div>';
                     }
                 }
             });
@@ -923,7 +1316,6 @@
             });
         }
 
-        // Agent settings modal logic
         const agentSettingsModal = document.getElementById('agentSettingsModal');
         const agentSettingsForm = document.getElementById('agentSettingsForm');
         const applyBtn = document.getElementById('applyAgentSettingsBtn');
@@ -934,74 +1326,22 @@
         let originalAgentSettings = null;
 
         function buildAgentSettingsForm(settings) {
-            agentSettingsForm.innerHTML = '';
-            agentSettingsForm.style.display = 'grid';
-            agentSettingsForm.style.gridTemplateColumns = 'repeat(auto-fit, minmax(320px, 1fr))';
-            agentSettingsForm.style.gap = '8px';
-            Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return; // profile handled by dedicated section below
-                const cfg = settingsSpec[key];
-                const wrapper = document.createElement('div');
-                wrapper.className = 'setting-wrapper';
-                const label = document.createElement('label');
-                label.textContent = key;
-                label.title = cfg.description || '';
-                let input;
-                switch (cfg.type) {
-                    case 'boolean':
-                        input = document.createElement('input');
-                        input.type = 'checkbox';
-                        input.checked = Boolean(settings[key]);
-                        break;
-                    case 'number':
-                        input = document.createElement('input');
-                        input.type = 'number';
-                        input.value = settings[key] ?? cfg.default ?? 0;
-                        break;
-                    default:
-                        if (Array.isArray(cfg.options) && cfg.options.length > 0) {
-                            input = document.createElement('select');
-                            cfg.options.forEach(opt => {
-                                const optionEl = document.createElement('option');
-                                optionEl.value = String(opt);
-                                optionEl.textContent = String(opt);
-                                input.appendChild(optionEl);
-                            });
-                            const selected = settings[key] ?? cfg.default ?? '';
-                            input.value = String(selected);
-                        } else {
-                            input = document.createElement('input');
-                            input.type = 'text';
-                            const defVal = settings[key] ?? cfg.default ?? '';
-                            input.value = typeof defVal === 'object' ? JSON.stringify(defVal) : defVal;
-                        }
-                }
-                input.id = `agent-setting-${key}`;
-                input.addEventListener('input', onAgentSettingsChanged);
-                if (input.type === 'checkbox') input.addEventListener('change', onAgentSettingsChanged);
-                wrapper.appendChild(label);
-                wrapper.appendChild(input);
-                agentSettingsForm.appendChild(wrapper);
-            });
+            renderSettingsSections(agentSettingsForm, 'agent-setting', settings || {}, onAgentSettingsChanged);
 
-            // Populate the dedicated profile editor fields
             const profile = settings.profile || {};
             const modelInput = document.getElementById('profileModel');
             const personalityInput = document.getElementById('profilePersonality');
             const conversingInput = document.getElementById('profileConversing');
             const apiSelect = document.getElementById('profileApiProvider');
 
-            // Populate API dropdown from backend
             populateApiDropdown().then(() => {
                 if (modelInput) {
                     const modelVal = profile.model;
                     const modelStr = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
-                    // Try to detect the API prefix from the model string
                     if (modelStr && apiSelect) {
                         const slashIdx = modelStr.indexOf('/');
                         if (slashIdx > 0) {
                             const prefix = modelStr.substring(0, slashIdx);
-                            // Check if this prefix exists in the dropdown
                             const found = Array.from(apiSelect.options).some(opt => opt.value === prefix);
                             if (found) {
                                 apiSelect.value = prefix;
@@ -1051,7 +1391,6 @@
                 } else val = input.value;
                 newSettings[key] = val;
             });
-            // Read profile editor fields
             const api = getSelectedApiPrefix();
             const modelRaw = (document.getElementById('profileModel') || {}).value || '';
             const effectiveModel = api ? `${api}/${modelRaw}` : modelRaw;
@@ -1073,22 +1412,17 @@
                     if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
                 } else if (va !== vb) return false;
             }
-            // Also compare profile editor fields
             const ap = a.profile || {}; const bp = b.profile || {};
             const modelA = typeof ap.model === 'object' ? JSON.stringify(ap.model) : (ap.model || '');
             const modelB = typeof bp.model === 'object' ? JSON.stringify(bp.model) : (bp.model || '');
             if (modelA !== modelB) return false;
             if ((ap.personality || '') !== (bp.personality || '')) return false;
             if ((ap.conversing || '') !== (bp.conversing || '')) return false;
-            // Compare API provider
             const apiA = getSelectedApiPrefix();
-            // Reconstruct what the original API selection would be for b
             const origModelB = bp.model || '';
             let origApiB = '';
             const origSlash = typeof origModelB === 'string' ? origModelB.indexOf('/') : -1;
-            if (origSlash > 0) {
-                origApiB = origModelB.substring(0, origSlash);
-            }
+            if (origSlash > 0) origApiB = origModelB.substring(0, origSlash);
             if (apiA !== origApiB) return false;
             return true;
         }
@@ -1102,10 +1436,9 @@
         }
         window.toggleProfileSection = toggleProfileSection;
 
-        // ── API Provider dropdown helpers ──────────────────────────
         async function populateApiDropdown() {
             const select = document.getElementById('profileApiProvider');
-            if (!select || select.options.length > 1) return; // already populated
+            if (!select || select.options.length > 1) return;
             try {
                 const res = await fetch('/api/model_prefixes');
                 if (!res.ok) return;
@@ -1116,9 +1449,7 @@
                     opt.textContent = api;
                     select.appendChild(opt);
                 });
-            } catch (e) {
-                console.warn('Failed to load API prefixes:', e);
-            }
+            } catch (e) { console.warn('Failed to load API prefixes:', e); }
         }
 
         function getSelectedApiPrefix() {
@@ -1140,15 +1471,8 @@
             }
         }
 
-        function onProfileApiChanged() {
-            updateModelHint();
-            onAgentSettingsChanged();
-        }
-
-        function onProfileModelChanged() {
-            updateModelHint();
-            onAgentSettingsChanged();
-        }
+        function onProfileApiChanged() { updateModelHint(); onAgentSettingsChanged(); }
+        function onProfileModelChanged() { updateModelHint(); onAgentSettingsChanged(); }
 
         function onAgentSettingsChanged() {
             if (!originalAgentSettings) { applyBtn.disabled = true; return; }
@@ -1171,92 +1495,82 @@
             if (!currentAgentName) return;
             const edited = getEditedAgentSettings();
             socket.emit('set-agent-settings', currentAgentName, edited);
-            // Update local settings immediately
             agentSettings[currentAgentName] = { ...edited, fetched: true };
             closeAgentSettings();
         });
 
         closeAgentSettingsBtn.addEventListener('click', closeAgentSettings);
 
-
         function renderAgentCard(agent) {
             const lastMessage = agentLastMessage[agent.name] || '';
             const invOpen = inventoryOpen[agent.name] === true;
             const invStyle = invOpen ? '' : 'display:none;';
+            const statusClass = agent.in_game ? 'online' : 'offline';
+            const actionText = agentLastMessage[agent.name] ? '' : 'action: -';
             return `
-                    <div class="agent" id="agent-${agent.name}">
-                        <div class="agent-grid">
-                            <div class="cell title" style="grid-column: 1 / -1; display:flex; align-items:center; justify-content:space-between;">
-                                <span><span class="status-icon ${agent.in_game ? 'online' : 'offline'}">●</span>${agent.name}${agent.socket_connected && !agent.in_game ? '<span style="margin-left:6px;color:#f0ad4e;">joining...</span>' : ''}
-                                    <button class="gear-btn" title="Settings" onclick="openAgentSettings('${agent.name}')">⚙</button>
-                                    <button class="gear-btn" title="Inventory" onclick="toggleDetails('${agent.name}')">Inventory</button>
-                                </span>
-                            </div>
-                            <div class="cell" id="action-${agent.name}">action: -</div>
-                            <div class="cell" id="mode-${agent.name}">gamemode: -</div>
-                            <div class="cell" id="health-${agent.name}">health: -</div>
-                            <div class="cell" id="hunger-${agent.name}">hunger: -</div>
-                            <div class="cell" id="pos-${agent.name}">pos: -</div>
-                            <div class="cell" id="biome-${agent.name}">biome: -</div>
-                            <div class="cell" id="items-${agent.name}">inventory slots: -</div>
-                            <div class="cell" id="equipped-${agent.name}">equipped: -</div>
-                            <div class="agent-inventory" id="inventorySection-${agent.name}" style="${invStyle} grid-column: 1 / -1;">
-                                <h3>Inventory</h3>
-                                <div class="cell" id="armor-${agent.name}" style="margin-bottom: 8px;">armor: -</div>
-                                <div class="inventory-grid" id="inventory-${agent.name}"></div>
-                            </div>
-                            <div id="lastMessage-${agent.name}" class="last-message" style="grid-column: 1 / -1;"><strong>Last Message:</strong> ${lastMessage}</div>
+                <div class="agent-card" id="agent-${agent.name}">
+                    <div class="agent-header">
+                        <div class="agent-status-dot ${statusClass}"></div>
+                        <span class="agent-name">${agent.name}</span>
+                        ${agent.socket_connected && !agent.in_game ? '<span class="agent-joining">joining...</span>' : ''}
+                        <div class="agent-action" id="action-${agent.name}">${actionText}</div>
+                        <div class="btn-group" style="margin-left:auto;">
+                            <button class="btn btn-icon" title="Settings" onclick="openAgentSettings('${agent.name}')">&#9881;</button>
+                            <button class="btn btn-icon" title="Inventory" onclick="toggleDetails('${agent.name}')">&#128230;</button>
                         </div>
-                        <div class="controls-row">
-                            <button class="start-btn" id="sendBtn-${agent.name}" disabled onclick="sendMessage('${agent.name}', document.getElementById('messageInput-${agent.name}').value)">Send</button>
-                            <input class="msg-input" type="text" id="messageInput-${agent.name}" placeholder="Enter message..." 
-                                oninput="onMsgInputChange('${agent.name}')"
-                                onkeydown="if(event.key === 'Enter') document.getElementById('sendBtn-${agent.name}').click()"
-                                ${!agent.in_game ? 'disabled' : ''}>
-                            <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stop')" ${!agent.in_game ? 'disabled' : ''}>Stop Action</button>
-                            <button class="neutral-btn" onclick="sendMessage('${agent.name}', '!stay(-1)')" ${!agent.in_game ? 'disabled' : ''}>Stay Still</button>
-                            <button class="neutral-btn" onclick="clearAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Clear Memory</button>
-                            <button class="neutral-btn" onclick="compactAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Compact Memory</button>
-                            <button class="neutral-btn" onclick="editImportantMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Pinned Facts</button>
-                            <button class="neutral-btn" onclick="restartAgent('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Restart</button>
-                            <button class="neutral-btn" ${agent.in_game ? `onclick=\"disconnectAgent('${agent.name}')\"` : (agent.socket_connected ? 'disabled' : `onclick=\"startAgent('${agent.name}')\"`)}>${agent.in_game ? 'Disconnect' : (agent.socket_connected ? 'Connecting...' : 'Connect')}</button>
-                            <button class="stop-btn" onclick="destroyAgent('${agent.name}')">Remove</button>
-                        </div>
-                    </div>`;
+                    </div>
+                    <div class="agent-stats">
+                        <div class="stat"><span class="stat-label">Gamemode</span><span class="stat-value" id="mode-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Health</span><span class="stat-value" id="health-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Hunger</span><span class="stat-value" id="hunger-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Position</span><span class="stat-value" id="pos-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Biome</span><span class="stat-value" id="biome-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Inventory</span><span class="stat-value" id="items-${agent.name}">-</span></div>
+                        <div class="stat"><span class="stat-label">Equipped</span><span class="stat-value" id="equipped-${agent.name}">-</span></div>
+                    </div>
+                    <div class="agent-message-row" id="lastMessage-${agent.name}"><strong>Last Message:</strong> ${lastMessage}</div>
+                    <div class="agent-controls">
+                        <button class="btn btn-primary" id="sendBtn-${agent.name}" disabled onclick="sendMessage('${agent.name}', document.getElementById('messageInput-${agent.name}').value)">Send</button>
+                        <input type="text" id="messageInput-${agent.name}" placeholder="Enter message..." 
+                            oninput="onMsgInputChange('${agent.name}')"
+                            onkeydown="if(event.key === 'Enter') document.getElementById('sendBtn-${agent.name}').click()"
+                            ${!agent.in_game ? 'disabled' : ''}>
+                        <button class="btn" onclick="sendMessage('${agent.name}', '!stop')" ${!agent.in_game ? 'disabled' : ''}>Stop</button>
+                        <button class="btn" onclick="sendMessage('${agent.name}', '!stay(-1)')" ${!agent.in_game ? 'disabled' : ''}>Stay</button>
+                        <button class="btn" onclick="clearAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Clear Mem</button>
+                        <button class="btn" onclick="compactAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Compact</button>
+                        <button class="btn" onclick="editImportantMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Pins</button>
+                        <button class="btn" onclick="restartAgent('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Restart</button>
+                        <button class="btn" ${agent.in_game ? `onclick="disconnectAgent('${agent.name}')"` : (agent.socket_connected ? 'disabled' : `onclick="startAgent('${agent.name}')"`)}>${agent.in_game ? 'Disconnect' : (agent.socket_connected ? 'Connecting...' : 'Connect')}</button>
+                        <button class="btn btn-danger" onclick="destroyAgent('${agent.name}')">Remove</button>
+                    </div>
+                    <div class="agent-inventory" id="inventorySection-${agent.name}" style="${invStyle}">
+                        <h3>Inventory</h3>
+                        <div class="inv-armor" id="armor-${agent.name}">armor: -</div>
+                        <div class="inventory-grid" id="inventory-${agent.name}"></div>
+                    </div>
+                </div>`;
         }
 
         async function renderAgents(agents) {
             if (!agents.length) {
-                agentsDiv.innerHTML = '<div class="agent">No bridge agents connected</div>';
+                agentsDiv.innerHTML = '<div class="empty-state">No bridge agents connected</div>';
                 return;
             }
-
-            // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
                 return;
             }
-
-            // Compare with current agents to find changes
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
                 return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
             });
-
-            // Update only changed agents
             changedAgents.forEach(agent => {
                 const el = document.getElementById(`agent-${agent.name}`);
-                if (el) {
-                    // Update existing card
-                    el.outerHTML = renderAgentCard(agent);
-                } else {
-                    // Add new card
-                    agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-                }
+                if (el) el.outerHTML = renderAgentCard(agent);
+                else agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
             });
-
-            // Remove cards for agents that no longer exist
             Array.from(agentsDiv.children).forEach(el => {
                 const name = el.id.replace('agent-', '');
                 if (!agents.find(a => a.name === name)) {
@@ -1267,46 +1581,28 @@
         }
 
         socket.on('agents-status', async (agents) => {
-            // Fetch settings for all agents that don't have current settings
             const needSettings = agents.filter(a => !agentSettings[a.name]);
             if (needSettings.length > 0) {
                 await Promise.all(needSettings.map(async (a) => {
                     const settings = await fetchAgentSettings(a.name);
-                    if (settings) {
-                        agentSettings[a.name] = settings;
-                    }
+                    if (settings) agentSettings[a.name] = settings;
                 }));
             }
-
-            // Compare with current agents to find changes
             const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
             const changedAgents = agents.filter(a => {
                 const prev = prevAgents[a.name];
                 return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
             });
-
-            // Update current agents list
             currentAgents = agents;
-
-            // If agentsDiv is empty, do a full render
             if (!agentsDiv.children.length) {
                 agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
                 return;
             }
-
-            // Update only changed agents
             changedAgents.forEach(agent => {
                 const el = document.getElementById(`agent-${agent.name}`);
-                if (el) {
-                    // Update existing card
-                    el.outerHTML = renderAgentCard(agent);
-                } else {
-                    // Add new card
-                    agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-                }
+                if (el) el.outerHTML = renderAgentCard(agent);
+                else agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
             });
-
-            // Remove cards for agents that no longer exist
             Array.from(agentsDiv.children).forEach(el => {
                 const name = el.id.replace('agent-', '');
                 if (!agents.find(a => a.name === name)) {
@@ -1318,12 +1614,11 @@
 
         function restartAgent(n) { socket.emit('restart-agent', n); }
         function disconnectAgent(n) { socket.emit('stop-agent', n); }
-        function startAgent(n) { 
+        function startAgent(n) {
             const btn = document.querySelector(`button[onclick="startAgent('${n}')"]`);
             if (btn) {
                 btn.textContent = 'Connecting...';
                 btn.disabled = true;
-                // Re-enable after 10s if still disabled (agent failed to connect)
                 setTimeout(() => {
                     const retryBtn = document.querySelector(`button[onclick=\\"startAgent('${n}')\\"]`);
                     const agentState = (window.currentAgents || []).find(a => a.name === n);
@@ -1338,9 +1633,7 @@
         }
         function stopAgent(n) { socket.emit('stop-agent', n); }
         function destroyAgent(n) { socket.emit('destroy-agent', n); }
-        function disconnectAllAgents() { 
-            socket.emit('stop-all-agents'); 
-        }
+        function disconnectAllAgents() { socket.emit('stop-all-agents'); }
         function confirmShutdown() {
             if (confirm('Are you sure you want to perform a full shutdown?\nThis will stop all agents and close the server.')) {
                 socket.emit('shutdown');
@@ -1357,9 +1650,7 @@
         function onMsgInputChange(name) {
             const input = document.getElementById(`messageInput-${name}`);
             const btn = document.getElementById(`sendBtn-${name}`);
-            if (btn && input) {
-                btn.disabled = !(input.value && input.value.trim().length > 0);
-            }
+            if (btn && input) btn.disabled = !(input.value && input.value.trim().length > 0);
         }
 
         function toggleDetails(name) {
@@ -1372,7 +1663,6 @@
         }
         window.toggleDetails = toggleDetails;
 
-        // ── Live Console ───────────────────────────────────────────
         const MAX_CONSOLE_LINES = 500;
         let consoleMsgCount = 0;
         let consoleCollapsed = false;
@@ -1393,30 +1683,21 @@
             const log = document.getElementById('consoleLog');
             const now = new Date();
             const ts = now.toTimeString().slice(0, 8);
-
-            // Build the line entirely via safe DOM APIs — no innerHTML, no XSS risk
             const line = document.createElement('div');
             line.className = 'log-line';
-
             const tsSpan = document.createElement('span');
             tsSpan.className = 'log-ts';
             tsSpan.textContent = `[${ts}] `;
             line.appendChild(tsSpan);
-
             if (agentName) {
                 const agentSpan = document.createElement('span');
                 agentSpan.className = 'log-agent';
                 agentSpan.textContent = `[${agentName}] `;
                 line.appendChild(agentSpan);
             }
-
             line.appendChild(document.createTextNode(message));
-
             log.appendChild(line);
             consoleMsgCount++;
-
-            // Trim oldest lines to prevent unbounded DOM growth.
-            // Remove excess children in one pass and decrement the counter for each.
             const excess = log.children.length - MAX_CONSOLE_LINES;
             if (excess > 0) {
                 const fragment = document.createRange();
@@ -1425,15 +1706,13 @@
                 fragment.deleteContents();
                 consoleMsgCount -= excess;
             }
-
             document.getElementById('consoleMsgCount').textContent =
                 `${consoleMsgCount} line${consoleMsgCount !== 1 ? 's' : ''}`;
-
             if (document.getElementById('autoScrollChk').checked) {
                 log.scrollTop = log.scrollHeight;
             }
         }
-        // ── Debug Stats Panel ─────────────────────────────────────
+
         async function fetchDebugStats() {
             try {
                 const res = await fetch('/api/debug_stats');
@@ -1451,7 +1730,6 @@
         fetchDebugStats();
         setInterval(fetchDebugStats, 5000);
 
-        // ── API Keys Modal ───────────────────────────────────────
         const apiKeysModal = document.getElementById('apiKeysModal');
         const apiKeysList = document.getElementById('apiKeysList');
         const apiKeysStatus = document.getElementById('apiKeysStatus');
@@ -1477,35 +1755,30 @@
                 sorted.forEach(keyName => {
                     const info = data[keyName];
                     const row = document.createElement('div');
-                    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 8px;background:#3a3a3a;border-radius:4px;';
-
+                    row.className = 'key-row';
                     const label = document.createElement('span');
+                    label.className = 'key-label';
                     label.textContent = keyName;
-                    label.style.cssText = 'flex:0 0 240px;font-size:0.85em;color:#ccc;font-family:monospace;';
-
                     const input = document.createElement('input');
                     input.type = 'password';
                     input.id = `apikey-input-${keyName}`;
                     input.placeholder = info.set ? '(unchanged)' : 'Enter key...';
-                    input.style.cssText = 'flex:1;background:#262626;border:1px solid #555;color:#e0e0e0;border-radius:4px;padding:4px 8px;font-size:0.85em;';
-
                     const status = document.createElement('span');
-                    status.style.cssText = 'flex:0 0 200px;font-size:0.8em;';
+                    status.className = 'key-status';
                     if (info.set) {
-                        status.textContent = `✅ ${info.mask}`;
-                        status.style.color = '#4CAF50';
+                        status.textContent = `set (${info.mask})`;
+                        status.style.color = 'var(--success)';
                     } else {
-                        status.textContent = '❌ not set';
-                        status.style.color = '#f44336';
+                        status.textContent = 'not set';
+                        status.style.color = 'var(--danger)';
                     }
-
                     row.appendChild(label);
                     row.appendChild(input);
                     row.appendChild(status);
                     apiKeysList.appendChild(row);
                 });
             } catch (e) {
-                apiKeysList.innerHTML = '<span style="color:#f44336;">Failed to load keys</span>';
+                apiKeysList.innerHTML = '<span style="color:var(--danger);">Failed to load keys</span>';
             }
         }
 
@@ -1519,11 +1792,11 @@
             });
             if (Object.keys(updates).length === 0) {
                 apiKeysStatus.textContent = 'No changes to save.';
-                apiKeysStatus.style.color = '#aaa';
+                apiKeysStatus.style.color = 'var(--text-muted)';
                 return;
             }
             apiKeysStatus.textContent = 'Saving...';
-            apiKeysStatus.style.color = '#aaa';
+            apiKeysStatus.style.color = 'var(--text-muted)';
             try {
                 const res = await fetch('/api/keys', {
                     method: 'POST',
@@ -1531,17 +1804,15 @@
                     body: JSON.stringify(updates)
                 });
                 if (!res.ok) throw new Error('Save failed');
-                apiKeysStatus.textContent = '✅ Keys saved successfully!';
-                apiKeysStatus.style.color = '#4CAF50';
-                // Clear all password inputs
+                apiKeysStatus.textContent = 'Keys saved successfully!';
+                apiKeysStatus.style.color = 'var(--success)';
                 inputs.forEach(i => { i.value = ''; });
-                // Reload to show updated masks
                 setTimeout(loadApiKeys, 800);
             } catch (e) {
-                apiKeysStatus.textContent = '❌ Failed to save keys.';
-                apiKeysStatus.style.color = '#f44336';
+                apiKeysStatus.textContent = 'Failed to save keys.';
+                apiKeysStatus.style.color = 'var(--danger)';
             }
         });
     </script>
 </body>
-</html> 
+</html>

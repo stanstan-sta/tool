@@ -4,6 +4,16 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { readFileSync } from 'fs';
 
+// Keep the MindServer alive through handler bugs. Socket.IO does not catch
+// throws inside listeners — an uncaught exception in any socket.on() callback
+// will otherwise kill the parent process and take all agents down with it.
+process.on('uncaughtException', (err) => {
+    console.error('[mindserver] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[mindserver] unhandledRejection:', reason);
+});
+
 function parseArguments() {
     return yargs(hideBin(process.argv))
         .option('profiles', {

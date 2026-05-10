@@ -81,8 +81,17 @@ export class History {
 
     async save() {
         try {
+            // Preserve extra keys (e.g. episodic memory) that other subsystems write
+            let existing = {};
+            try {
+                if (existsSync(this.memory_fp)) {
+                    existing = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
+                }
+            } catch {}
+
             const selfPrompter = this.agent?.self_prompter;
             const data = {
+                ...existing,
                 memory: this.memory,
                 turns: this.turns,
                 self_prompting_state: selfPrompter?.state ?? null,

@@ -14,6 +14,9 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '',
             'If you only need to chat:',
             '  {"reply":"<your message>"}',
+            '',
+            'Optional fields for memory tracking (include when relevant):',
+            '  {"topic":"<one-word topic of this reply>","satisfied_drive":"<social|curiosity|rest|safety>"}',
           ].join('\n')
         : [
             'RESPONSE FORMAT:',
@@ -21,6 +24,8 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '',
             'With actions:  {"reply":"<short msg>","actions":[{...},{...}]}',
             'Chat only:     {"reply":"<your message>"}',
+            '',
+            'Optional: add "topic":"<topic>" and "satisfied_drive":"<social|curiosity|rest|safety>" to help memory.',
             '',
             'Do NOT put reasoning, numbered steps, or extra text outside the {}.',
           ].join('\n');
@@ -32,13 +37,15 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '  {"type":"mine",         "target":"<block>","count":<int>}    — mine blocks',
             '  {"type":"follow",       "target":"<player_name>"}            — follow a player',
             '  {"type":"craft",        "item":"<item_name>","count":<int>}  — craft using nearest table',
+            '  {"type":"flee",         "distance":<int>}                  — run away from nearest hostile (default 24 blocks)',
+            '  {"type":"attack",      "target_type":"<entity_type>","count":<int>,"search_time_s":<int>,"until_items":{"<item>":<count>},"retreat_hp":<int>} — hunt and kill hostiles (auto-search, approach, fight, loot)',
             '  {"type":"cancel"}                                            — cancel all queued actions',
             '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
             '',
-            'Common raw_commands: #sleep, #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+            'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
             '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-            'Prefer tracked bridge actions: craft, mine, #sleep, #task smelt, and #task interact. Use #sleep for sleeping; #task sleep is unreliable on this bridge.',
-            'Only these type values exist: move, mine, follow, cancel, craft, raw_command.',
+            'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
+            'Only these type values exist: move, mine, follow, cancel, craft, attack, raw_command.',
             'Never invent new types. For anything else, use raw_command with the # prefix.',
           ].join('\n');
 
@@ -53,11 +60,29 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             '- [Baritone] messages in history show task progress — use them to track completion.',
           ].join('\n');
 
+    const safetyRules = [
+            'SAFETY RULES:',
+            '- If a hostile mob is within 12 blocks and you are unarmed or low HP, use the "flee" action.',
+            '- If you have a sword/axe and HP > 12, you may use "attack" with target_type. Otherwise flee.',
+            '- Never mine trees, ores, or blocks as a response to danger.',
+            '- Retreat to a well-lit area or the player\'s base before resuming other tasks.',
+          ].join('\n');
+
+    const netherRules = [
+            'NETHER SAFETY:',
+            '- Piglins are hostile unless you wear at least one piece of gold armor.',
+            '- Ghasts shoot fireballs from far away; dodge or shoot them back.',
+            '- Magma cubes and wither skeletons are melee threats — flee if unarmed.',
+            '- You cannot sleep in the Nether. Beds explode if used.',
+            '- The Nether has no natural water sources.',
+          ].join('\n');
+
     const craftingRules = [
             'CRAFTING RULES:',
-            '- For make/craft requests, send one craft action for the final requested item. The Fabric bridge resolves prerequisites such as mining, smelting, planks, sticks, and deferred final crafting.',
+            '- For ANY material goal — crafted items, ingots, ores, gems, raw blocks — send ONE craft action for the final item. The Fabric bridge auto-resolves ALL prerequisites: mining, smelting, planks, sticks, fuel, tools, and dimension travel.',
             '- Use {"type":"craft","item":"<name>","count":<N>} e.g. {"type":"craft","item":"iron_pickaxe","count":1}.',
-            '- Do not manually expand normal recipe chains in the prompt response. Do not refuse just because current inventory is missing obvious prerequisites; let the bridge planner try.',
+            '- NEVER manually expand recipe chains. NEVER ask about prerequisites. NEVER refuse just because inventory is missing materials. Send the craft action and let the bridge planner handle everything.',
+            '- Use the mine action only when the user explicitly wants to mine a specific block with current tools.',
             '- If the player asks for a non-craftable or unsupported item, reply briefly instead of inventing action types.',
           ].join('\n');
 
@@ -68,9 +93,11 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
     const examples = [
             'EXAMPLES:',
             'Chat only:  {"reply":"Yeah, the weather is nice today."}',
-            'With move:  {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
-            'With craft: {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}]}',
-            'With batch: {"reply":"Let me get iron.","actions":[{"type":"raw_command","provider":"baritone_chat","command":"#mine iron_ore 5"},{"type":"raw_command","provider":"baritone_chat","command":"#task smelt iron_ore"}]}',
+            'Move:       {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
+            'Craft:      {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}]}',
+            'Gather:     {"reply":"On it.","actions":[{"type":"craft","provider":"baritone_chat","item":"diamond","count":3}]}',
+            'Combat:     {"reply":"Die zombie!","actions":[{"type":"attack","provider":"baritone_chat","target_type":"zombie","count":3}]}',
+            'Craft+meta: {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}],"topic":"crafting tools","satisfied_drive":"social"}',
           ].join('\n');
 
     return [
@@ -79,6 +106,8 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
         outputFormat,
         actionTypes,
         taskQueueRules,
+        safetyRules,
+        netherRules,
         craftingRules,
         topographyDocs,
         examples,

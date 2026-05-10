@@ -159,8 +159,12 @@ export function createMindServer(host_public = false, port = 8080) {
         });
 
         socket.on('set-agent-settings', (agentName, settings) => {
-            const agent = agent_connections[agentName];
-            if (agent) {
+            try {
+                const agent = agent_connections[agentName];
+                if (!agent) {
+                    console.warn(`set-agent-settings: no agent named '${agentName}'`);
+                    return;
+                }
                 agent.setSettings(settings);
                 if (agent.profile_path && settings.profile) {
                     try {
@@ -170,13 +174,24 @@ export function createMindServer(host_public = false, port = 8080) {
                         console.error(`Failed to save profile for ${agentName}:`, err);
                     }
                 }
-                agent.socket.emit('restart-agent');
+                // Trigger a full process-level restart so the new settings are
+                // picked up when init_bridge_agent.js re-reads settings.js.
+                // Do NOT rely on agent.socket — the child's socket may already
+                // be torn down (the MindServer -> agent-process socket is
+                // separate from the AgentProcess child-process handle).
+                mindcraft.startAgent(agentName); // calls forceRestart()
+            } catch (err) {
+                console.error('set-agent-settings handler failed:', err);
             }
         });
 
         socket.on('restart-agent', (agentName) => {
-            console.log(`Restarting agent: ${agentName}`);
-            agent_connections[agentName].socket.emit('restart-agent');
+            try {
+                console.log(`Restarting agent: ${agentName}`);
+                mindcraft.startAgent(agentName);
+            } catch (err) {
+                console.error('restart-agent handler failed:', err);
+            }
         });
 
         socket.on('stop-agent', (agentName) => {

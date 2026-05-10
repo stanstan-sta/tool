@@ -116,7 +116,7 @@ public class BridgeHttpServer {
 
             // Check type before executing — craft actions are self-executing
             String actionType = extractJsonString(actionJson, "type");
-            boolean isSelfExecuting = "craft".equals(actionType);
+            boolean isSelfExecuting = "craft".equals(actionType) || "attack".equals(actionType);
 
             String executed = CommandExecutor.executeTypedJson(actionJson);
             if (executed == null || executed.isBlank()) {
@@ -132,6 +132,8 @@ public class BridgeHttpServer {
                 if (executed.startsWith("craft: queued")) {
                     respond(ex, 200, "{\"success\":true,\"queued\":" + parseCraftQueuedCount(executed)
                             + ",\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
+                } else if (executed.startsWith("attack:")) {
+                    respond(ex, 200, "{\"success\":true,\"queued\":1,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
                 } else {
                     respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
                 }
@@ -192,7 +194,18 @@ public class BridgeHttpServer {
                         }
                         continue;
                     }
-                    // Non-craft: executeTypedJson only translates to a command string.
+                    if ("attack".equals(actionType)) {
+                        String executed = CommandExecutor.executeTypedJson(actionObj);
+                        if (executed != null && executed.startsWith("attack:")) {
+                            totalQueued += 1;
+                        } else {
+                            errors.add(executed == null || executed.isBlank()
+                                    ? "attack: invalid action"
+                                    : executed);
+                        }
+                        continue;
+                    }
+                    // Non-craft/attack: executeTypedJson only translates to a command string.
                     String executed = CommandExecutor.executeTypedJson(actionObj);
                     if (executed == null || executed.isBlank()) {
                         errors.add("invalid typed action");

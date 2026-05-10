@@ -6,6 +6,12 @@ const settings = {
     "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
     "bridge_structured_output": false, // request structured JSON replies for bridge runtime and execute only parsed actions
     "bridge_queue_enabled": true, // enable sequential task queue: actions execute one at a time, advancing on Baritone completion signals. disable for old fire-and-forget behavior
+    "bridge_proactive_enabled": true, // master switch: false = pure turn-based (respond only to player chat)
+    "bridge_ambient_enabled": true, // enable ambient ticks: bot self-initiates speech/actions when idle
+    "bridge_events_enabled": true, // enable reactive events: nightfall, hostiles, weather, etc.
+    "bridge_ambient_budget_per_hour": 4, // max spontaneous lines per hour (token-bucket)
+    "bridge_ambient_min_gap_ms": 45000,
+    "bridge_ambient_max_gap_ms": 180000,
 
     "auto_open_ui": true, // opens UI in browser on startup
 
