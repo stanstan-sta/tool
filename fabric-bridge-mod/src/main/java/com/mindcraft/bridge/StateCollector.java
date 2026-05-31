@@ -3,6 +3,8 @@ package com.mindcraft.bridge;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.client.world.ClientWorld;
@@ -150,15 +152,33 @@ public class StateCollector {
     /** Build and return the complete state as a JSON string. */
     public static String collect(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius) {
         MinecraftClient client = MinecraftClient.getInstance();
+        if (client.isOnThread()) {
+            return collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius);
+        }
+        try {
+            return ClientThread.call(() -> collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius));
+        } catch (Exception e) {
+            return "{\"connected\":false,\"error\":\"STATE_COLLECT_FAILED\"}";
+        }
+    }
+
+    private static String collectOnClientThread(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius) {
+        MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity player = client.player;
 
         if (player == null || client.world == null) {
             return "{\"connected\":false}";
         }
 
+        // Get XP and handler info early
+        int xpLevel = player.experienceLevel;
+        float xpProgress = player.experienceProgress;
+        String handlerClassName = player.currentScreenHandler != null ? player.currentScreenHandler.getClass().getName() : "";
+
         StringBuilder sb = new StringBuilder();
         sb.append("{");
 
+        try {
         sb.append("\"connected\":true,");
         sb.append("\"player_name\":\"").append(escape(player.getName().getString())).append("\",");
 
@@ -176,14 +196,21 @@ public class StateCollector {
         sb.append(String.format("\"saturation\":%.1f,", player.getHungerManager().getSaturationLevel()));
 
         // Time & weather
-        long timeOfDay = client.world.getTimeOfDay() % 24000L;
-        long dayNumber = client.world.getTimeOfDay() / 24000L;
-        // day: 0..12000, dusk: 12000..13000, night: 13000..23000, dawn: 23000..24000
-        String dayPhase = timeOfDay < 12000 ? "day"
-                : timeOfDay < 13000 ? "dusk"
-                : timeOfDay < 23000 ? "night" : "dawn";
-        boolean raining = client.world.isRaining();
-        boolean thundering = client.world.isThundering();
+        long timeOfDay = 0;
+        long dayNumber = 0;
+        String dayPhase = "unknown";
+        boolean raining = false;
+        boolean thundering = false;
+        if (client.world != null) {
+            timeOfDay = client.world.getTimeOfDay() % 24000L;
+            dayNumber = client.world.getTimeOfDay() / 24000L;
+            // day: 0..12000, dusk: 12000..13000, night: 13000..23000, dawn: 23000..24000
+            dayPhase = timeOfDay < 12000 ? "day"
+                    : timeOfDay < 13000 ? "dusk"
+                    : timeOfDay < 23000 ? "night" : "dawn";
+            raining = client.world.isRaining();
+            thundering = client.world.isThundering();
+        }
         sb.append(String.format("\"time_of_day_ticks\":%d,", timeOfDay));
         sb.append(String.format("\"day_number\":%d,", dayNumber));
         sb.append(String.format("\"day_phase\":\"%s\",", dayPhase));
@@ -191,7 +218,10 @@ public class StateCollector {
         sb.append(String.format("\"is_thundering\":%b,", thundering));
 
         // World info
-        String dim = client.world.getRegistryKey().getValue().toString();
+        String dim = "unknown";
+        if (client.world != null) {
+            dim = client.world.getRegistryKey().getValue().toString();
+        }
         sb.append(String.format("\"dimension\":\"%s\",", dim));
 
         // Game mode — GameMode.getName() was removed in 1.21.11;
@@ -227,8 +257,10 @@ public class StateCollector {
         StringBuilder playersSig = new StringBuilder();
         sb.append("\"nearby_players\":[");
         Box searchBox = player.getBoundingBox().expand(64);
-        List<Entity> entities = client.world.getOtherEntities(player, searchBox,
-                e -> e instanceof net.minecraft.entity.player.PlayerEntity);
+        List<Entity> entities = client.world != null
+                ? client.world.getOtherEntities(player, searchBox,
+                        e -> e instanceof net.minecraft.entity.player.PlayerEntity)
+                : java.util.Collections.emptyList();
         boolean firstPlayer = true;
         for (Entity e : entities) {
             if (!firstPlayer) sb.append(",");
@@ -241,8 +273,10 @@ public class StateCollector {
         // Nearby non-player entities with precise coordinates and velocity
         StringBuilder entitiesSig = new StringBuilder();
         sb.append("\"nearby_entities\":[");
-        List<Entity> nearbyEntities = client.world.getOtherEntities(player, searchBox,
-                e -> !(e instanceof net.minecraft.entity.player.PlayerEntity));
+        List<Entity> nearbyEntities = client.world != null
+                ? client.world.getOtherEntities(player, searchBox,
+                        e -> !(e instanceof net.minecraft.entity.player.PlayerEntity))
+                : java.util.Collections.emptyList();
         boolean firstEntity = true;
         for (Entity e : nearbyEntities) {
             if (!firstEntity) sb.append(",");
@@ -300,7 +334,22 @@ public class StateCollector {
         sb.append(String.format("\"bot_idle_ms\":%d,", botIdle));
         sb.append(String.format("\"player_idle_ms\":%d,", playerIdle));
 
-        if (includeSurfaceMap) {
+        // Phase 1: selected slot + held items
+        appendHeldItems(sb, player);
+
+        // Phase 1: equipment
+        appendEquipment(sb, player);
+
+        // Phase 1: status effects (sorted by id, no duration in hash)
+        appendEffects(sb, player);
+
+        // Phase 1: XP
+        appendXp(sb, player);
+
+        // Phase 1: open screen
+        appendOpenScreen(sb, client, player);
+
+        if (includeSurfaceMap && client.world != null) {
             appendSurfaceMap(sb, player, client.world, surfaceRadius);
         }
 
@@ -344,10 +393,59 @@ public class StateCollector {
             lastDimension = dim;
         }
 
+        // Effect hash: id+amplifier+ambient only (no duration_ticks to avoid noisy seq bumps)
+        StringBuilder effectsSig = new StringBuilder();
+        java.util.Collection<StatusEffectInstance> statusEffects = player.getStatusEffects();
+        if (statusEffects != null) {
+            java.util.List<StatusEffectInstance> sortedEffects = new java.util.ArrayList<>(statusEffects);
+            sortedEffects.sort((a, b) -> {
+                String idA = a.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(a.getEffectType().value()).toString()
+                        : "";
+                String idB = b.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(b.getEffectType().value()).toString()
+                        : "";
+                return idA.compareTo(idB);
+            });
+            for (StatusEffectInstance effect : sortedEffects) {
+                String eid = effect.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString()
+                        : "unknown";
+                effectsSig.append(eid).append(':').append(effect.getAmplifier()).append(':').append(effect.isAmbient()).append(';');
+            }
+        }
+
+        int selectedSlot = player.getInventory().getSelectedSlot();
+        String mainHandId = getItemId(player.getMainHandStack());
+        int mainHandCount = player.getMainHandStack().isEmpty() ? 0 : player.getMainHandStack().getCount();
+        String offHandId = getItemId(player.getOffHandStack());
+        int offHandCount = player.getOffHandStack().isEmpty() ? 0 : player.getOffHandStack().getCount();
+        String headId = getItemId(player.getEquippedStack(EquipmentSlot.HEAD));
+        int headCount = player.getEquippedStack(EquipmentSlot.HEAD).isEmpty() ? 0 : player.getEquippedStack(EquipmentSlot.HEAD).getCount();
+        String chestId = getItemId(player.getEquippedStack(EquipmentSlot.CHEST));
+        int chestCount = player.getEquippedStack(EquipmentSlot.CHEST).isEmpty() ? 0 : player.getEquippedStack(EquipmentSlot.CHEST).getCount();
+        String legsId = getItemId(player.getEquippedStack(EquipmentSlot.LEGS));
+        int legsCount = player.getEquippedStack(EquipmentSlot.LEGS).isEmpty() ? 0 : player.getEquippedStack(EquipmentSlot.LEGS).getCount();
+        String feetId = getItemId(player.getEquippedStack(EquipmentSlot.FEET));
+        int feetCount = player.getEquippedStack(EquipmentSlot.FEET).isEmpty() ? 0 : player.getEquippedStack(EquipmentSlot.FEET).getCount();
+        String screenClass = client.currentScreen == null ? "" : client.currentScreen.getClass().getName();
+        String handlerClass = player.currentScreenHandler == null ? "" : player.currentScreenHandler.getClass().getName();
+        boolean screenOpen = client.currentScreen != null;
+
         String stateHash = x + "|" + y + "|" + z + "|" + health + "|" + hunger + "|" +
                 dim + "|" + mode + "|" + dayPhase + "|" + raining + "|" + thundering + "|" +
                 hostileCount + "|" + lowHp + "|" + lowFood + "|" +
-                invSig + "|" + playersSig + "|" + entitiesSig;
+                invSig + "|" + playersSig + "|" + entitiesSig + "|" +
+                selectedSlot + "|" + mainHandId + ":" + mainHandCount + "|" + offHandId + ":" + offHandCount + "|" +
+                headId + ":" + headCount + "|" + chestId + ":" + chestCount + "|" +
+                legsId + ":" + legsCount + "|" + feetId + ":" + feetCount + "|" +
+                effectsSig + "|" +
+                screenOpen + "|" + screenClass + "|" + handlerClass;
+        TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
+        stateHash += "|" + qs.status() + "|" + (qs.activeActionType() != null ? qs.activeActionType() : "") + "|" +
+                qs.pending() + "|" + qs.paused() + "|" + (qs.lastFailure() != null ? qs.lastFailure() : "") + "|" +
+                (player.currentScreenHandler != null ? player.currentScreenHandler.getClass().getName() : "") + "|" +
+                player.experienceLevel + "|" + player.experienceProgress;
         if (!stateHash.equals(lastStateHash)) {
             lastStateHash = stateHash;
             stateSeq.incrementAndGet();
@@ -398,21 +496,21 @@ public class StateCollector {
         sb.append(",\"unchanged\":false");
 
         // Append task queue state
-        TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
-        if (!"idle".equals(qs.status()) && !"disabled".equals(qs.status())) {
+        TaskQueue.QueueState qs2 = TaskQueue.getInstance().getQueueState();
+        if (!"idle".equals(qs2.status()) && !"disabled".equals(qs2.status())) {
             sb.append(",\"queue\":{");
-            sb.append("\"status\":\"").append(escape(qs.status())).append("\",");
-            sb.append("\"active\":").append(qs.active() == null ? "null" : "\"" + escape(qs.active()) + "\"").append(",");
-            if (qs.kind() != null) {
-                sb.append("\"kind\":\"").append(escape(qs.kind())).append("\",");
+            sb.append("\"status\":\"").append(escape(qs2.status())).append("\",");
+            sb.append("\"active\":").append(qs2.active() == null ? "null" : "\"" + escape(qs2.active()) + "\"").append(",");
+            if (qs2.kind() != null) {
+                sb.append("\"kind\":\"").append(escape(qs2.kind())).append("\",");
             }
-            if (qs.completion() != null) {
-                sb.append("\"completion\":\"").append(escape(qs.completion())).append("\",");
+            if (qs2.completion() != null) {
+                sb.append("\"completion\":\"").append(escape(qs2.completion())).append("\",");
             }
-            sb.append("\"pending\":").append(qs.pending()).append(",");
-            sb.append("\"paused\":").append(qs.paused());
-            if (qs.lastFailure() != null) {
-                sb.append(",\"lastFailure\":\"").append(escape(qs.lastFailure())).append("\"");
+            sb.append("\"pending\":").append(qs2.pending()).append(",");
+            sb.append("\"paused\":").append(qs2.paused());
+            if (qs2.lastFailure() != null) {
+                sb.append(",\"lastFailure\":\"").append(escape(qs2.lastFailure())).append("\"");
             }
             sb.append("}");
         }
@@ -426,6 +524,82 @@ public class StateCollector {
 
         sb.append("}");
         return sb.toString();
+        } catch (Exception e) {
+            return "{\"connected\":true,\"seq\":" + stateSeq.get() + ",\"unchanged\":true,\"error\":\"state_collection_failed\"}";
+        }
+    }
+
+    private static String stackJson(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return "null";
+        String itemId = getItemId(stack);
+        return "{\"item\":\"" + escape(itemId) + "\",\"count\":" + stack.getCount() + "}";
+    }
+
+    private static void appendHeldItems(StringBuilder sb, ClientPlayerEntity player) {
+        sb.append("\"selected_slot\":").append(player.getInventory().getSelectedSlot()).append(",");
+        sb.append("\"held_items\":{");
+        sb.append("\"main_hand\":").append(stackJson(player.getMainHandStack())).append(",");
+        sb.append("\"offhand\":").append(stackJson(player.getOffHandStack()));
+        sb.append("},");
+    }
+
+    private static void appendEquipment(StringBuilder sb, ClientPlayerEntity player) {
+        sb.append("\"equipment\":{");
+        sb.append("\"head\":").append(stackJson(player.getEquippedStack(EquipmentSlot.HEAD))).append(",");
+        sb.append("\"chest\":").append(stackJson(player.getEquippedStack(EquipmentSlot.CHEST))).append(",");
+        sb.append("\"legs\":").append(stackJson(player.getEquippedStack(EquipmentSlot.LEGS))).append(",");
+        sb.append("\"feet\":").append(stackJson(player.getEquippedStack(EquipmentSlot.FEET)));
+        sb.append("},");
+    }
+
+    private static void appendEffects(StringBuilder sb, ClientPlayerEntity player) {
+        sb.append("\"effects\":[");
+        java.util.Collection<StatusEffectInstance> effects = player.getStatusEffects();
+        if (effects != null && !effects.isEmpty()) {
+            // Sort by effect id for stable ordering
+            java.util.List<StatusEffectInstance> sorted = new java.util.ArrayList<>(effects);
+            sorted.sort((a, b) -> {
+                String idA = a.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(a.getEffectType().value()).toString()
+                        : "";
+                String idB = b.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(b.getEffectType().value()).toString()
+                        : "";
+                return idA.compareTo(idB);
+            });
+            boolean first = true;
+            for (StatusEffectInstance effect : sorted) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{");
+                String effectId = effect.getEffectType() != null
+                        ? net.minecraft.registry.Registries.STATUS_EFFECT.getId(effect.getEffectType().value()).toString()
+                        : "unknown";
+                sb.append("\"id\":\"").append(escape(effectId)).append("\",");
+                sb.append("\"amplifier\":").append(effect.getAmplifier()).append(",");
+                sb.append("\"duration_ticks\":").append(effect.getDuration()).append(",");
+                sb.append("\"ambient\":").append(effect.isAmbient());
+                sb.append("}");
+            }
+        }
+        sb.append("],");
+    }
+
+    private static void appendXp(StringBuilder sb, ClientPlayerEntity player) {
+        sb.append("\"xp\":{");
+        sb.append("\"level\":").append(player.experienceLevel).append(",");
+        sb.append("\"progress\":").append(String.format(java.util.Locale.ROOT, "%.2f", player.experienceProgress));
+        sb.append("},");
+    }
+
+    private static void appendOpenScreen(StringBuilder sb, MinecraftClient client, ClientPlayerEntity player) {
+        sb.append("\"open_screen\":{");
+        boolean open = client.currentScreen != null;
+        sb.append("\"open\":").append(open).append(",");
+        sb.append("\"screen_class\":").append(client.currentScreen == null ? "null" : "\"" + escape(client.currentScreen.getClass().getName()) + "\"").append(",");
+        sb.append("\"handler_class\":").append(player.currentScreenHandler == null ? "null" : "\"" + escape(player.currentScreenHandler.getClass().getName()) + "\"").append(",");
+        sb.append("\"sync_id\":").append(player.currentScreenHandler == null ? 0 : player.currentScreenHandler.syncId);
+        sb.append("},");
     }
 
     private static void appendSurfaceMap(StringBuilder sb, ClientPlayerEntity player, ClientWorld world, int radius) {

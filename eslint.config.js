@@ -5,10 +5,8 @@ import noFloatingPromise from "eslint-plugin-no-floating-promise";
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
-  // First, import the recommended configuration
   pluginJs.configs.recommended,
 
-  // Then override or customize specific rules
   {
     plugins: {
       "no-floating-promise": noFloatingPromise,
@@ -26,6 +24,19 @@ export default [
       "no-unreachable": "off",          // Disable warnings for unreachable code.
       "require-await": "error",         // Disallow async functions which have no await expression
       "no-floating-promise/no-floating-promise": "error", // Disallow Promises without error handling or awaiting
+    },
+  },
+
+  // Node.js environment for scripts and tests
+  {
+    files: ["scripts/**/*.mjs", "test/**/*.js"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+      },
+      ecmaVersion: 2021,
+      sourceType: "module",
     },
   },
 ];

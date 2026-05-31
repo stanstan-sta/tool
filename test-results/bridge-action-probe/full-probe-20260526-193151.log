@@ -1,0 +1,8 @@
+
+> bridge:probe:full
+> node scripts/bridge_action_probe.mjs --full
+
+Bridge probe URL: http://localhost:8765
+Mode: full destructive scenarios. Use a dedicated cheats-enabled test world.
+[PASS] preflight (11ms)
+[PASS] queue_cancel (2143ms)

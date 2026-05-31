@@ -15,7 +15,7 @@
 
 ## 🚀 Minimal Quickstart (Text Guide)
 
-1. **Install Node.js** — [nodejs.org](https://nodejs.org/) (v18 or v20 LTS).
+1. **Install Node.js** — [nodejs.org](https://nodejs.org/) (v22 LTS).
 2. **Clone & install** — `git clone <this repo>`, then `npm install` inside the folder.
 3. **Set up a model**:
    - **Local (no API key):** Install [Ollama](https://ollama.com/), run `ollama pull sweaterdog/andy-4:micro-q8_0`, and set `"model": "ollama/sweaterdog/andy-4:micro-q8_0"` in `andy.json`.
@@ -32,7 +32,7 @@
 
 ## ⚡ Quick Start — Local Only (no API key required)
 
-> **Requirements:** [Node.js v18 or v20 LTS](https://nodejs.org/) · [Minecraft Java Edition](https://www.minecraft.net/en-us/store/minecraft-java-bedrock-edition-pc) (up to v1.21.11)
+> **Requirements:** [Node.js v22 LTS](https://nodejs.org/) · [Minecraft Java Edition](https://www.minecraft.net/en-us/store/minecraft-java-bedrock-edition-pc) (up to v1.21.11)
 >
 > If installing Node.js on Windows, check **"Automatically install the necessary tools"** during setup.
 
@@ -339,7 +339,7 @@ The `model` field can be a string or an object. A model object must specify an `
 "embedding": {
   "api": "openai",
   "url": "https://api.openai.com/v1/",
-  "model": "text-embedding-ada-002"
+  "model": "text-embedding-3-small"
 },
 "speak_model": "openai/tts-1/echo"
 ```

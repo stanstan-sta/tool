@@ -3,6 +3,8 @@ package com.mindcraft.bridge;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,7 @@ public class MindcraftBridgeMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("Mindcraft Bridge Mod initialising...");
+        BridgeConfig.get();
         try {
             StateCollector.registerEvents();
             httpServer = new BridgeHttpServer(HTTP_PORT);
@@ -39,7 +42,11 @@ public class MindcraftBridgeMod implements ClientModInitializer {
             LOGGER.error("Failed to start Mindcraft Bridge HTTP server", e);
         }
 
-        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(new net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.EndTick() {
+        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "mindcraft-shutdown"));
+
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> onDisconnect());
+
+        ClientTickEvents.END_CLIENT_TICK.register(new ClientTickEvents.EndTick() {
             boolean applied = false;
             @Override
             public void onEndTick(net.minecraft.client.MinecraftClient client) {
@@ -49,5 +56,21 @@ public class MindcraftBridgeMod implements ClientModInitializer {
                 applied = true;
             }
         });
+    }
+
+    private void shutdown() {
+        LOGGER.info("Mindcraft Bridge Mod shutting down...");
+        TaskQueue.getInstance().cancelAll();
+        WorkerThreads.interruptAll("shutdown");
+        if (httpServer != null) {
+            httpServer.stop();
+        }
+        LOGGER.info("Mindcraft Bridge Mod shutdown complete");
+    }
+
+    private void onDisconnect() {
+        LOGGER.info("Player disconnected, cancelling all tasks");
+        TaskQueue.getInstance().cancelAll();
+        WorkerThreads.interruptAll("disconnect");
     }
 }

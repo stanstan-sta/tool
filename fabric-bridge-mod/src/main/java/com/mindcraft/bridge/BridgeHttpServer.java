@@ -11,6 +11,8 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
+import com.mindcraft.bridge.workers.ActionRegistry;
+
 /**
  * Minimal HTTP server (JDK built-in, no extra deps) that routes the three
  * endpoints the Node.js bridge agent needs:
@@ -52,6 +54,10 @@ public class BridgeHttpServer {
         server.start();
     }
 
+    public void stop() {
+        server.stop(0);
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // Handlers
     // ──────────────────────────────────────────────────────────────────────────
@@ -68,8 +74,20 @@ public class BridgeHttpServer {
         String query = ex.getRequestURI().getRawQuery();
         Long since = extractQueryLong(query, "since");
         boolean includeSurface = extractQueryBoolean(query, "surface");
-        Integer surfaceRadius = extractQueryInt(query, "surface_radius");
-        String json = StateCollector.collect(since, includeSurface, surfaceRadius != null ? surfaceRadius : 8);
+
+        int maxRadius = BridgeConfig.get().maxSurfaceRadius;
+        Integer rawRadius = extractQueryInt(query, "surface_radius");
+        int surfaceRadius = rawRadius != null ? rawRadius : 8;
+        if (surfaceRadius < 0) {
+            respond(ex, 400, "{\"error\":\"surface_radius must be >= 0\",\"maxSurfaceRadius\":" + maxRadius + "}");
+            return;
+        }
+        if (surfaceRadius > maxRadius) {
+            respond(ex, 400, "{\"error\":\"surface_radius exceeds maxSurfaceRadius=" + maxRadius + "\",\"maxSurfaceRadius\":" + maxRadius + "}");
+            return;
+        }
+
+        String json = StateCollector.collect(since, includeSurface, surfaceRadius);
         respond(ex, 200, json);
     }
 
@@ -78,8 +96,8 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
-        try (InputStream in = ex.getRequestBody()) {
-            String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        try {
+            String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
             // Parse {"command":"..."} manually — no Gson needed, keep it simple.
             String command = extractJsonString(body, "command");
             if (command == null || command.isBlank()) {
@@ -87,15 +105,23 @@ public class BridgeHttpServer {
                 return;
             }
             // Chat and message commands execute immediately — don't queue them.
-            if (command.startsWith("chat:") || command.startsWith("whisper:")) {
+            if (command.startsWith("chat:") || command.startsWith("whisper:") || command.startsWith("/")) {
                 CommandExecutor.execute(command);
                 respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
                 return;
             }
             // Route Baritone/action commands through TaskQueue for sequential execution.
             // When the queue is disabled, enqueue() falls back to direct execution.
-            int queued = TaskQueue.getInstance().enqueue(command);
-            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + ",\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
+            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(command, null)));
+            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                int httpStatus = "QUEUE_FULL".equals(eq.error()) ? 503 : 400;
+                respond(ex, httpStatus, "{\"success\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
+                return;
+            }
+            respond(ex, 200, "{\"success\":true,\"queued\":" + eq.queued() + ",\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
+        } catch (PayloadTooLargeException e) {
+            respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
         }
     }
 
@@ -104,61 +130,118 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
-        try (InputStream in = ex.getRequestBody()) {
-            String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        try {
+            String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
             String actionJson = extractJsonObject(body, "action");
             if (actionJson == null) {
                 actionJson = body != null ? body.trim() : null;
             }
             if (actionJson == null || actionJson.isBlank()) {
-                respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'action' field\"}");
+                respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Missing 'action' field\"}");
                 return;
             }
 
-            // Check type before executing — craft/attack/build are self-executing
-            String actionType = extractJsonString(actionJson, "type");
-            boolean isSelfExecuting = "craft".equals(actionType)
-                    || "attack".equals(actionType)
-                    || "build_schematic".equals(actionType)
-                    || "cancel_build".equals(actionType);
-
-            String executed = CommandExecutor.executeTypedJson(actionJson);
-            if (executed == null || executed.isBlank()) {
-                respond(ex, 400, "{\"success\":false,\"error\":\"Invalid typed action\"}");
-                return;
-            }
-
-            // Self-executing actions bypass the queue — their workers own the lifecycle.
-            if (isSelfExecuting) {
-                if (executed.startsWith("craft: queued")) {
-                    respond(ex, 200, "{\"success\":true,\"queued\":" + parseCraftQueuedCount(executed)
-                            + ",\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
-                } else if (executed.startsWith("attack:")) {
-                    respond(ex, 200, "{\"success\":true,\"queued\":1,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
-                } else if (executed.startsWith("build_schematic: queued")) {
-                    respond(ex, 200, "{\"success\":true,\"queued\":1,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
-                } else if (executed.startsWith("cancel_build:")) {
-                    respond(ex, 200, "{\"success\":true,\"queued\":0,\"output\":\"Self-executing action: " + jsonEscape(executed) + "\"}");
-                } else {
-                    respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
+            String rawType = extractJsonString(actionJson, "type");
+            boolean tracked = BridgeActionRegistry.isSelfExecuting(rawType);
+            long trackingId = -1L;
+            if (tracked) {
+                trackingId = TaskQueue.getInstance().createActiveTrackingTask("#" + rawType, rawType);
+                if (trackingId < 0L) {
+                    respond(ex, 409, "{\"success\":false,\"accepted\":false,\"error\":\"Queue is busy\"}");
+                    return;
                 }
+            }
+
+            CommandExecutor.TranslatedAction result = CommandExecutor.translateTypedJson(actionJson);
+
+            if (result == null) {
+                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+                respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Invalid typed action\"}");
                 return;
             }
 
-            // Route through TaskQueue for consistent queuing behavior.
-            // The executed string is already a concrete command like "move: #goto x y z".
-            // Extract just the raw command part after the type prefix for the queue.
-            if (executed.startsWith("error:")) {
-                respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(executed) + "\"}");
+            if (!result.ok()) {
+                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+                respond(ex, 400, "{"
+                    + "\"success\":false,"
+                    + "\"accepted\":false,"
+                    + "\"queued\":0,"
+                    + "\"failure_code\":\"" + jsonEscape(result.failureCode()) + "\","
+                    + "\"error\":\"" + jsonEscape(result.message()) + "\","
+                    + "\"results\":[" + resultJson(result) + "]"
+                    + "}");
                 return;
             }
-            String rawCommand = executed;
-            int colonIdx = executed.indexOf(':');
-            if (colonIdx > 0) {
-                rawCommand = executed.substring(colonIdx + 1).trim();
+
+            // Generic worker routing — same as processTypedBatchAction
+            if (result.genericWorker()) {
+                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+                TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                    .enqueueWorkerAction(result.actionType(), actionJson);
+                if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                    respond(ex, "QUEUE_FULL".equals(eq.error()) ? 503 : 400,
+                        "{\"success\":false,\"accepted\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
+                    return;
+                }
+                respond(ex, 200, "{"
+                    + "\"success\":true,"
+                    + "\"accepted\":true,"
+                    + "\"queued\":1,"
+                    + "\"task_ids\":" + taskIdsJson(eq.taskIds()) + ","
+                    + "\"results\":[" + resultJson(result) + "],"
+                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
+                    + "}");
+                return;
             }
-            int queued = TaskQueue.getInstance().enqueue(rawCommand);
-            respond(ex, 200, "{\"success\":true,\"queued\":" + queued + ",\"output\":\"Action sent: " + jsonEscape(executed) + "\"}");
+
+            if ("self_executing".equals(result.lifecycle())) {
+                if (trackingId < 0L) {
+                    respond(ex, 500, "{\"success\":false,\"accepted\":false,\"error\":\"Missing tracking task\"}");
+                    return;
+                }
+                respond(ex, 200, "{"
+                    + "\"success\":true,"
+                    + "\"accepted\":true,"
+                    + "\"queued\":1,"
+                    + "\"task_ids\":[" + trackingId + "],"
+                    + "\"results\":[" + resultJson(result) + "],"
+                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
+                    + "}");
+                return;
+            }
+
+            if ("immediate".equals(result.lifecycle())) {
+                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+                respond(ex, 200, "{"
+                    + "\"success\":true,"
+                    + "\"accepted\":true,"
+                    + "\"queued\":0,"
+                    + "\"task_ids\":[],"
+                    + "\"results\":[" + resultJson(result) + "],"
+                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
+                    + "}");
+                return;
+            }
+
+            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+            String rawCommand = result.command();
+            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(rawCommand, result.actionType())));
+            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                respond(ex, "QUEUE_FULL".equals(eq.error()) ? 503 : 400,
+                    "{\"success\":false,\"accepted\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
+                return;
+            }
+            respond(ex, 200, "{"
+                + "\"success\":true,"
+                + "\"accepted\":true,"
+                + "\"queued\":" + eq.queued() + ","
+                + "\"task_ids\":" + taskIdsJson(eq.taskIds()) + ","
+                + "\"results\":[" + resultJson(result) + "],"
+                + "\"output\":\"Action sent: " + jsonEscape(result.legacyOutput()) + "\""
+                + "}");
+        } catch (PayloadTooLargeException e) {
+            respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
         }
     }
 
@@ -167,14 +250,14 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
-        try (InputStream in = ex.getRequestBody()) {
-            String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        try {
+            String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
 
-            // Accept {"actions":[{...},{...}]} or {"commands":["#goto...","#mine..."]}
             int totalQueued = 0;
             boolean hadActionsArray = false;
             boolean cancelled = false;
-            java.util.List<String> errors = new java.util.ArrayList<>();
+            java.util.List<CommandExecutor.TranslatedAction> results = new java.util.ArrayList<>();
+            java.util.List<Long> allTaskIds = new java.util.ArrayList<>();
 
             // Try "actions" array first (typed actions)
             String actionsArray = extractJsonArray(body, "actions");
@@ -182,73 +265,40 @@ public class BridgeHttpServer {
                 hadActionsArray = true;
                 String[] actionObjects = splitJsonArray(actionsArray);
 
-                // Preserve the model's action order. Each action appends exactly
-                // one command/callback to TaskQueue.
+                // Buffer for contiguous craft actions so they share one planning pass
+                java.util.List<String> craftBuffer = new java.util.ArrayList<>();
+
                 for (String actionObj : actionObjects) {
                     if (actionObj == null || actionObj.isBlank()) continue;
                     String actionType = extractJsonString(actionObj, "type");
+
+                    // Flush craft buffer before any non-craft barrier action
+                    if (!craftBuffer.isEmpty() && !"craft".equals(actionType)) {
+                        totalQueued += flushCraftBatch(craftBuffer, results, allTaskIds);
+                        craftBuffer.clear();
+                    }
+
                     if ("cancel".equals(actionType)) {
                         TaskQueue.getInstance().cancelAll();
                         cancelled = true;
+                        results.add(new CommandExecutor.TranslatedAction(true, "cancel", "immediate", null, null, "cancelled"));
                         continue;
                     }
                     if ("craft".equals(actionType)) {
-                        String executed = CommandExecutor.executeTypedJson(actionObj);
-                        if (executed != null && executed.startsWith("craft: queued")) {
-                            totalQueued += parseCraftQueuedCount(executed);
-                        } else {
-                            errors.add(executed == null || executed.isBlank()
-                                    ? "craft: invalid action"
-                                    : executed);
-                        }
+                        craftBuffer.add(actionObj);
                         continue;
                     }
-                    if ("attack".equals(actionType)) {
-                        String executed = CommandExecutor.executeTypedJson(actionObj);
-                        if (executed != null && executed.startsWith("attack:")) {
-                            totalQueued += 1;
-                        } else {
-                            errors.add(executed == null || executed.isBlank()
-                                    ? "attack: invalid action"
-                                    : executed);
-                        }
-                        continue;
+                    int pq = processTypedBatchAction(actionObj, results, allTaskIds);
+                    if (pq < 0) {
+                        respond(ex, 503, "{\"success\":false,\"accepted\":false,\"error\":\"QUEUE_FULL\",\"queued\":0}");
+                        return;
                     }
-                    if ("build_schematic".equals(actionType)) {
-                        String executed = CommandExecutor.executeTypedJson(actionObj);
-                        if (executed != null && executed.startsWith("build_schematic: queued")) {
-                            totalQueued += 1;
-                        } else {
-                            errors.add(executed == null || executed.isBlank()
-                                    ? "build_schematic: invalid action"
-                                    : executed);
-                        }
-                        continue;
-                    }
-                    if ("cancel_build".equals(actionType)) {
-                        String executed = CommandExecutor.executeTypedJson(actionObj);
-                        if (executed != null && executed.startsWith("cancel_build:")) {
-                            // no queue change
-                        } else {
-                            errors.add(executed == null || executed.isBlank()
-                                    ? "cancel_build: invalid action"
-                                    : executed);
-                        }
-                        continue;
-                    }
-                    // Non-craft/attack: executeTypedJson only translates to a command string.
-                    String executed = CommandExecutor.executeTypedJson(actionObj);
-                    if (executed == null || executed.isBlank()) {
-                        errors.add("invalid typed action");
-                        continue;
-                    }
-                    if (executed.startsWith("error:")) {
-                        errors.add(executed);
-                        continue;
-                    }
-                    int colonIdx = executed.indexOf(':');
-                    String cmd = colonIdx > 0 ? executed.substring(colonIdx + 1).trim() : executed;
-                    totalQueued += TaskQueue.getInstance().enqueue(cmd);
+                    totalQueued += pq;
+                }
+
+                // Flush any remaining buffered craft actions
+                if (!craftBuffer.isEmpty()) {
+                    totalQueued += flushCraftBatch(craftBuffer, results, allTaskIds);
                 }
             }
 
@@ -269,27 +319,153 @@ public class BridgeHttpServer {
                         }
                     }
                     if (!rawCommands.isEmpty()) {
-                        totalQueued += TaskQueue.getInstance().enqueue(rawCommands);
+                        TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                            .enqueueDetailed(rawCommands.stream()
+                                .map(cmd -> new TaskQueue.QueuedCommand(cmd, null))
+                                .collect(java.util.stream.Collectors.toList()));
+                        if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                            respond(ex, "QUEUE_FULL".equals(eq.error()) ? 503 : 400,
+                                "{\"success\":false,\"accepted\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
+                            return;
+                        }
+                        totalQueued += eq.queued();
+                        allTaskIds.addAll(eq.taskIds());
+                        for (String cmd : rawCommands) {
+                            results.add(new CommandExecutor.TranslatedAction(true, "raw_command", "queued", cmd, null, "queued"));
+                        }
                     }
                 }
             }
 
+            // Build response
+            StringBuilder responseJson = new StringBuilder("{");
+            boolean hasError = results.stream().anyMatch(r -> !r.ok());
+            boolean allRejected = results.stream().allMatch(r -> !r.ok());
+            responseJson.append("\"success\":").append(!hasError).append(",");
+            responseJson.append("\"accepted\":").append(!allRejected).append(",");
+            responseJson.append("\"queued\":").append(totalQueued).append(",");
+            responseJson.append("\"task_ids\":").append(taskIdsJson(allTaskIds)).append(",");
+
+            responseJson.append("\"results\":[");
+            boolean firstResult = true;
+            for (CommandExecutor.TranslatedAction r : results) {
+                if (!firstResult) responseJson.append(",");
+                firstResult = false;
+                responseJson.append(resultJson(r));
+            }
+            responseJson.append("]");
+
+            if (cancelled) {
+                responseJson.append(",\"cancelled\":true");
+            }
+
+            responseJson.append(",\"output\":\"Batch processed: ").append(totalQueued).append(" actions queued\"");
+            responseJson.append("}");
+
             if (totalQueued == 0 && !hadActionsArray) {
-                respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'actions' or 'commands' array\"}");
-                return;
+                respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Missing 'actions' or 'commands' array\"}");
+            } else if (totalQueued == 0 && hasError) {
+                respond(ex, 422, responseJson.toString());
+            } else {
+                respond(ex, 200, responseJson.toString());
             }
-
-            if (totalQueued == 0 && hadActionsArray && !cancelled) {
-                String error = errors.isEmpty() ? "No actions were queued" : String.join("; ", errors);
-                respond(ex, 400, "{\"success\":false,\"queued\":0,\"error\":\"" + jsonEscape(error) + "\"}");
-                return;
-            }
-
-            respond(ex, 200, "{\"success\":true,\"queued\":" + totalQueued
-                    + (cancelled ? ",\"cancelled\":true" : "")
-                    + (!errors.isEmpty() ? ",\"warnings\":\"" + jsonEscape(String.join("; ", errors)) + "\"" : "")
-                    + "}");
+        } catch (PayloadTooLargeException e) {
+            respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
         }
+    }
+
+    private int processTypedBatchAction(String actionObj,
+            java.util.List<CommandExecutor.TranslatedAction> results,
+            java.util.List<Long> taskIds) {
+        String actionType = extractJsonString(actionObj, "type");
+        boolean tracked = BridgeActionRegistry.isSelfExecuting(actionType);
+        long trackingId = -1L;
+        if (tracked) {
+            trackingId = TaskQueue.getInstance().createActiveTrackingTask("#" + actionType, actionType);
+            if (trackingId < 0L) {
+                results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
+                        null, "queue_busy", "Queue is busy"));
+                return 0;
+            }
+        }
+
+        CommandExecutor.TranslatedAction ta = CommandExecutor.translateTypedJson(actionObj);
+        if (ta == null) {
+            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+            results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
+                    null, "invalid_action", "Invalid typed action"));
+            return 0;
+        }
+
+        results.add(ta);
+        if (!ta.ok()) {
+            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+            return 0;
+        }
+
+        // Generic worker routing — enqueue through TaskQueue instead of inline thread spawn
+        if (ta.genericWorker()) {
+            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
+            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                .enqueueWorkerAction(ta.actionType(), actionObj);
+            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                results.remove(results.size() - 1);
+                results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
+                    null, "QUEUE_FULL", eq.error()));
+                return 0;
+            }
+            taskIds.addAll(eq.taskIds());
+            return 1;
+        }
+
+        if ("self_executing".equals(ta.lifecycle())) {
+            if (trackingId >= 0L) {
+                taskIds.add(trackingId);
+                return 1;
+            }
+            return 0;
+        }
+
+        if (trackingId >= 0L) {
+            TaskQueue.getInstance().dismissActiveTask(trackingId);
+        }
+
+        if ("queued".equals(ta.lifecycle()) && ta.command() != null) {
+            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
+                    .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(ta.command(), ta.actionType())));
+            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+                results.add(new CommandExecutor.TranslatedAction(false, ta.actionType(), null,
+                        null, "QUEUE_FULL", eq.error()));
+                return -1;
+            }
+            taskIds.addAll(eq.taskIds());
+            return eq.queued();
+        }
+        return 0;
+    }
+
+    /**
+     * Flush buffered contiguous craft actions through the shared batch planner.
+     * Returns the number of queued steps, adds results and task IDs.
+     */
+    private int flushCraftBatch(java.util.List<String> craftActions,
+            java.util.List<CommandExecutor.TranslatedAction> results,
+            java.util.List<Long> taskIds) {
+        String result = CommandExecutor.executeCraftBatch(craftActions);
+        if (result != null && result.startsWith("craft: queued")) {
+            int count = parseCraftQueuedCount(result);
+            // Craft batch internally uses the queue; we don't get individual task IDs
+            // from the batch planner, so report as self-executing with legacy count.
+            for (int i = 0; i < craftActions.size(); i++) {
+                results.add(new CommandExecutor.TranslatedAction(true, "craft", "self_executing", result, null, result));
+            }
+            return count;
+        }
+        String err = result == null || result.isBlank() ? "craft: invalid action" : result;
+        for (int i = 0; i < craftActions.size(); i++) {
+            results.add(new CommandExecutor.TranslatedAction(false, "craft", null, null, "craft_failed", err));
+        }
+        return 0;
     }
 
     private void handleCapabilities(HttpExchange ex) throws IOException {
@@ -311,6 +487,47 @@ public class BridgeHttpServer {
     // ──────────────────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────────────────
+
+    private static String resultJson(CommandExecutor.TranslatedAction result) {
+        if (result == null) return "null";
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"action_type\":\"").append(jsonEscape(result.actionType() != null ? result.actionType() : "")).append("\",");
+        sb.append("\"status\":\"").append(result.ok() ? (result.lifecycle() != null ? result.lifecycle() : "accepted") : "rejected").append("\",");
+        sb.append("\"command\":").append(result.command() == null ? "null" : "\"" + jsonEscape(result.command()) + "\"").append(",");
+        sb.append("\"failure_code\":").append(result.failureCode() == null ? "null" : "\"" + jsonEscape(result.failureCode()) + "\"").append(",");
+        sb.append("\"message\":\"").append(jsonEscape(result.message() != null ? result.message() : "")).append("\"");
+        sb.append("}");
+        return sb.toString();
+    }
+
+    private static String taskIdsJson(java.util.List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append(ids.get(i));
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private static final class PayloadTooLargeException extends IOException {}
+
+    private static String readBodyLimited(HttpExchange exchange, int maxBytes) throws IOException {
+        try (java.io.InputStream in = exchange.getRequestBody();
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int total = 0;
+            while (true) {
+                int read = in.read(buffer);
+                if (read == -1) break;
+                total += read;
+                if (total > maxBytes) throw new PayloadTooLargeException();
+                out.write(buffer, 0, read);
+            }
+            return out.toString(java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
 
     private static void respond(HttpExchange ex, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -544,6 +761,8 @@ public class BridgeHttpServer {
         }
         TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
         String json = "{"
+            + "\"active_id\":" + (qs.activeId() == null ? "null" : String.valueOf(qs.activeId())) + ","
+            + "\"active_action_type\":" + (qs.activeActionType() == null ? "null" : "\"" + jsonEscape(qs.activeActionType()) + "\"") + ","
             + "\"status\":\"" + jsonEscape(qs.status()) + "\","
             + "\"active\":" + (qs.active() == null ? "null" : "\"" + jsonEscape(qs.active()) + "\"") + ","
             + (qs.kind() != null ? "\"kind\":\"" + jsonEscape(qs.kind()) + "\"," : "")
@@ -551,6 +770,10 @@ public class BridgeHttpServer {
             + "\"pending\":" + qs.pending() + ","
             + "\"paused\":" + qs.paused()
             + (qs.lastFailure() != null ? ",\"lastFailure\":\"" + jsonEscape(qs.lastFailure()) + "\"" : "")
+            + (qs.failureCode() != null ? ",\"failure_code\":\"" + jsonEscape(qs.failureCode()) + "\"" : "")
+            + (qs.elapsedMs() != null ? ",\"elapsed_ms\":" + qs.elapsedMs() : "")
+            + (qs.timeoutMs() != null ? ",\"timeout_ms\":" + qs.timeoutMs() : "")
+            + (qs.cancellable() != null ? ",\"cancellable\":" + qs.cancellable() : "")
             + "}";
         respond(ex, 200, json);
     }

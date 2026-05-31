@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "url": "http://localhost:8765",
+  "full": false,
+  "startedAt": "2026-05-26T09:31:03.696Z",
+  "finishedAt": "2026-05-26T09:31:03.997Z",
+  "scenarios": [
+    {
+      "name": "preflight",
+      "ok": true,
+      "startedAt": "2026-05-26T09:31:03.963Z",
+      "elapsedMs": 30,
+      "error": null,
+      "details": {
+        "player": "Nakano_chan",
+        "position": {
+          "x": 472,
+          "y": 102,
+          "z": 29
+        },
+        "queueStatus": "idle",
+        "actionTypes": [
+          "move",
+          "mine",
+          "follow",
+          "cancel",
+          "raw_command",
+          "craft",
+          "attack",
+          "build_schematic",
+          "cancel_build"
+        ]
+      }
+    }
+  ]
+}

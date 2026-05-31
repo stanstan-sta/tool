@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+.gradle/
+*.class
+*.jar
+*.log
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# Test results
+test-results/
+
+# OS files
+.DS_Store
+Thumbs.db

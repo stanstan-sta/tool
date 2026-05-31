@@ -1,0 +1,12 @@
+{
+    "schemaVersion": 1,
+    "id": "mindcraft-bridge-test",
+    "version": "1.0.0",
+    "name": "Mindcraft Bridge Tests",
+    "environment": "*",
+    "depends": {
+        "fabricloader": "*",
+        "fabric": "*",
+        "mindcraft-bridge": "*"
+    }
+}

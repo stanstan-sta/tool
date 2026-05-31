@@ -1,4 +1,4 @@
-export function buildBridgeSystemPrompt(settings, importantFacts = '') {
+export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilities = null) {
     const persona = settings.persona_preset === 'miku_nakano'
         ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use baritone actions when needed.'
         : 'You are playing minecraft. You chat naturally, keep replies short in a shy way, and use baritone actions when needed.';
@@ -30,31 +30,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
             'Do NOT put reasoning, numbered steps, or extra text outside the {}.',
           ].join('\n');
 
-    const actionTypes = [
-            'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
-            '',
-            '  {"type":"move",         "x":<int>,"y":<int>,"z":<int>}       — walk to coordinates',
-            '  {"type":"mine",         "target":"<block>","count":<int>}    — mine blocks',
-            '  {"type":"follow",       "target":"<player_name>"}            — follow a player',
-            '  {"type":"craft",        "item":"<item_name>","count":<int>}  — craft using nearest table',
-            '  {"type":"build_house",   "template":"<cabin|tower|pit|saved:name>","size":"<small|medium|large>","material":"<oak|spruce|cobblestone|sandstone|...>","biome":"<optional>"}',
-            '                                                            — build a house from a template. The bridge asks follow-up questions if fields are missing.',
-            '  {"type":"cancel_build"}                                   — stop an in-progress house build',
-            '  {"type":"scan_building", "name":"<save_name>", "size":{"x":9,"y":6,"z":9}, "origin":{"x":..,"y":..,"z":..}}',
-            '                                                            — scan the building in front of the bot and save it as a reusable template',
-            '  {"type":"rate_build",    "score":<-1|0|1>, "comment":"<free text>"}',
-            '                                                            — record a rating for the most recently finished house; biases future picks',
-            '  {"type":"flee",         "distance":<int>}                  — run away from nearest hostile (default 24 blocks)',
-            '  {"type":"attack",      "target_type":"<entity_type>","count":<int>,"search_time_s":<int>,"until_items":{"<item>":<count>},"retreat_hp":<int>} — hunt and kill hostiles (auto-search, approach, fight, loot). until_items overrides count; count then serves as the max-kills safety ceiling',
-            '  {"type":"cancel"}                                            — cancel all queued actions',
-            '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
-            '',
-            'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
-            '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-            'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
-            'Only these type values exist: move, mine, follow, cancel, craft, attack, build_house, cancel_build, scan_building, rate_build, raw_command.',
-            'Never invent new types. For anything else, use raw_command with the # prefix.',
-          ].join('\n');
+    const actionTypes = buildActionDocs(capabilities);
 
     const taskQueueRules = [
             'TASK QUEUE:',
@@ -140,4 +116,86 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '') {
         topographyDocs,
         examples,
     ].filter(Boolean).join('\n\n');
+}
+
+// Node-only virtual actions that exist on the Node side, not in the Java mod
+const NODE_ONLY_ACTIONS = [
+    {
+        type: 'build_house',
+        required: [],
+        optional: ['template', 'size', 'material', 'biome', 'origin'],
+        description: 'Build a house from a template (cabin, tower, pit, saved:<name>). The bridge asks follow-ups if fields are missing. Do NOT emit place_block or raw crafting yourself — the bridge pre-plans all materials.',
+    },
+    {
+        type: 'scan_building',
+        required: [],
+        optional: ['name', 'size', 'origin'],
+        description: 'Scan the building in front of the bot (default size 9x6x9) and save it as a reusable template',
+    },
+    {
+        type: 'rate_build',
+        required: ['score'],
+        optional: ['comment'],
+        description: 'Record a rating for the most recently finished house (-1 bad, 0 neutral, 1 good); biases future template selection',
+    },
+];
+
+function formatActionSpec(action) {
+    const required = Array.isArray(action.required) && action.required.length
+        ? ` required=[${action.required.join(', ')}]`
+        : '';
+    const optional = Array.isArray(action.optional) && action.optional.length
+        ? ` optional=[${action.optional.join(', ')}]`
+        : '';
+    const desc = action.description ? ` — ${action.description}` : '';
+    return `  {"type":"${action.type}"${required}${optional}}${desc}`;
+}
+
+function buildActionDocs(capabilities) {
+    const bridgeActions = Array.isArray(capabilities?.actions) ? capabilities.actions : null;
+
+    if (!bridgeActions) {
+        // Fallback: hardcoded action docs (backward compat when no capabilities)
+        return [
+            'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
+            '',
+            '  {"type":"move",         "x":<int>,"y":<int>,"z":<int>}       — walk to coordinates',
+            '  {"type":"mine",         "target":"<block>","count":<int>}    — mine blocks',
+            '  {"type":"follow",       "target":"<player_name>"}            — follow a player',
+            '  {"type":"craft",        "item":"<item_name>","count":<int>}  — craft using nearest table',
+            '  {"type":"build_house",   "template":"<cabin|tower|pit|saved:name>","size":"<small|medium|large>","material":"<oak|spruce|cobblestone|sandstone|...>","biome":"<optional>"}',
+            '                                                            — build a house from a template. The bridge asks follow-up questions if fields are missing.',
+            '  {"type":"cancel_build"}                                   — stop an in-progress house build',
+            '  {"type":"scan_building", "name":"<save_name>", "size":{"x":9,"y":6,"z":9}, "origin":{"x":..,"y":..,"z":..}}',
+            '                                                            — scan the building in front of the bot and save it as a reusable template',
+            '  {"type":"rate_build",    "score":<-1|0|1>, "comment":"<free text>"}',
+            '                                                            — record a rating for the most recently finished house; biases future picks',
+            '  {"type":"flee",         "distance":<int>}                  — run away from nearest hostile (default 24 blocks)',
+            '  {"type":"attack",      "target_type":"<entity_type>","count":<int>,"search_time_s":<int>,"until_items":{"<item>":<count>},"retreat_hp":<int>} — hunt and kill hostiles (auto-search, approach, fight, loot). until_items overrides count; count then serves as the max-kills safety ceiling',
+            '  {"type":"cancel"}                                            — cancel all queued actions',
+            '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
+            '',
+            'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+            '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
+            'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
+            'Only these type values exist: move, mine, follow, cancel, craft, attack, build_house, cancel_build, scan_building, rate_build, raw_command.',
+            'Never invent new types. For anything else, use raw_command with the # prefix.',
+        ].join('\n');
+    }
+
+    // Merge Java bridge actions with Node-only virtual actions
+    const all = [...bridgeActions, ...NODE_ONLY_ACTIONS];
+    const allowedNames = all.map(a => a.type).join(', ');
+
+    return [
+        'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
+        '',
+        ...all.map(a => formatActionSpec(a)),
+        '',
+        'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
+        '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
+        'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
+        `Only these type values exist: ${allowedNames}.`,
+        'Never invent new types. For anything else, use raw_command with the # prefix.',
+    ].join('\n');
 }

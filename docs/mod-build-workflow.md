@@ -17,7 +17,7 @@ npm run build:mods
 This builds both mods and copies the newest jars into:
 
 ```text
-C:\Users\stanl\.lunarclient\profiles\lunar\1.21\mods\fabric-1.21.11
+%USERPROFILE%\.lunarclient\profiles\lunar\1.21\mods\fabric-1.21.11
 ```
 
 If old bridge or Baritone jars need to be removed first, close Minecraft/Lunar and run:
@@ -35,5 +35,5 @@ Direct script entry point:
 Override the destination folder when needed:
 
 ```bat
-.\scripts\build_mods.bat -ModsDir "C:\Users\stanl\.lunarclient\profiles\lunar\1.21\mods\fabric-1.21.11"
+.\scripts\build_mods.bat -ModsDir "%USERPROFILE%\.lunarclient\profiles\lunar\1.21\mods\fabric-1.21.11"
 ```

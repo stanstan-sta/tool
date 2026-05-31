@@ -1,0 +1,15 @@
+package com.mindcraft.bridge;
+
+enum BridgeFailureCode {
+    MISSING_ITEM,
+    MISSING_STATION,
+    NO_RECIPE,
+    UNSUPPORTED_ITEM,
+    PATH_BLOCKED,
+    SCREEN_UNAVAILABLE,
+    TIMEOUT,
+    HOSTILE_INTERFERENCE,
+    DIMENSION_MISMATCH,
+    CANCELLED,
+    UNKNOWN
+}

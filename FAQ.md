@@ -10,10 +10,10 @@
 
 - **`npm install` fails with Python or C++ build errors**: This typically happens when building native modules like `gl`. Common solutions:
   - **Python not found** (macOS/Linux): If you see `python: command not found`, create a symlink: `sudo ln -s $(which python3) /usr/local/bin/python`
-  - **C++20 errors or Node version issues**: If you see `"C++20 or later required"` errors, you're likely using Node v24 or newer. The `gl` package requires Node LTS (v18 or v20). Switch versions using:
+  - **C++20 errors or Node version issues**: If you see `"C++20 or later required"` errors, you're likely using Node v24 or newer. The `gl` package requires Node LTS (v22). Switch versions using:
     ```bash
-    nvm install 20
-    nvm use 20
+    nvm install 22
+    nvm use 22
     rm -rf node_modules package-lock.json
     npm install
     ```
@@ -35,4 +35,4 @@
   
 - Texture Packs? Apparently these cause issues and refuse to connect. Not sure why
   
-- Baritone? Baritone is a mod that is completely different from mineflayer. There is currently no easy way to integrate the two programs.
+- Baritone? Baritone is a pathfinding mod that can be integrated with Mindcraft via the Fabric bridge. See the [Fabric Bridge Setup](docs/fabric-bridge-setup.md) guide for details.

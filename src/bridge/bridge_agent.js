@@ -3,11 +3,13 @@ import { History } from '../agent/history.js';
 import { FabricBridge } from './fabric_bridge.js';
 import { buildBridgeSystemPrompt } from './bridge_prompt.js';
 import { buildBridgeTopographySystemMessage } from './topography.js';
+import process from 'node:process';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import { wiki } from '../utils/MinecraftWiki.js';
 import settings from '../agent/settings.js';
 import { EventDetector } from './event_detector.js';
 import { DriveModel } from './drive_model.js';
+import { preprocessMineActions } from './mine_preprocessor.js';
 import {
     resolveBuildRequest,
     mergeBuildRequest,
@@ -41,13 +43,23 @@ function extractJsonObjectCandidate(text) {
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fenced?.[1]) return fenced[1].trim();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try { JSON.parse(trimmed); return trimmed; } catch {}
+        try {
+            JSON.parse(trimmed);
+            return trimmed;
+        } catch {
+            // Ignore invalid JSON fragment.
+        }
     }
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
     if (first >= 0 && last > first) {
         const candidate = trimmed.slice(first, last + 1);
-        try { JSON.parse(candidate); return candidate; } catch {}
+        try {
+            JSON.parse(candidate);
+            return candidate;
+        } catch {
+            // Ignore invalid JSON fragment.
+        }
     }
     let endIdx = trimmed.length;
     while (endIdx > 0) {
@@ -59,7 +71,9 @@ function extractJsonObjectCandidate(text) {
         try {
             JSON.parse(candidate);
             return candidate;
-        } catch {}
+        } catch {
+            // Ignore invalid JSON fragment.
+        }
         endIdx = open;
     }
     return null;
@@ -76,21 +90,34 @@ function extractAllJsonObjects(text) {
     const trimmed = String(text || '').trim();
     if (!trimmed) return results;
 
-    // First, try extracting from a code fence
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const source = fenced?.[1] ? fenced[1].trim() : trimmed;
 
-    // Scan character by character for balanced {â€¦} pairs
     let depth = 0;
     let start = -1;
+    let inString = false;
+    let escape = false;
+
     for (let i = 0; i < source.length; i++) {
         const ch = source[i];
-        if (ch === '{' && depth === 0) {
-            start = i;
-            depth = 1;
-        } else if (ch === '{' && depth > 0) {
+
+        if (inString) {
+            if (escape) { escape = false; continue; }
+            if (ch === '\\') { escape = true; continue; }
+            if (ch === '"') { inString = false; continue; }
+            continue;
+        }
+
+        if (ch === '"') { inString = true; continue; }
+
+        if (ch === '{') {
+            if (depth === 0) start = i;
             depth++;
-        } else if (ch === '}' && depth > 0) {
+            continue;
+        }
+
+        if (ch === '}') {
+            if (depth <= 0) continue;
             depth--;
             if (depth === 0 && start >= 0) {
                 const candidate = source.slice(start, i + 1);
@@ -99,9 +126,7 @@ function extractAllJsonObjects(text) {
                     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                         results.push(parsed);
                     }
-                } catch {
-                    // skip unbalanced/broken objects
-                }
+                } catch { /* skip */ }
                 start = -1;
             }
         }
@@ -236,7 +261,6 @@ const MINEABLE_BLOCK_MAP = {
     'raw_iron': 'iron_ore',
     'raw_gold': 'gold_ore',
     'raw_copper': 'copper_ore',
-    'coal': 'coal_ore',
     'cobblestone': 'cobblestone',
     'stone': 'stone',
     'netherrack': 'netherrack',
@@ -489,6 +513,9 @@ export class BridgeAgent {
         this._inboundQueue = [];
         this._bridgeCommands = [];
         this._bridgeReachable = false;
+        this._promptInFlight = false;
+        this._promptQueue = [];
+        this._promptSeq = 0;
 
         // â”€â”€ Prompter / LLM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.prompter = new Prompter(this, settings.profile);
@@ -563,7 +590,9 @@ export class BridgeAgent {
             sendLogToUI(`${this.name}: Fabric bridge mod connected at ${this.bridge.url}`);
             this._capabilities = await this.bridge.getCapabilities();
             if (this._capabilities) {
-                sendLogToUI(`${this.name}: Bridge capabilities: provider=${this._capabilities.default_provider || 'unknown'}, typed_actions=${this._capabilities.supports_typed_actions === true}`);
+                sendLogToUI(`${this.name}: Bridge capabilities: protocol=${this._capabilities.protocol_version || 'legacy'}, provider=${this._capabilities.default_provider || 'unknown'}, typed_actions=${this._capabilities.supports_typed_actions === true}`);
+                // Refresh prompt profile with capabilities
+                this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '', this._capabilities);
             }
             this._bridgeReachable = true;
             this._bridgeCommands = await this.fetchBridgeCommands();
@@ -572,7 +601,7 @@ export class BridgeAgent {
             }
         } else {
             this._bridgeReachable = false;
-            sendLogToUI(`${this.name}: âš ï¸  Fabric bridge mod not reachable at ${this.bridge.url} â€” waiting...`);
+            sendLogToUI(`${this.name}: WARNING: Fabric bridge mod not reachable at ${this.bridge.url} - waiting...`);
         }
 
         // Log proactive mode
@@ -610,6 +639,54 @@ export class BridgeAgent {
         return this._recentSentChats.some(sent => normalized.includes(sent));
     }
 
+    _clonePromptHistory(history) {
+        if (!Array.isArray(history)) return history;
+        return history.map(msg => {
+            if (!msg || typeof msg !== 'object') return msg;
+            return { role: msg.role, content: msg.content, name: msg.name };
+        });
+    }
+
+    async _promptConvoLocked(label, history, options = {}) {
+        const mode = options.mode || 'queue';
+        const frozenHistory = this._clonePromptHistory(history);
+        const seq = ++this._promptSeq;
+
+        if (this._promptInFlight) {
+            console.log(`${this.name}: prompt busy; ${mode === 'queue' ? 'queueing' : 'dropping'} ${label}`);
+            if (mode === 'drop') return null;
+            return await new Promise(resolve => {
+                this._promptQueue.push({ seq, label, history: frozenHistory, options: { ...options, mode: 'queue' }, resolve });
+            });
+        }
+
+        return await this._runPromptConvoNow(seq, label, frozenHistory, options);
+    }
+
+    async _runPromptConvoNow(seq, label, history, options = {}) {
+        this._promptInFlight = true;
+        const startedAt = Date.now();
+        try {
+            console.log(`${this.name}: prompt start #${seq} ${label}`);
+            const response = await this.prompter.promptConvo(history);
+            console.log(`${this.name}: prompt end #${seq} ${label} (${Date.now() - startedAt}ms)`);
+            return response;
+        } catch (err) {
+            console.error(`${this.name}: prompt failed #${seq} ${label}`, err);
+            this.history?.add?.('system', `Prompt failed (${label}): ${err.message || err}`);
+            return '';
+        } finally {
+            this._promptInFlight = false;
+            const next = this._promptQueue.shift();
+            if (next) {
+                setTimeout(async () => {
+                    const result = await this._promptConvoLocked(next.label, next.history, next.options);
+                    next.resolve(result);
+                }, 0);
+            }
+        }
+    }
+
     /**
      * Build a state summary string for injection into the LLM's context.
      * Includes inventory, position, health, nearby entities, queue status,
@@ -631,6 +708,28 @@ export class BridgeAgent {
         let ctx = `CURRENT STATE:\n`;
         ctx += `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}\n`;
         ctx += `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}\n`;
+
+        // Phase 1: held items + equipment
+        const held = state.held_items?.main_hand?.item
+            ? state.held_items.main_hand.item.replace('minecraft:', '')
+            : 'empty';
+        const armor = state.equipment
+            ? ['head', 'chest', 'legs', 'feet']
+                .map(slot => state.equipment[slot]?.item?.replace('minecraft:', '') || 'empty')
+                .join('/')
+            : 'unknown';
+        ctx += `Held: ${held}  Armor: ${armor}\n`;
+
+        // Phase 1: status effects (defensive, check field presence)
+        if (state.effects && state.effects.length > 0) {
+            ctx += `Effects: ${state.effects.map(e => `${(e.id || '').replace('minecraft:', '')}(${e.amplifier + 1})`).join(', ')}\n`;
+        }
+
+        // Phase 1: open screen (defensive)
+        if (state.open_screen?.open) {
+            ctx += `Open screen: ${state.open_screen.handler_class || '?'}\n`;
+        }
+
         ctx += `Inventory: ${inv}\n`;
         ctx += `Nearby players: ${nearby}\n`;
         ctx += `Nearby entities: ${entities}`;
@@ -1015,7 +1114,7 @@ export class BridgeAgent {
                             if (message.includes('Task failed:')) {
                                 const reason = message.substring(message.indexOf('Task failed:') + 'Task failed:'.length).trim();
                                 console.log(`${this.name} task failed: ${reason}`);
-                                sendOutputToServer(this.name, `âš ï¸ Task failed: ${reason}`);
+                                sendOutputToServer(this.name, `WARNING: Task failed: ${reason}`);
 
                                 // Clear the failed batch. Later actions often depend on the
                                 // failed one, so continuing stale pending work is unsafe.
@@ -1144,7 +1243,7 @@ export class BridgeAgent {
         if (queued > 0) {
             this._lastHadActions = true;
             this._pendingContinuation = true;
-            sendOutputToServer(this.name, `âš¡ Queued ${queued} ${label}(s) for sequential execution`);
+            sendOutputToServer(this.name, `Queued ${queued} ${label}(s) for sequential execution`);
             this.history.add('system', `Queued ${queued} ${label}(s). Queue will advance according to each entry completion policy.`);
             return queued;
         }
@@ -1152,7 +1251,7 @@ export class BridgeAgent {
         this._lastHadActions = false;
         this._pendingContinuation = false;
         const detail = batchResult?.output ? ` (${batchResult.output})` : '';
-        sendOutputToServer(this.name, `âš ï¸ Queued 0 ${label}(s)${detail}`);
+        sendOutputToServer(this.name, `WARNING: Queued 0 ${label}(s)${detail}`);
         this.history.add('system', `Queued 0 ${label}(s)${detail}. Nothing is running; replan from current state.`);
         return 0;
     }
@@ -1185,13 +1284,13 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory),
+                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
             });
         }
 
         let response;
         try {
-            response = await this.prompter.promptConvo(history);
+            response = await this._promptConvoLocked('failure-recovery', history, { mode: 'queue' });
         } catch (err) {
             console.error('LLM error in failure recovery:', err);
             return;
@@ -1219,7 +1318,7 @@ export class BridgeAgent {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
                 this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `âš ï¸ Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `WARNING: Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
             }
         }
 
@@ -1229,7 +1328,7 @@ export class BridgeAgent {
                 this._recordQueueDispatch('command', batchResult, commands.length);
             } else {
                 this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `âš ï¸ Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+                sendOutputToServer(this.name, `WARNING: Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
             }
         }
 
@@ -1283,13 +1382,13 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory),
+                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
             });
         }
 
         let response;
         try {
-            response = await this.prompter.promptConvo(history);
+            response = await this._promptConvoLocked('continue-plan', history, { mode: 'drop' });
         } catch (err) {
             console.error('LLM error in continuation:', err);
             return;
@@ -1321,7 +1420,7 @@ export class BridgeAgent {
             } else {
                 const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `âš ï¸ ${errMsg}`);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
             }
         }
 
@@ -1332,7 +1431,7 @@ export class BridgeAgent {
             } else {
                 const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
                 this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `âš ï¸ ${errMsg}`);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
             }
         }
 
@@ -1369,12 +1468,12 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory),
+                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
             });
         }
         let response;
         try {
-            response = await this.prompter.promptConvo(history);
+            response = await this._promptConvoLocked('message:' + source, history, { mode: 'queue' });
         } catch (err) {
             console.error('LLM error:', err);
             sendOutputToServer(this.name, `LLM error: ${err.message}`);
@@ -1456,7 +1555,9 @@ export class BridgeAgent {
                 if (parsed.topic) topic = String(parsed.topic);
                 if (parsed.satisfied_drive) satisfiedDrive = String(parsed.satisfied_drive);
             }
-        } catch {}
+        } catch {
+            // Ignore malformed optional metadata.
+        }
         if (chat.trim() || dispatchActions.length > 0 || commands.length > 0) {
             this._updateEpisodicMemory(response, topic, satisfiedDrive || 'social');
         }
@@ -1507,9 +1608,9 @@ export class BridgeAgent {
 
         let response;
         try {
-            response = await this.prompter.promptConvo([
+            response = await this._promptConvoLocked('active-message:' + source, [
                 { role: 'system', content: evaluatorPrompt },
-            ]);
+            ], { mode: 'queue' });
         } catch (err) {
             console.error('LLM error in active-task evaluator:', err);
             this.history.add('system', `Active-task evaluator failed: ${err.message}`);
@@ -1764,12 +1865,22 @@ export class BridgeAgent {
         return false;
     }
 
+    _scheduleNextAmbientPrompt(now = Date.now(), reason = 'ambient') {
+        const minGapRaw = Number(settings.bridge_ambient_min_gap_ms || 45_000);
+        const maxGapRaw = Number(settings.bridge_ambient_max_gap_ms || 180_000);
+        const minGap = Math.max(5_000, Math.min(minGapRaw, maxGapRaw));
+        const maxGap = Math.max(minGap, maxGapRaw);
+        const delay = minGap + Math.random() * (maxGap - minGap);
+        this._nextAmbientTickAt = now + delay;
+        this._ambientLog({ t: now, event: 'ambient_rescheduled', reason, next_in_ms: Math.round(delay) });
+    }
+
     async _runAmbientTick(state) {
         if (!state) return;
         const now = Date.now();
         if (now < this._nextAmbientTickAt) return;
 
-        // Baseline re-eval: if suppressed, re-check in 10s. Overridden below on actual fire.
+        // Baseline re-eval: if suppressed, re-check in 10s. Only for branches that do NOT call the LLM.
         this._nextAmbientTickAt = now + 10_000;
 
         this._maybeRefillAmbientBucket();
@@ -1778,7 +1889,7 @@ export class BridgeAgent {
             return;
         }
 
-        // Suppressors
+        // Suppressors — all return before any LLM call, so 10s retry is correct.
         const queue = state.queue || {};
         if (queue.status === 'executing' || queue.status === 'draining' || queue.paused) {
             this._ambientLog({ t: now, dt_ms: 0, drives: this.driveModel.getSummary(), suppressed_by: 'queue_busy', decision: 'silent' });
@@ -1806,6 +1917,9 @@ export class BridgeAgent {
         const prompt = this._formatAmbientPrompt(state, flavor);
         this.history.add('system', prompt);
 
+        // Schedule the next ambient prompt BEFORE the LLM call, regardless of outcome.
+        this._scheduleNextAmbientPrompt(now, 'ambient_prompt_started');
+
         const response = await this._dispatchProactiveTurn(state, 'ambient');
 
         // Determine decision from parsed response
@@ -1831,7 +1945,7 @@ export class BridgeAgent {
         }
 
         this._ambientLog({
-            t: now, dt_ms,
+            t: now, dt_ms: dtMs,
             drives: this.driveModel.getSummary(),
             suppressed_by: suppressedBy,
             decision,
@@ -1843,10 +1957,7 @@ export class BridgeAgent {
 
         if (decision === 'speak') {
             this._ambientBucketCredits -= 1;
-            // Schedule real jitter window only when tick actually fired
-            const minGap = settings.bridge_ambient_min_gap_ms || 45_000;
-            const maxGap = settings.bridge_ambient_max_gap_ms || 180_000;
-            this._nextAmbientTickAt = now + minGap + Math.random() * (maxGap - minGap);
+            // Long gap already scheduled before the LLM call.
         }
     }
 
@@ -1886,13 +1997,13 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory),
+                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
             });
         }
 
         let response;
         try {
-            response = await this.prompter.promptConvo(history);
+            response = await this._promptConvoLocked('proactive:' + sourceLabel, history, { mode: 'drop' });
         } catch (err) {
             console.error(`LLM error in ${sourceLabel}:`, err);
             return '';
@@ -1916,7 +2027,9 @@ export class BridgeAgent {
                 if (parsed.topic) topic = String(parsed.topic);
                 if (parsed.satisfied_drive) satisfiedDrive = String(parsed.satisfied_drive);
             }
-        } catch {}
+        } catch {
+            // Ignore malformed optional metadata.
+        }
 
         if (chatText.trim()) {
             const trimmedChat = chatText.trim();
@@ -1965,7 +2078,9 @@ export class BridgeAgent {
                 if (existsSync(this.history.memory_fp)) {
                     data = JSON.parse(readFileSync(this.history.memory_fp, 'utf8'));
                 }
-            } catch {}
+            } catch {
+                // Ignore unreadable or invalid existing memory.
+            }
             data.episodic = this.episodicMemory;
             writeFileSync(this.history.memory_fp, JSON.stringify(data, null, 2));
         } catch (err) {
@@ -1986,34 +2101,56 @@ export class BridgeAgent {
     }
 
     /**
-     * Wrapper for bridge.sendBatch that expands high-level actions (build_house)
-     * into low-level ones and may emit a clarifying chat reply before dispatch.
+     * Wrapper for bridge.sendBatch that:
+     *   1. Expands high-level actions (build_house) into low-level ones.
+     *   2. Preprocesses mine actions: normalizes targets, expands ore variants,
+     *      and prepends portal-travel when the target dimension differs from
+     *      the player's current dimension.
+     *   3. May emit a clarifying chat reply before dispatch.
      */
     async _sendBatchWithBuildExpansion(actions) {
         if (!Array.isArray(actions) || actions.length === 0) {
             return this.bridge.sendBatch(actions);
         }
-        // Types that need Node-side expansion before anything hits the mod.
+
+        // ── Step 1: Node-side build expansion ──────────────────────────
         const nodeHandled = new Set(['build_house', 'scan_building', 'rate_build']);
         const hasNodeType = actions.some(a => a && nodeHandled.has(a.type));
-        if (!hasNodeType) {
-            return this.bridge.sendBatch(actions);
+        let expanded = actions;
+        let preReply = null;
+
+        if (hasNodeType) {
+            const result = await this._expandBuildHouseActions(actions);
+            expanded = result.actions;
+            preReply = result.preReply;
+            const aborted = result.aborted === true;
+            if (preReply) {
+                if (settings.chat_ingame === true) {
+                    this._trackSentChat(preReply.trim());
+                    await this.bridge.sendCommand(`chat: ${preReply.trim()}`);
+                }
+                this.history.add(this.name, preReply);
+                sendOutputToServer(this.name, preReply);
+            }
+            if (aborted) {
+                return { success: true, queued: 0, error: null, output: 'build_house expansion aborted atomically; awaiting clarification' };
+            }
+            if (expanded.length === 0) {
+                return { success: true, queued: 0, error: preReply ? null : 'all node-handled actions resolved' };
+            }
         }
 
-        const { actions: expanded, preReply } = await this._expandBuildHouseActions(actions);
-        if (preReply) {
-            // Speak the clarifying question before dispatching anything else.
-            if (settings.chat_ingame === true) {
-                this._trackSentChat(preReply.trim());
-                await this.bridge.sendCommand(`chat: ${preReply.trim()}`);
-            }
-            this.history.add(this.name, preReply);
-            sendOutputToServer(this.name, preReply);
-        }
-        if (expanded.length === 0) {
-            return { success: true, queued: 0, error: preReply ? null : 'all node-handled actions resolved' };
-        }
-        return this.bridge.sendBatch(expanded);
+        // ── Step 2: Mine-action preprocessing ──────────────────────────
+        // Expand ore variants and prepend portal travel when needed.
+        // Uses the most recent state snapshot (this._lastState) for
+        // current dimension and position.
+        const processed = await preprocessMineActions(
+            expanded,
+            this._lastState,
+            this.bridge,
+        );
+
+        return this.bridge.sendBatch(processed);
     }
 
     _ambientLog(entry) {
@@ -2037,6 +2174,14 @@ export class BridgeAgent {
      * @param {Array<object>} actions
      * @returns {Promise<{actions: Array<object>, preReply: string|null, buildMeta: object|null}>}
      */
+    _abortBuildExpansion(preReply, pendingBuildRequest = null) {
+        if (pendingBuildRequest) {
+            this.episodicMemory.pendingBuildRequest = pendingBuildRequest;
+            this._persistEpisodicMemory();
+        }
+        return { actions: [], preReply, buildMeta: null, aborted: true };
+    }
+
     async _expandBuildHouseActions(actions) {
         if (!Array.isArray(actions) || actions.length === 0) {
             return { actions, preReply: null, buildMeta: null };
@@ -2085,10 +2230,7 @@ export class BridgeAgent {
 
             const resolution = resolveBuildRequest(merged, this._lastState);
             if (!resolution.ready) {
-                this.episodicMemory.pendingBuildRequest = merged;
-                this._persistEpisodicMemory();
-                preReply = resolution.question;
-                continue;
+                return this._abortBuildExpansion(resolution.question, merged);
             }
 
             // Site survey. If the LLM/user supplied an explicit origin, trust it.
@@ -2100,11 +2242,10 @@ export class BridgeAgent {
             if (!(merged && merged.origin && Number.isFinite(merged.origin.x))) {
                 const survey = await findBuildableSite(this.bridge, resolution.schematic, resolution.origin, this._lastState);
                 if (!survey.ok) {
-                    // Couldn't find a good site nearby. Stash the request and ask.
-                    this.episodicMemory.pendingBuildRequest = merged;
-                    this._persistEpisodicMemory();
-                    preReply = `I looked for a spot to build — ${survey.reason}. Where should I put it? You can say "here" or give me x y z.`;
-                    continue;
+                    return this._abortBuildExpansion(
+                        `I looked for a spot to build \u2014 ${survey.reason}. Where should I put it? You can say "here" or give me x y z.`,
+                        merged
+                    );
                 }
                 finalOrigin = survey.origin;
                 // The site-search may have returned a rotated schematic that
@@ -2247,7 +2388,9 @@ export class BridgeAgent {
                 if (existsSync(this.history.memory_fp)) {
                     data = JSON.parse(readFileSync(this.history.memory_fp, 'utf8'));
                 }
-            } catch {}
+            } catch {
+                // Ignore unreadable or invalid existing memory.
+            }
             data.episodic = this.episodicMemory;
             writeFileSync(this.history.memory_fp, JSON.stringify(data, null, 2));
         } catch (err) {
@@ -2291,11 +2434,7 @@ export class BridgeAgent {
                 ? `Build ${name}: passed all ${Object.keys(report.stats).length} checks (score ${(report.score * 100).toFixed(0)}%).`
                 : `Build ${name}: score ${(report.score * 100).toFixed(0)}%. Failures: ${report.failures.join(', ')}.`;
             this.history.add('system', human);
-            sendOutputToServer(this.name, `ðŸ  ${human}`);
-
-            this.episodicMemory.lastCompletedBuildName = name;
-            this.episodicMemory.lastCompletedBuildScore = report.score;
-            this._persistEpisodicMemory();
+            sendOutputToServer(this.name, `Build: ${human}`);
 
             this.episodicMemory.lastCompletedBuildName = name;
             this.episodicMemory.lastCompletedBuildScore = report.score;

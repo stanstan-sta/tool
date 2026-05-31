@@ -98,7 +98,9 @@ export class FabricBridge {
                 try {
                     const body = await res.text();
                     if (body) detail += `: ${body}`;
-                } catch {}
+                } catch {
+                    // Ignore unreadable error body.
+                }
                 return { success: false, error: detail };
             }
             return await res.json();
@@ -303,13 +305,34 @@ export class FabricBridge {
             .join(', ') || 'none';
         const dim = (state.dimension || 'overworld').replace('minecraft:', '');
 
+        // Phase 1: held items + equipment (defensive)
+        const held = state.held_items?.main_hand?.item
+            ? state.held_items.main_hand.item.replace('minecraft:', '')
+            : 'empty';
+        const armor = state.equipment
+            ? ['head', 'chest', 'legs', 'feet']
+                .map(slot => state.equipment[slot]?.item?.replace('minecraft:', '') || 'empty')
+                .join('/')
+            : 'unknown';
+
         const lines = [
             `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}`,
             `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}`,
+            `Held: ${held}  Armor: ${armor}`,
             `Inventory: ${inv}`,
             `Nearby players: ${nearby}`,
             `Nearby entities: ${nearbyEntities}`,
         ];
+
+        // Phase 1: status effects (defensive)
+        if (state.effects && state.effects.length > 0) {
+            lines.push(`Effects: ${state.effects.map(e => `${(e.id || '').replace('minecraft:', '')}(${e.amplifier + 1})`).join(', ')}`);
+        }
+
+        // Phase 1: open screen (defensive)
+        if (state.open_screen?.open) {
+            lines.push(`Open screen: ${state.open_screen.handler_class || '?'}`);
+        }
 
         // Include queue status if non-idle
         if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {

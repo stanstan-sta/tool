@@ -86,7 +86,7 @@ brew install --cask temurin@21
 
 #### Step 2 — Install Fabric Loader in your launcher
 1. Download Fabric Installer from https://fabricmc.net/use/installer/
-2. Open the installer, select Minecraft **1.21.4**, click Install
+2. Open the installer, select Minecraft **1.21.11**, click Install
 3. Launch Minecraft once with the Fabric profile to create the mods folder
 
 #### Step 3 — Install Baritone for Fabric
@@ -109,7 +109,7 @@ cp build/libs/mindcraft-bridge-*.jar \
 #### Step 5 — Enable Fabric runtime in settings.js
 ```js
 "launch_mode": "fabric_ui", // or "fabric_headless"
-"bridge_mode": true,        // legacy switch; launch_mode is preferred
+"bridge_mode": true,        // legacy setting; launch_mode is preferred
 "bridge_url": "http://localhost:8765",
 "bridge_structured_output": true
 ```
