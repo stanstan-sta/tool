@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
 import com.mindcraft.bridge.workers.ActionRegistry;
+import net.minecraft.client.MinecraftClient;
 
 /**
  * Minimal HTTP server (JDK built-in, no extra deps) that routes the three
@@ -104,24 +105,47 @@ public class BridgeHttpServer {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'command' field\"}");
                 return;
             }
+            if (!isClientConnected()) {
+                respond(ex, 503, "{\"success\":false,\"error\":\"client_not_connected\",\"queued\":0}");
+                return;
+            }
             // Chat and message commands execute immediately — don't queue them.
             if (command.startsWith("chat:") || command.startsWith("whisper:") || command.startsWith("/")) {
                 CommandExecutor.execute(command);
                 respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
                 return;
             }
-            // Route Baritone/action commands through TaskQueue for sequential execution.
-            // When the queue is disabled, enqueue() falls back to direct execution.
+            // For Baritone-style commands (#...), normalize and check raw command policy
+            String normalized = CommandExecutor.normalizeRawBaritoneCommand(command);
+            if (normalized.startsWith("#")) {
+                if (!RawCommandPolicy.isAllowed(normalized)) {
+                    respond(ex, 422, "{\"success\":false,\"accepted\":false,\"error\":\"raw_command_forbidden\",\"queued\":0,\"output\":\"Command not allowed: " + jsonEscape(command) + "\"}");
+                    return;
+                }
+            }
+            // Queue the normalized command
             TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(command, null)));
+                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(normalized, null)));
             if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
                 int httpStatus = "QUEUE_FULL".equals(eq.error()) ? 503 : 400;
                 respond(ex, httpStatus, "{\"success\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
                 return;
             }
-            respond(ex, 200, "{\"success\":true,\"queued\":" + eq.queued() + ",\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
+            respond(ex, 200, "{\"success\":true,\"queued\":" + eq.queued() + ",\"output\":\"Command sent: " + jsonEscape(normalized) + "\"}");
         } catch (PayloadTooLargeException e) {
             respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
+        }
+    }
+
+    private static boolean isClientConnected() {
+        try {
+            Boolean connected = ClientThread.call(() -> {
+                MinecraftClient client = MinecraftClient.getInstance();
+                return client != null && client.player != null && client.world != null;
+            });
+            return Boolean.TRUE.equals(connected);
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -255,6 +279,7 @@ public class BridgeHttpServer {
 
             int totalQueued = 0;
             boolean hadActionsArray = false;
+            boolean hadCommandsArray = false;
             boolean cancelled = false;
             java.util.List<CommandExecutor.TranslatedAction> results = new java.util.ArrayList<>();
             java.util.List<Long> allTaskIds = new java.util.ArrayList<>();
@@ -306,6 +331,7 @@ public class BridgeHttpServer {
             if (!hadActionsArray) {
                 String cmdsArray = extractJsonArray(body, "commands");
                 if (cmdsArray != null) {
+                    hadCommandsArray = true;
                     java.util.List<String> rawCommands = new java.util.ArrayList<>();
                     String[] cmdElements = splitJsonArray(cmdsArray);
                     for (String cmd : cmdElements) {
@@ -315,7 +341,13 @@ public class BridgeHttpServer {
                             trimmed = trimmed.substring(1, trimmed.length() - 1);
                         }
                         if (!trimmed.isBlank()) {
-                            rawCommands.add(trimmed);
+                            String normalized = CommandExecutor.normalizeRawBaritoneCommand(trimmed);
+                            if (!RawCommandPolicy.isAllowed(normalized)) {
+                                results.add(new CommandExecutor.TranslatedAction(false, "raw_command", null,
+                                        null, "raw_command_forbidden", "raw_command not allowed: " + trimmed));
+                                continue;
+                            }
+                            rawCommands.add(normalized);
                         }
                     }
                     if (!rawCommands.isEmpty()) {
@@ -362,7 +394,7 @@ public class BridgeHttpServer {
             responseJson.append(",\"output\":\"Batch processed: ").append(totalQueued).append(" actions queued\"");
             responseJson.append("}");
 
-            if (totalQueued == 0 && !hadActionsArray) {
+            if (totalQueued == 0 && !hadActionsArray && !hadCommandsArray) {
                 respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Missing 'actions' or 'commands' array\"}");
             } else if (totalQueued == 0 && hasError) {
                 respond(ex, 422, responseJson.toString());
@@ -454,15 +486,36 @@ public class BridgeHttpServer {
         String result = CommandExecutor.executeCraftBatch(craftActions);
         if (result != null && result.startsWith("craft: queued")) {
             int count = parseCraftQueuedCount(result);
-            // Craft batch internally uses the queue; we don't get individual task IDs
-            // from the batch planner, so report as self-executing with legacy count.
+            // All craft actions in the buffer succeeded
             for (int i = 0; i < craftActions.size(); i++) {
-                results.add(new CommandExecutor.TranslatedAction(true, "craft", "self_executing", result, null, result));
+                String itemName = CommandExecutor.extractJsonString(craftActions.get(i), "item");
+                String actionDesc = itemName != null ? "craft " + itemName : "craft action " + (i + 1);
+                results.add(new CommandExecutor.TranslatedAction(true, "craft", "self_executing", result, null,
+                        "queued: " + actionDesc));
             }
             return count;
         }
+        // Check if rejected due to parse errors in specific entries
+        if (result != null && result.startsWith("craft: batch rejected")) {
+            // Mark all craft actions in this buffer as rejected
+            for (int i = 0; i < craftActions.size(); i++) {
+                String itemName = CommandExecutor.extractJsonString(craftActions.get(i), "item");
+                String actionDesc = itemName != null ? "craft " + itemName : "craft action " + (i + 1);
+                if (itemName == null || itemName.isBlank()) {
+                    results.add(new CommandExecutor.TranslatedAction(false, "craft", null,
+                            null, "invalid_craft_action", "Missing 'item' field in craft action " + (i + 1)));
+                } else {
+                    results.add(new CommandExecutor.TranslatedAction(false, "craft", null,
+                            null, "invalid_craft_action", "Invalid craft action: " + actionDesc + " - " + result));
+                }
+            }
+            return 0;
+        }
+        // Generic failure
         String err = result == null || result.isBlank() ? "craft: invalid action" : result;
         for (int i = 0; i < craftActions.size(); i++) {
+            String itemName = CommandExecutor.extractJsonString(craftActions.get(i), "item");
+            String actionDesc = itemName != null ? "craft " + itemName : "craft action " + (i + 1);
             results.add(new CommandExecutor.TranslatedAction(false, "craft", null, null, "craft_failed", err));
         }
         return 0;

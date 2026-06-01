@@ -113,7 +113,7 @@ export class Gemini {
             model: this.model_name || "gemini-embedding-001",
             contents: text,
         })
-
+        // verified: @google/genai v1.50.1 EmbedContentResponse has `embeddings` (plural)
         return result.embeddings;
     }
 }

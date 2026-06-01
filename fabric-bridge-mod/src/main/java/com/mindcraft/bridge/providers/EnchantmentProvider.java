@@ -31,28 +31,15 @@ public class EnchantmentProvider implements ItemProvider {
         String id = ItemIds.normalize(itemId);
         List<PlanStep> steps = new ArrayList<>();
 
-        if (id.startsWith("minecraft:enchanted_")) {
-            String baseItem = id.replace("enchanted_", "");
-            steps.add(new PlanStep("enchant", "{\"item\":\"" + baseItem + "\",\"target\":\"" + id + "\"}"));
-        } else if (ENCHANTABLE_ITEMS.contains(id)) {
-            steps.add(new PlanStep("find_enchanting_table", "{}"));
-        }
-
-        return new ProviderPlan(true, null, steps);
+        // Enchantment planning is not fully supported. Items that are
+        // enchantable (e.g. diamond_sword) can still be crafted through
+        // the crafting provider. The enchant action itself requires
+        // manual selection from the available options in-game.
+        return new ProviderPlan(false, "UNSUPPORTED_ENCHANT", steps);
     }
 
     public ProviderPlan planEnchant(String item, String targetEnchantment, PlanContext ctx) {
-        List<PlanStep> steps = new ArrayList<>();
-
-        int hasLapis = ctx.inventory().getOrDefault("minecraft:lapis_lazuli", 0);
-        if (hasLapis < 3) {
-            steps.add(new PlanStep("mine", "{\"target\":\"minecraft:lapis_lazuli\",\"count\":3}"));
-        }
-
-        steps.add(new PlanStep("find_enchanting_table", "{}"));
-        steps.add(new PlanStep("enchant", "{\"item\":\"" + item + "\",\"enchantment\":\"" + targetEnchantment + "\"}"));
-
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED_ENCHANT", List.of());
     }
 
     public Set<String> getEnchantableItems() {

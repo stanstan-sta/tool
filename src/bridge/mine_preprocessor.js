@@ -162,6 +162,65 @@ function getTargetDimension(canonical) {
     return 'overworld';
 }
 
+function parseRawMineCommand(command) {
+    const text = String(command || '').trim();
+    const parts = text.split(/\s+/).filter(Boolean);
+    if (parts.length < 2 || parts[0].toLowerCase() !== '#mine') return null;
+
+    let targetIndex = 1;
+    let count = null;
+    if (/^\d+$/.test(parts[1])) {
+        count = Number(parts[1]);
+        targetIndex = 2;
+    }
+
+    const target = parts[targetIndex];
+    if (!target) return null;
+    return { target, count };
+}
+
+function getMineActionInfo(action) {
+    if (!action || typeof action !== 'object') return null;
+    if (action.type === 'mine' && action.target) {
+        const { canonical, variants } = resolveTarget(action.target);
+        return {
+            canonical,
+            variants,
+            normalizedAction: { ...action, target: canonical },
+        };
+    }
+    if (action.type === 'raw_command') {
+        const parsed = parseRawMineCommand(action.command);
+        if (!parsed) return null;
+        const { canonical, variants } = resolveTarget(parsed.target);
+        const canonicalCommand = parsed.count !== null
+            ? `#mine ${parsed.count} ${canonical}`
+            : `#mine ${canonical}`;
+        return {
+            canonical,
+            variants,
+            normalizedAction: { type: 'raw_command', provider: action.provider || 'baritone_chat', command: canonicalCommand },
+        };
+    }
+    return null;
+}
+
+function isReturnActionForDimension(action, dimension) {
+    if (!action || typeof action !== 'object') return false;
+    if (dimension === 'overworld' && action.type === 'return_to_overworld') return true;
+    if (action.type === 'portal_travel') {
+        return normalizeDimension(action.dimension) === dimension;
+    }
+    return false;
+}
+
+function makeTravelAction(dimension) {
+    if (dimension === 'overworld') {
+        return { type: 'return_to_overworld', provider: 'baritone_chat' };
+    }
+    return { type: 'portal_travel', provider: 'baritone_chat', dimension };
+}
+
 // ── Nearby-block probe ─────────────────────────────────────────────────
 
 /**
@@ -175,7 +234,7 @@ function getTargetDimension(canonical) {
  */
 async function hasNearbyTarget(bridge, playerPos, candidateIds) {
     if (!bridge || typeof bridge.readBlocks !== 'function') return false;
-    if (!playerPos || !Number.isFinite(playerPos.x)) return false;
+    if (!playerPos || !Number.isFinite(playerPos.x) || !Number.isFinite(playerPos.y) || !Number.isFinite(playerPos.z)) return false;
 
     const x = Math.round(playerPos.x);
     const y = Math.round(playerPos.y);
@@ -223,20 +282,35 @@ export async function preprocessMineActions(actions, state, bridge) {
     const playerPos = { x: state?.x, y: state?.y, z: state?.z };
 
     const out = [];
+    let virtualDim = currentDim;
+    let mustReturnToDim = null;
 
     for (const action of actions) {
-        if (!action || action.type !== 'mine' || !action.target) {
+        const mineInfo = getMineActionInfo(action);
+
+        if (!mineInfo) {
+            if (mustReturnToDim && !isReturnActionForDimension(action, mustReturnToDim)) {
+                out.push(makeTravelAction(mustReturnToDim));
+                virtualDim = mustReturnToDim;
+                mustReturnToDim = null;
+            } else if (mustReturnToDim && isReturnActionForDimension(action, mustReturnToDim)) {
+                virtualDim = mustReturnToDim;
+                mustReturnToDim = null;
+            }
+
+            if (action?.type === 'portal_travel') {
+                virtualDim = normalizeDimension(action.dimension);
+            } else if (action?.type === 'return_to_overworld') {
+                virtualDim = 'overworld';
+            }
             out.push(action);
             continue;
         }
 
-        const { canonical, variants } = resolveTarget(action.target);
+        const { canonical, variants, normalizedAction } = mineInfo;
         const targetDim = getTargetDimension(canonical);
 
-        // Rewrite target to canonical form so the mod sees a name it knows.
-        const normalizedAction = { ...action, target: canonical };
-
-        if (targetDim === currentDim) {
+        if (targetDim === virtualDim) {
             // Same dimension — no portal travel needed.
             out.push(normalizedAction);
             continue;
@@ -244,7 +318,9 @@ export async function preprocessMineActions(actions, state, bridge) {
 
         // Different dimension — probe nearby blocks before committing
         // to an expensive portal trip.
-        const nearby = await hasNearbyTarget(bridge, playerPos, variants);
+        const nearby = virtualDim === currentDim
+            ? await hasNearbyTarget(bridge, playerPos, variants)
+            : false;
 
         if (nearby) {
             // At least one variant exists within 24 blocks — skip portal.
@@ -253,19 +329,23 @@ export async function preprocessMineActions(actions, state, bridge) {
         }
 
         // No nearby target — prepend portal travel.
-        if (targetDim === 'nether') {
-            out.push({ type: 'portal_travel', provider: 'baritone_chat', dimension: 'nether' });
-        } else if (targetDim === 'end') {
-            out.push({ type: 'portal_travel', provider: 'baritone_chat', dimension: 'end' });
-        } else {
-            // Target is overworld but player is in nether/end — return first.
-            out.push({ type: 'return_to_overworld', provider: 'baritone_chat' });
+        out.push(makeTravelAction(targetDim));
+        virtualDim = targetDim;
+        if (mustReturnToDim === targetDim) {
+            mustReturnToDim = null;
+        } else if (mustReturnToDim === null && currentDim !== targetDim) {
+            mustReturnToDim = currentDim;
         }
+            // Target is overworld but player is in nether/end — return first.
         out.push(normalizedAction);
+    }
+
+    if (mustReturnToDim) {
+        out.push(makeTravelAction(mustReturnToDim));
     }
 
     return out;
 }
 
 // ── Named exports (also useful for testing) ────────────────────────────
-export { resolveTarget, getTargetDimension, normalizeBlockName };
+export { resolveTarget, getTargetDimension, normalizeBlockName, parseRawMineCommand };

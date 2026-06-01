@@ -88,7 +88,17 @@ public class BridgeConfig {
     }
 
     private static BridgeConfig load() {
-        Path configPath = FabricLoader.getInstance().getConfigDir().resolve("mindcraft-bridge.json");
+        Path configDir;
+        try {
+            configDir = FabricLoader.getInstance().getConfigDir();
+        } catch (Throwable t) {
+            configDir = null;
+        }
+        if (configDir == null) {
+            LOGGER.warn("Fabric config directory unavailable, using default bridge config");
+            return new BridgeConfig();
+        }
+        Path configPath = configDir.resolve("mindcraft-bridge.json");
 
         if (!Files.exists(configPath)) {
             LOGGER.info("No config file found at {}, using defaults", configPath);

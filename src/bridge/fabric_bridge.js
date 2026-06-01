@@ -97,13 +97,25 @@ export class FabricBridge {
                 let detail = `HTTP ${res.status}`;
                 try {
                     const body = await res.text();
-                    if (body) detail += `: ${body}`;
+                    if (body) {
+                        detail += `: ${body}`;
+                        try {
+                            const json = JSON.parse(body);
+                            return { ...json, success: false, error: detail };
+                        } catch {
+                            // Body was not JSON.
+                        }
+                    }
                 } catch {
                     // Ignore unreadable error body.
                 }
                 return { success: false, error: detail };
             }
-            return await res.json();
+            const json = await res.json();
+            if (json && json.success === false && !json.error) {
+                json.error = summarizeBatchError(json) || 'unknown error';
+            }
+            return json;
         } catch (err) {
             return { success: false, error: err.message };
         }
@@ -122,8 +134,29 @@ export class FabricBridge {
                 body: JSON.stringify({ commands }),
                 signal: AbortSignal.timeout(8000),
             });
-            if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
-            return await res.json();
+            if (!res.ok) {
+                let detail = `HTTP ${res.status}`;
+                try {
+                    const body = await res.text();
+                    if (body) {
+                        detail += `: ${body}`;
+                        try {
+                            const json = JSON.parse(body);
+                            return { ...json, success: false, error: detail };
+                        } catch {
+                            // Body was not JSON.
+                        }
+                    }
+                } catch {
+                    // Ignore unreadable error body.
+                }
+                return { success: false, error: detail };
+            }
+            const json = await res.json();
+            if (json && json.success === false && !json.error) {
+                json.error = summarizeBatchError(json) || 'unknown error';
+            }
+            return json;
         } catch (err) {
             return { success: false, error: err.message };
         }
@@ -296,7 +329,8 @@ export class FabricBridge {
         if (!state || !state.connected) return 'Fabric client not connected.';
 
         const inv = (state.inventory || [])
-            .map(i => `${i.count}x ${i.item.replace('minecraft:', '')}`)
+            .filter(i => i && i.item)
+            .map(i => `${i.count || 1}x ${i.item.replace('minecraft:', '')}`)
             .join(', ') || 'empty';
         const nearby = (state.nearby_players || []).join(', ') || 'none';
         const nearbyEntities = (state.nearby_entities || [])
@@ -346,4 +380,13 @@ export class FabricBridge {
 
         return lines.join('\n');
     }
+}
+
+function summarizeBatchError(json) {
+    if (!json || !Array.isArray(json.results)) return null;
+    const failed = json.results.find(r => r && r.status === 'rejected') || json.results.find(r => r && r.failure_code);
+    if (!failed) return null;
+    const code = failed.failure_code ? String(failed.failure_code) : 'rejected';
+    const message = failed.message ? String(failed.message) : '';
+    return message ? `${code}: ${message}` : code;
 }

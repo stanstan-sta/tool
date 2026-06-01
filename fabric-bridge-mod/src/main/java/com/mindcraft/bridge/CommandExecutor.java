@@ -31,12 +31,15 @@ import net.minecraft.util.Hand;
 
 import com.mindcraft.bridge.workers.ActionRegistry;
 import com.mindcraft.bridge.workers.Worker;
+import com.mindcraft.bridge.workers.WorkerContext;
+import com.mindcraft.bridge.workers.WorkerResult;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.text.Text;
 import net.minecraft.world.World;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -102,11 +105,7 @@ public class CommandExecutor {
             return selfExecuting(type, result);
         }
         if ("sleep_try".equals(type)) {
-            String result = executeSleepTryAction(actionJson);
-            if (result == null) {
-                return new TranslatedAction(false, type, "self_executing", null, "sleep_try_failed", "Sleep try returned null");
-            }
-            return selfExecuting(type, result);
+            return queued(type, "#sleep");
         }
         if ("build_schematic".equals(type)) {
             String result = executeBuildSchematicAction(actionJson);
@@ -166,13 +165,13 @@ public class CommandExecutor {
             return immediate(type, executeInteractEntityAction(actionJson));
         }
         if ("smith".equals(type)) {
-            return selfExecuting(type, executeSmithAction(actionJson));
+            return ofGenericWorker(type, "#smith", "queued");
         }
         if ("brew".equals(type)) {
-            return selfExecuting(type, executeBrewAction(actionJson));
+            return ofGenericWorker(type, "#brew", "queued");
         }
         if ("enchant".equals(type)) {
-            return selfExecuting(type, executeEnchantAction(actionJson));
+            return ofGenericWorker(type, "#enchant", "queued");
         }
         if ("anvil".equals(type)) {
             return selfExecuting(type, executeAnvilAction(actionJson));
@@ -256,15 +255,9 @@ public class CommandExecutor {
             return selfExecuting(type, executeRepairStructureAction(actionJson));
         }
 
-        // Baritone commands (move, mine, follow, cancel)
-        String command = extractRawBaritoneCommand(actionJson, type);
-        if (command != null) {
-            return queued(type, command);
-        }
-
         // raw_command — passes through arbitrary command (gated by allowlist)
         if ("raw_command".equals(type)) {
-            String rawCmd = extractJsonString(actionJson, "command");
+            String rawCmd = normalizeRawBaritoneCommand(extractJsonString(actionJson, "command"));
             if (rawCmd == null || rawCmd.isBlank()) {
                 return new TranslatedAction(false, type, null, null, "missing_command", "raw_command requires a 'command' field");
             }
@@ -272,6 +265,12 @@ public class CommandExecutor {
                 return new TranslatedAction(false, type, null, null, "raw_command_forbidden", "raw_command not allowed: " + rawCmd);
             }
             return queued(type, rawCmd);
+        }
+
+        // Baritone commands (move, mine, follow, cancel)
+        String command = extractRawBaritoneCommand(actionJson, type);
+        if (command != null) {
+            return queued(type, command);
         }
 
         // Generic worker fallback — registered worker with no explicit handler above
@@ -314,7 +313,10 @@ public class CommandExecutor {
         } else if (command.startsWith("#")) {
             final String msg = command.trim();
             ClientThread.run(() -> {
-                boolean executed = executeBaritoneCommand(msg);
+                boolean executed = dispatchBaritoneChatCommand(msg);
+                if (!executed) {
+                    executed = executeBaritoneCommand(msg);
+                }
                 net.minecraft.client.network.ClientPlayerEntity player = client.player;
                 if (!executed && player != null && player.networkHandler != null) {
                     // Fallback to sending chat command without '#' if reflection fails
@@ -489,6 +491,10 @@ public class CommandExecutor {
     private enum CombatState { SEARCHING, APPROACHING, ENGAGING, LOOTING, DONE }
 
     private static String executeAttackAction(String actionJson) {
+        return executeAttackAction(actionJson, "#attack");
+    }
+
+    private static String executeAttackAction(String actionJson, String trackingCommand) {
         WorkerThreads.start("mindcraft-combat", () -> {
             try {
                 var ctx = new com.mindcraft.bridge.workers.WorkerContext(
@@ -498,12 +504,12 @@ public class CommandExecutor {
                 );
                 var result = com.mindcraft.bridge.workers.ActionRegistry.get().getWorker("attack").execute(actionJson, ctx);
                 if (result.ok()) {
-                    TaskQueue.getInstance().completeActiveIf("#attack");
+                    TaskQueue.getInstance().completeActiveIf(trackingCommand);
                 } else {
-                    TaskQueue.getInstance().failActiveIf("#attack", result.error());
+                    TaskQueue.getInstance().failActiveIf(trackingCommand, result.error());
                 }
             } catch (Exception e) {
-                TaskQueue.getInstance().failActiveIf("#attack", "attack: " + e.getMessage());
+                TaskQueue.getInstance().failActiveIf(trackingCommand, "attack: " + e.getMessage());
             }
         });
         return "attack: queued melee combat";
@@ -1483,9 +1489,15 @@ public class CommandExecutor {
             requests.add(new CraftRequest(itemName, count));
         }
 
+        // Reject entire batch if any craft action has parse errors.
+        // This prevents silently accepting later valid actions while earlier
+        // invalid ones were ignored — the batch is semantically atomic.
+        if (!parseErrors.isEmpty()) {
+            return "craft: batch rejected - " + String.join("; ", parseErrors);
+        }
+
         if (requests.isEmpty()) {
-            String err = parseErrors.isEmpty() ? "craft: no valid actions" : String.join("; ", parseErrors);
-            return "craft: could not plan - " + err;
+            return "craft: could not plan - no valid actions";
         }
 
         MinecraftClient client = MinecraftClient.getInstance();
@@ -1581,8 +1593,10 @@ public class CommandExecutor {
         plan.steps.addAll(coalesced);
 
         // â”€â”€ Phase 3: enqueue the first step and post the plan summary back to the client
-        String targetItem = ItemIds.normalize(planKeys.get(0));
-        int targetCount = requests.get(0).count;
+        java.util.List<CraftGoal> goals = new java.util.ArrayList<>();
+        for (int i = 0; i < planKeys.size(); i++) {
+            goals.add(new CraftGoal(ItemIds.normalize(planKeys.get(i)), requests.get(i).count));
+        }
         final String summary = describeMakePlan(plan.steps);
         ClientThread.run(() -> {
             ClientPlayerEntity player = client.player;
@@ -1590,7 +1604,7 @@ public class CommandExecutor {
                 player.sendMessage(net.minecraft.text.Text.literal(
                         "[Bridge] Planned: " + summary), false);
             }
-            planAndExecuteCraftContinuation(targetItem, targetCount, 50);
+            planAndExecuteCraftContinuations(goals, 50 * Math.max(1, goals.size()));
         });
 
         String result = "craft: queued 1 step(s) (continuation-based); " + summary;
@@ -1642,11 +1656,21 @@ public class CommandExecutor {
     }
 
     private record CraftRequest(String itemName, int count) {}
+    private record CraftGoal(String itemName, int count) {}
+    static final int CRAFT_PATHING_BLOCK_RESERVE = 5;
+    private static final Set<String> CRAFT_PATHING_RESERVE_ITEMS = Set.of(
+            "minecraft:cobblestone",
+            "minecraft:cobbled_deepslate",
+            "minecraft:blackstone",
+            "minecraft:dirt",
+            "minecraft:netherrack"
+    );
 
     public static class MakePlan {
         final List<MakeStep> steps = new ArrayList<>();
         final List<String> errors = new ArrayList<>();
         final Map<String, Integer> virtualInventory = new HashMap<>();
+        final Map<String, Integer> snapshotInventory = new HashMap<>();
         final Set<String> reservedTools = new HashSet<>();
         final Set<String> stations = new HashSet<>();
         // Stations already present in the world near the player, pre-probed on the
@@ -1666,6 +1690,15 @@ public class CommandExecutor {
 
         int countVirtual(String itemId) {
             return virtualInventory.getOrDefault(ItemIds.normalize(itemId), 0);
+        }
+
+        void addSnapshot(String itemId, int count) {
+            if (count <= 0) return;
+            snapshotInventory.merge(ItemIds.normalize(itemId), count, Integer::sum);
+        }
+
+        int countSnapshot(String itemId) {
+            return snapshotInventory.getOrDefault(ItemIds.normalize(itemId), 0);
         }
 
         int consumeItem(String itemId, int count) {
@@ -1744,6 +1777,34 @@ public class CommandExecutor {
      * item count is satisfied or planning genuinely fails.
      */
     private static void planAndExecuteCraftContinuation(String targetItem, int targetCount, int remainingSteps) {
+        planAndExecuteCraftContinuations(
+                java.util.List.of(new CraftGoal(targetItem, targetCount)),
+                remainingSteps);
+    }
+
+    private static void planAndExecuteCraftContinuations(java.util.List<CraftGoal> goals, int remainingSteps) {
+        if (goals == null || goals.isEmpty()) return;
+        CraftGoal activeGoal = null;
+        ClientPlayerEntity player = MinecraftClient.getInstance().player;
+        if (player == null) {
+            sendBridgeMessage("[Bridge] Craft failed: not connected");
+            return;
+        }
+        for (CraftGoal goal : goals) {
+            if (InventoryDriver.countItem(player, goal.itemName()) < goal.count()) {
+                activeGoal = goal;
+                break;
+            }
+        }
+        if (activeGoal == null) {
+            sendBridgeMessage("[Bridge] make-continuation: all goals already met");
+            return;
+        }
+        planAndExecuteCraftContinuation(activeGoal.itemName(), activeGoal.count(), remainingSteps,
+                () -> planAndExecuteCraftContinuations(goals, remainingSteps - 1));
+    }
+
+    private static void planAndExecuteCraftContinuation(String targetItem, int targetCount, int remainingSteps, Runnable continuation) {
         sendBridgeMessage("[Bridge] make-continuation fired for " + targetItem);
         if (remainingSteps <= 0) {
             sendBridgeMessage("[Bridge] Craft plan exceeded max steps for " + ItemIds.strip(targetItem));
@@ -1778,7 +1839,6 @@ public class CommandExecutor {
         MakeStep firstStep = coalesced.get(0);
         sendBridgeMessage("[Bridge] make-continuation: next step = "
                 + firstStep.kind() + " " + firstStep.command());
-        Runnable continuation = () -> planAndExecuteCraftContinuation(targetItem, targetCount, remainingSteps - 1);
         if (firstStep.kind() == MakeStepKind.CRAFT) {
             // For CRAFT steps, the continuation must run AFTER the craft
             // thread finishes (i.e., after completeActiveIf), not in the
@@ -1803,16 +1863,16 @@ public class CommandExecutor {
     /**
      * Coalesce compatible MINE and SMELT steps in a craft plan.
      * Simple overworld #mine N <target> steps with the same target block
-     * are merged into one step with the combined count. Same for
+     * are merged into one step with the larger target-total count. Same for
      * #task smelt <input> N steps with the same input. Portal-related
      * gotos and nether-target mines are left untouched.
      */
-    private static java.util.List<MakeStep> coalesceMakeSteps(java.util.List<MakeStep> steps) {
+    static java.util.List<MakeStep> coalesceMakeSteps(java.util.List<MakeStep> steps) {
         java.util.List<MakeStep> result = new java.util.ArrayList<>();
         for (MakeStep step : steps) {
             if (isSimpleMineStep(step)) {
-                String target = extractMineTarget(step.command());
-                if (target != null && tryMergeMineStep(result, step, target)) continue;
+                String targets = extractMineTargets(step.command());
+                if (targets != null && tryMergeMineStep(result, step, targets)) continue;
             } else if (isSimpleSmeltStep(step)) {
                 String input = extractSmeltInput(step.command());
                 if (input != null && tryMergeSmeltStep(result, step, input)) continue;
@@ -1834,9 +1894,10 @@ public class CommandExecutor {
                 && step.command().startsWith("#task smelt ");
     }
 
-    private static String extractMineTarget(String command) {
-        String[] parts = command.split(" ");
-        return parts.length >= 3 ? parts[2] : null;
+    private static String extractMineTargets(String command) {
+        String[] parts = command.trim().split("\\s+");
+        if (parts.length < 3) return null;
+        return String.join(" ", Arrays.copyOfRange(parts, 2, parts.length));
     }
 
     private static String extractSmeltInput(String command) {
@@ -1846,16 +1907,17 @@ public class CommandExecutor {
 
     /**
      * Find the earliest MINE step in the result list with the same mine
-     * target and merge the count into it. Returns true if merged (caller
-     * should not add the step), false if no match found.
+     * targets and merge the target-total count into it. Baritone #mine N is
+     * target-total inventory, not "mine N more", so the merged count must be
+     * max(existing, next) instead of a sum.
      */
-    private static boolean tryMergeMineStep(java.util.List<MakeStep> result, MakeStep step, String target) {
+    private static boolean tryMergeMineStep(java.util.List<MakeStep> result, MakeStep step, String targets) {
         for (int i = 0; i < result.size(); i++) {
             MakeStep existing = result.get(i);
-            if (isSimpleMineStep(existing) && target.equals(extractMineTarget(existing.command()))) {
-                int newCount = existing.count() + step.count();
+            if (isSimpleMineStep(existing) && targets.equals(extractMineTargets(existing.command()))) {
+                int newCount = Math.max(existing.count(), step.count());
                 result.set(i, new MakeStep(MakeStepKind.MINE, existing.itemName(), newCount,
-                        "#mine " + newCount + " " + target));
+                        "#mine " + newCount + " " + targets));
                 return true;
             }
         }
@@ -2023,8 +2085,9 @@ public class CommandExecutor {
         if (needsExitPortal) {
             plan.steps.add(new MakeStep(MakeStepKind.MINE, "overworld_portal", 1, "#goto nether_portal"));
         }
-        plan.steps.add(new MakeStep(MakeStepKind.MINE, ItemIds.strip(gather.producedItem()), missing,
-                gather.mineCommand(missing)));
+        int mineTargetTotal = baritoneMineTargetTotal(plan, gather, missing);
+        plan.steps.add(new MakeStep(MakeStepKind.MINE, ItemIds.strip(gather.producedItem()), mineTargetTotal,
+                gather.mineCommand(mineTargetTotal)));
         plan.addVirtual(gather.producedItem(), missing);
         plan.consumeItem(normalized, missing);
         if (needsEnterPortal) {
@@ -2034,6 +2097,21 @@ public class CommandExecutor {
             plan.steps.add(new MakeStep(MakeStepKind.MINE, "nether_portal", 1, "#goto nether_portal"));
         }
         return true;
+    }
+
+    static int baritoneMineTargetTotal(MakePlan plan, GatherProvider gather, int missing) {
+        int current = plan == null ? 0 : plan.countSnapshot(gather.producedItem());
+        int reserve = craftPathingReserveFor(gather.producedItem());
+        return Math.max(1, current + Math.max(0, missing) + reserve);
+    }
+
+    static String bridgeMineCommandForGather(MakePlan plan, GatherProvider gather, int missing) {
+        return gather.mineCommand(baritoneMineTargetTotal(plan, gather, missing));
+    }
+
+    static int craftPathingReserveFor(String itemId) {
+        String normalized = ItemIds.normalize(itemId);
+        return CRAFT_PATHING_RESERVE_ITEMS.contains(normalized) ? CRAFT_PATHING_BLOCK_RESERVE : 0;
     }
 
     private static boolean makeIngredient(MakePlan plan, List<String> patterns, int count, int depth) {
@@ -2142,12 +2220,8 @@ public class CommandExecutor {
         if (!makeItem(plan, smelt.input(), missing, depth + 1)) {
             return false;
         }
-        int fuelNeeded = fuelItemsNeededForPlan(plan, missing, smelt.input());
-        if (fuelNeeded > 0) {
-            if (!makeItem(plan, "minecraft:coal", fuelNeeded, depth + 1)) {
-                return false;
-            }
-            plan.consumeItem("minecraft:coal", fuelNeeded);
+        if (!reserveFuelForPlan(plan, missing, smelt.input(), depth)) {
+            return false;
         }
         ensureStation(plan, "furnace");
         String inputKey = ItemIds.strip(smelt.input());
@@ -2230,12 +2304,45 @@ public class CommandExecutor {
         return Math.max(1, (int) Math.ceil(missingCapacity / 8.0));
     }
 
+    private static boolean reserveFuelForPlan(MakePlan plan, int smeltItems, String avoidItemId, int depth) {
+        int remainingCapacity = Math.max(0, smeltItems);
+        String avoid = ItemIds.normalize(avoidItemId);
+        List<String> fuels = new ArrayList<>(plan.virtualInventory.keySet());
+        fuels.sort((a, b) -> {
+            int capCompare = Integer.compare(fuelCapacityItems(b), fuelCapacityItems(a));
+            return capCompare != 0 ? capCompare : a.compareTo(b);
+        });
+
+        for (String fuel : fuels) {
+            if (remainingCapacity <= 0) return true;
+            if (fuel.equals(avoid)) continue;
+            int capacity = fuelCapacityItems(fuel);
+            if (capacity <= 0) continue;
+            int available = plan.countVirtual(fuel);
+            int needed = Math.min(available, (int) Math.ceil(remainingCapacity / (double) capacity));
+            if (needed <= 0) continue;
+            plan.consumeItem(fuel, needed);
+            remainingCapacity -= needed * capacity;
+        }
+
+        if (remainingCapacity <= 0) return true;
+
+        int coalNeeded = Math.max(1, (int) Math.ceil(remainingCapacity / 8.0));
+        if (!makeItem(plan, "minecraft:coal", coalNeeded, depth + 1)) {
+            return false;
+        }
+        plan.consumeItem("minecraft:coal", coalNeeded);
+        return true;
+    }
+
     private static void snapshotInventory(ClientPlayerEntity player, MakePlan plan) {
         PlayerInventory inv = player.getInventory();
         for (int i = 0; i < inv.size(); i++) {
             ItemStack stack = inv.getStack(i);
             if (!stack.isEmpty()) {
-                plan.addVirtual(ItemIds.fromStack(stack), stack.getCount());
+                String itemId = ItemIds.fromStack(stack);
+                plan.addVirtual(itemId, stack.getCount());
+                plan.addSnapshot(itemId, stack.getCount());
             }
         }
     }
@@ -4958,7 +5065,27 @@ public class CommandExecutor {
                     return;
                 }
 
-                if ("self_executing".equals(ta.lifecycle())) {
+                if (ta.genericWorker()) {
+                    Worker worker = ActionRegistry.get().getWorker(ta.actionType());
+                    if (worker == null) {
+                        TaskQueue.getInstance().failActiveIf("#obtain",
+                            "obtain: no worker for " + step.actionType());
+                        return;
+                    }
+                    WorkerContext workerCtx = new WorkerContext(
+                        TaskQueue.getInstance(),
+                        () -> TaskQueue.getInstance().isCancellationRequested(),
+                        fullJson,
+                        ta.actionType()
+                    );
+                    WorkerResult result = worker.execute(fullJson, workerCtx);
+                    if (result == null || !result.ok()) {
+                        TaskQueue.getInstance().failActiveIf("#obtain",
+                            "obtain: worker failed - " + step.actionType() + ": "
+                                + (result == null ? "null worker result" : result.error()));
+                        return;
+                    }
+                } else if ("self_executing".equals(ta.lifecycle())) {
                     long stepId = TaskQueue.getInstance().createNestedTrackingTask(
                         "#" + step.actionType(), step.actionType());
                     if (!obtainWaitForStep(stepId)) {
@@ -5234,11 +5361,11 @@ public class CommandExecutor {
 
     private static String executeClearHostilesAction(String actionJson) {
         String actionData = "{\"type\":\"attack\",\"target_type\":\"\",\"count\":999,\"search_time_s\":30,\"retreat_hp\":8}";
-        return executeAttackAction(actionData);
+        return executeAttackAction(actionData, "#clear_hostiles");
     }
 
     private static String executeHuntMobAction(String actionJson) {
-        return executeAttackAction(actionJson);
+        return executeAttackAction(actionJson, "#hunt_mob");
     }
 
     private static String executeFarmAction(String actionJson) {
@@ -5809,61 +5936,95 @@ public class CommandExecutor {
     }
 
     private static String executePortalTravelAction(String actionJson) {
+        return executePortalTravelAction(actionJson, "#portal_travel");
+    }
+
+    private static String executePortalTravelAction(String actionJson, String trackingCommand) {
         String dimension = extractJsonString(actionJson, "dimension");
         if (dimension == null) return "portal_travel: missing dimension";
 
-        WorkerThreads.start("mindcraft-portal", () -> portalTravelWorker(dimension));
-        return "queued to " + dimension;
+        String target = DimensionDriver.normalizeDimension(dimension);
+        WorkerThreads.start("mindcraft-portal", () -> portalTravelWorker(target, trackingCommand));
+        return "queued to " + target;
     }
 
-    private static void portalTravelWorker(String dimension) {
+    private static void portalTravelWorker(String dimension, String trackingCommand) {
         if (TaskQueue.getInstance().isCancellationRequested()) return;
-        String current = DimensionDriver.getCurrentDimension();
-        if (dimension.equals(current)) {
-            TaskQueue.getInstance().completeActiveIf("#portal_travel");
+        if (DimensionDriver.isCurrentDimension(dimension)) {
+            TaskQueue.getInstance().completeActiveIf(trackingCommand);
             return;
         }
 
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) {
-            TaskQueue.getInstance().failActiveIf("#portal_travel", "portal_travel: not connected");
+            TaskQueue.getInstance().failActiveIf(trackingCommand, "portal_travel: not connected");
             return;
         }
 
-        String portalBlock = dimension.contains("nether") ? "nether_portal" :
-                             dimension.contains("end") ? "end_portal" : "nether_portal";
+        String portalBlock = dimension.contains("the_nether") ? "nether_portal" :
+                             dimension.contains("the_end") ? "end_portal" : "nether_portal";
 
         BlockPos portal = WorkstationFinder.findNearest(client.world, client.player, "minecraft:" + portalBlock, 32);
         if (portal == null) {
-            TaskQueue.getInstance().failActiveIf("#portal_travel", "portal_travel: no portal found");
+            TaskQueue.getInstance().failActiveIf(trackingCommand, "portal_travel: no portal found");
             return;
         }
 
         if (TaskQueue.getInstance().isCancellationRequested()) return;
 
         if (!waitUntilNear(portal, 2.0, 60_000L)) {
-            TaskQueue.getInstance().failActiveIf("#portal_travel", "portal_travel: failed to reach portal");
+            TaskQueue.getInstance().failActiveIf(trackingCommand, "portal_travel: failed to reach portal");
+            return;
+        }
+
+        if (TaskQueue.getInstance().isCancellationRequested()) return;
+
+        if (!waitUntilInPortalBlock(dimension, 30_000L)) {
+            TaskQueue.getInstance().failActiveIf(trackingCommand, "portal_travel: reached portal but did not enter");
             return;
         }
 
         if (TaskQueue.getInstance().isCancellationRequested()) return;
 
         if (!DimensionDriver.waitForDimension(dimension, 30_000L)) {
-            TaskQueue.getInstance().failActiveIf("#portal_travel", "portal_travel: dimension change timeout");
+            TaskQueue.getInstance().failActiveIf(trackingCommand, "portal_travel: dimension change timeout");
             return;
         }
 
         if (TaskQueue.getInstance().isCancellationRequested()) return;
-        TaskQueue.getInstance().completeActiveIf("#portal_travel");
+        TaskQueue.getInstance().completeActiveIf(trackingCommand);
     }
 
     private static String executeReturnToOverworldAction() {
-        String current = DimensionDriver.getCurrentDimension();
-        if (current.contains("overworld")) {
+        if (DimensionDriver.isCurrentDimension("minecraft:overworld")) {
             return "already in overworld";
         }
         String target = "minecraft:overworld";
-        return executePortalTravelAction("{\"dimension\":\"" + target + "\"}");
+        return executePortalTravelAction("{\"dimension\":\"" + target + "\"}", "#return_to_overworld");
+    }
+
+    private static boolean waitUntilInPortalBlock(String targetDimension, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (TaskQueue.getInstance().isCancellationRequested()) return false;
+            if (DimensionDriver.isCurrentDimension(targetDimension)) return true;
+
+            Boolean inPortal = ClientThread.call(() -> {
+                MinecraftClient client = MinecraftClient.getInstance();
+                if (client.player == null || client.world == null) return false;
+                BlockPos feet = client.player.getBlockPos();
+                BlockState feetState = client.world.getBlockState(feet);
+                BlockState headState = client.world.getBlockState(feet.up());
+                return feetState.isOf(Blocks.NETHER_PORTAL)
+                        || headState.isOf(Blocks.NETHER_PORTAL)
+                        || feetState.isOf(Blocks.END_PORTAL)
+                        || headState.isOf(Blocks.END_PORTAL);
+            });
+
+            if (Boolean.TRUE.equals(inPortal)) return true;
+            sleep(250L);
+        }
+        return false;
     }
 
     // ─── Phase 7: Building Validation and Repair ─────────────────────────────
@@ -6562,6 +6723,20 @@ public class CommandExecutor {
         }
     }
 
+    private static boolean dispatchBaritoneChatCommand(String command) {
+        try {
+            boolean allowed = ClientSendMessageEvents.ALLOW_CHAT.invoker().allowSendChatMessage(command);
+            if (!allowed) {
+                ClientSendMessageEvents.CHAT_CANCELED.invoker().onSendChatMessageCanceled(command);
+                return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            System.err.println("[Mindcraft Bridge] Failed to dispatch baritone command via chat hook: " + t.getMessage());
+            return false;
+        }
+    }
+
     // Expands a mine target name to include all ore variant blocks.
     // If the target matches an entry in MINE_TARGET_ALIASES, returns the
     // space-joined alias list so the #mine command covers stone + deepslate
@@ -6600,14 +6775,13 @@ public class CommandExecutor {
                 return null;
             }
             case "cancel": return "#cancel";
-            case "raw_command": return normalizeRawBaritoneCommand(extractJsonString(json, "command"));
             default: return null;
         }
     }
 
     // â”€â”€â”€ JSON extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    private static String normalizeRawBaritoneCommand(String command) {
+    public static String normalizeRawBaritoneCommand(String command) {
         if (command == null) return null;
         String trimmed = command.trim();
         if (trimmed.equalsIgnoreCase("#sleep")

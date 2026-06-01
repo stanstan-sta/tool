@@ -12,11 +12,33 @@ final class DimensionDriver {
         });
     }
 
+    static String normalizeDimension(String dimensionId) {
+        if (dimensionId == null) return "";
+        String dim = dimensionId.trim().toLowerCase(java.util.Locale.ROOT);
+        if (dim.equals("nether") || dim.equals("the_nether") || dim.equals("minecraft:nether")
+                || dim.equals("minecraft:the_nether")) {
+            return "minecraft:the_nether";
+        }
+        if (dim.equals("end") || dim.equals("the_end") || dim.equals("minecraft:end")
+                || dim.equals("minecraft:the_end")) {
+            return "minecraft:the_end";
+        }
+        if (dim.equals("overworld") || dim.equals("minecraft:overworld")) {
+            return "minecraft:overworld";
+        }
+        return dim;
+    }
+
+    static boolean isCurrentDimension(String dimensionId) {
+        return normalizeDimension(dimensionId).equals(normalizeDimension(getCurrentDimension()));
+    }
+
     static boolean waitForDimension(String dimensionId, long timeoutMs) {
+        String target = normalizeDimension(dimensionId);
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             String dim = getCurrentDimension();
-            if (dimensionId.equals(dim)) return true;
+            if (target.equals(normalizeDimension(dim))) return true;
             sleep(250);
         }
         return false;

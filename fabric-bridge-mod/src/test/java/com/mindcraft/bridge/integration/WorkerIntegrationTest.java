@@ -141,6 +141,10 @@ class WorkerIntegrationTest {
             assertTrue(registry.hasWorker("farm"), "farm");
             assertTrue(registry.hasWorker("loot"), "loot");
             assertTrue(registry.hasWorker("fish"), "fish");
+            assertTrue(registry.hasWorker("shear"), "shear");
+            assertTrue(registry.hasWorker("milk"), "milk");
+            assertTrue(registry.hasWorker("breed"), "breed");
+            assertTrue(registry.hasWorker("tame"), "tame");
         }
 
         @Test

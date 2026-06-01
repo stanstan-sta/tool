@@ -89,10 +89,10 @@ export class EventDetector {
         }
 
         this.lastState = {
-            low_hp_flag: state.low_hp_flag,
-            low_food_flag: state.low_food_flag,
-            nearby_players: state.nearby_players,
-            player_idle_ms: state.player_idle_ms,
+            low_hp_flag: state.low_hp_flag !== undefined ? state.low_hp_flag : this.lastState?.low_hp_flag,
+            low_food_flag: state.low_food_flag !== undefined ? state.low_food_flag : this.lastState?.low_food_flag,
+            nearby_players: state.nearby_players !== undefined ? state.nearby_players : this.lastState?.nearby_players,
+            player_idle_ms: state.player_idle_ms !== undefined ? state.player_idle_ms : this.lastState?.player_idle_ms,
             lastMs: Date.now(),
         };
         return events;

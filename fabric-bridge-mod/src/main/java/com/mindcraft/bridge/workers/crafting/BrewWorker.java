@@ -60,35 +60,36 @@ public class BrewWorker implements Worker {
                 if (ingredient != null) {
                     String normIngredient = ItemIds.normalize(ingredient);
                     int ingSlot = ScreenDriver.findSlot(screen, normIngredient, 5);
-                    if (ingSlot >= 0) {
-                        ScreenDriver.pickup(ingSlot, BrewingStandScreenHandler.class);
-                        ScreenDriver.pickup(3, BrewingStandScreenHandler.class);
-                        ScreenDriver.pickup(ingSlot, BrewingStandScreenHandler.class);
-                    }
+                    if (ingSlot < 0) return false;
+                    ScreenDriver.pickup(ingSlot, BrewingStandScreenHandler.class);
+                    ScreenDriver.pickup(3, BrewingStandScreenHandler.class);
+                    ScreenDriver.pickup(ingSlot, BrewingStandScreenHandler.class);
                 }
                 CommandExecutor.sleep(100); // Wait for server acknowledgment
 
                 if (fuel != null) {
                     String normFuel = ItemIds.normalize(fuel);
                     int fuelSlot = ScreenDriver.findSlot(screen, normFuel, 5);
-                    if (fuelSlot >= 0) {
-                        ScreenDriver.pickup(fuelSlot, BrewingStandScreenHandler.class);
-                        ScreenDriver.pickup(4, BrewingStandScreenHandler.class);
-                        ScreenDriver.pickup(fuelSlot, BrewingStandScreenHandler.class);
-                    }
+                    if (fuelSlot < 0) return false;
+                    ScreenDriver.pickup(fuelSlot, BrewingStandScreenHandler.class);
+                    ScreenDriver.pickup(4, BrewingStandScreenHandler.class);
+                    ScreenDriver.pickup(fuelSlot, BrewingStandScreenHandler.class);
                 }
                 CommandExecutor.sleep(100); // Wait for server acknowledgment
 
                 if (potions != null) {
                     String normPotions = ItemIds.normalize(potions);
+                    int moved = 0;
                     for (int targetSlot = 0; targetSlot < 3; targetSlot++) {
                         int potSlot = ScreenDriver.findSlot(screen, normPotions, 5);
                         if (potSlot < 0) break;
                         ScreenDriver.pickup(potSlot, BrewingStandScreenHandler.class);
                         ScreenDriver.pickup(targetSlot, BrewingStandScreenHandler.class);
                         ScreenDriver.pickup(potSlot, BrewingStandScreenHandler.class);
+                        moved++;
                         CommandExecutor.sleep(100); // Wait for server acknowledgment
                     }
+                    if (moved == 0) return false;
                 }
 
                 return true;

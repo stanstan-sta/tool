@@ -3,6 +3,62 @@ import { NPCData } from './npc/data.js';
 import settings from './settings.js';
 
 
+const MEMORY_FILTER_INSTRUCTION =
+    'Memory-filtered transcript. Save only stable user preferences, explicit reminders, corrected facts, or confirmed successful outcomes. Ignore action proposals, queued/failed bridge actions, transient state, inventory, coordinates, docs, and anything the bot merely said it would do.';
+
+function parseJsonObject(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+    try {
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function looksLikeActionProposal(text) {
+    const value = String(text || '');
+    return /"actions"\s*:|"commands"\s*:|\b(ACTION|COMMAND)\s*:/im.test(value)
+        || /![a-zA-Z_][\w-]*\s*\(/.test(value);
+}
+
+function sanitizeAssistantTurn(content) {
+    const parsed = parseJsonObject(content);
+    if (parsed) {
+        const hasActions = Array.isArray(parsed.actions) && parsed.actions.length > 0;
+        const hasCommands = Array.isArray(parsed.commands) && parsed.commands.length > 0;
+        const loneAction = parsed.type && !parsed.reply && !parsed.chat;
+        if (hasActions || hasCommands || loneAction) return null;
+        const reply = typeof parsed.reply === 'string'
+            ? parsed.reply.trim()
+            : (typeof parsed.chat === 'string' ? parsed.chat.trim() : '');
+        return reply ? { role: 'assistant', content: reply } : null;
+    }
+    if (looksLikeActionProposal(content)) return null;
+    const trimmed = String(content || '').trim();
+    return trimmed ? { role: 'assistant', content: trimmed } : null;
+}
+
+export function sanitizeTurnsForMemory(turns) {
+    if (!Array.isArray(turns)) return [];
+    const sanitized = [];
+    for (const turn of turns) {
+        if (!turn || typeof turn.content !== 'string') continue;
+        if (turn.role === 'system') continue;
+
+        if (turn.role === 'assistant') {
+            const clean = sanitizeAssistantTurn(turn.content);
+            if (clean) sanitized.push(clean);
+            continue;
+        }
+
+        const trimmed = turn.content.trim();
+        if (trimmed) sanitized.push({ role: 'user', content: trimmed });
+    }
+    return sanitized;
+}
+
 export class History {
     constructor(agent) {
         this.agent = agent;
@@ -32,7 +88,15 @@ export class History {
 
     async summarizeMemories(turns) {
         console.log("Storing memories...");
-        this.memory = await this.agent.prompter.promptMemSaving(turns);
+        const sanitized = sanitizeTurnsForMemory(turns);
+        if (sanitized.length === 0) {
+            console.log("No memory-worthy turns in compacted chunk.");
+            return;
+        }
+        this.memory = await this.agent.prompter.promptMemSaving([
+            { role: 'system', content: MEMORY_FILTER_INSTRUCTION },
+            ...sanitized,
+        ]);
 
         if (this.memory.length > 500) {
             this.memory = this.memory.slice(0, 500);

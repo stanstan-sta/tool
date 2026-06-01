@@ -1,8 +1,9 @@
-import { Prompter } from '../models/prompter.js';
+﻿import { Prompter } from '../models/prompter.js';
 import { History } from '../agent/history.js';
 import { FabricBridge } from './fabric_bridge.js';
 import { buildBridgeSystemPrompt } from './bridge_prompt.js';
 import { buildBridgeTopographySystemMessage } from './topography.js';
+import { BridgeExampleRetriever, formatBridgeExamples } from './bridge_examples.js';
 import process from 'node:process';
 import { serverProxy, sendOutputToServer, sendLogToUI } from '../agent/mindserver_proxy.js';
 import { wiki } from '../utils/MinecraftWiki.js';
@@ -77,6 +78,41 @@ function extractJsonObjectCandidate(text) {
         endIdx = open;
     }
     return null;
+}
+
+export function describeBatchDispatchFailure(result) {
+    if (!result) return 'unknown error';
+    if (result.error) return String(result.error);
+    if (Array.isArray(result.results)) {
+        const failed = result.results.find(r => r && (r.status === 'rejected' || r.failure_code));
+        if (failed) {
+            const code = failed.failure_code ? String(failed.failure_code) : 'rejected';
+            const message = failed.message ? String(failed.message) : '';
+            return message ? `${code}: ${message}` : code;
+        }
+    }
+    if (result.output) return String(result.output);
+    return 'unknown error';
+}
+
+export function shouldCancelAfterBatchDispatchFailure(result) {
+    // Cancel if ANY result was rejected with a non-recoverable failure code
+    if (result && Array.isArray(result.results)) {
+        const rejectCodes = ['queue_busy', 'queue_full', 'raw_command_forbidden', 'invalid_action', 'unknown_action'];
+        for (const r of result.results) {
+            if (r && (r.status === 'rejected' || r.failure_code)) {
+                const code = (r.failure_code || '').toLowerCase();
+                if (rejectCodes.includes(code)) return true;
+            }
+        }
+    }
+    // Legacy behavior: cancel on queue_busy/timeout/aborted/fetch failure in the error string
+    if (result && (Number(result.queued) > 0 || result.accepted === true)) return false;
+    const detail = (result && result.error) ? String(result.error).toLowerCase() : '';
+    if (detail.includes('queue_busy') || detail.includes('queue is busy')) return true;
+    if (detail.includes('timeout') || detail.includes('aborted') || detail.includes('fetch')) return true;
+    // Bare {success:false} with no error/output/results is not destructive
+    return false;
 }
 
 /**
@@ -191,6 +227,39 @@ function normalizeAction(action) {
     }
     if (!action.type) return null;
     return action;
+}
+
+function normalizeCommandText(command) {
+    const trimmed = String(command || '').trim();
+    if (!trimmed) return '';
+    if (/^(#task\s+sleep|sleep)$/i.test(trimmed)) return '#sleep';
+    return trimmed;
+}
+
+function isManualCraftPrerequisiteAction(action) {
+    if (!action || typeof action !== 'object') return false;
+    if (action.type === 'mine') return true;
+    if (action.type !== 'raw_command') return false;
+    const command = String(action.command || '').trim().toLowerCase();
+    return command.startsWith('#mine ') || command.startsWith('#task smelt ');
+}
+
+export function pruneManualPrerequisitesBeforeCraft(actions) {
+    if (!Array.isArray(actions)) return actions;
+    const firstCraftIndex = actions.findIndex(action => action?.type === 'craft');
+    if (firstCraftIndex <= 0) return actions;
+    return actions.filter((action, index) => {
+        return index >= firstCraftIndex || !isManualCraftPrerequisiteAction(action);
+    });
+}
+
+export function pruneManualPrerequisiteCommandsBeforeCraft(commands, actions) {
+    if (!Array.isArray(commands) || !Array.isArray(actions)) return commands;
+    if (!actions.some(action => action?.type === 'craft')) return commands;
+    return commands.filter(command => {
+        const action = { type: 'raw_command', command };
+        return !isManualCraftPrerequisiteAction(action);
+    });
 }
 
 function normalizeItemName(name) {
@@ -392,9 +461,16 @@ export function parseBridgeResponse(response, expectStructured = false) {
         if (jsonObjects.length >= 2) {
             let mergedReply = '';
             const mergedActions = [];
+            const mergedCommands = [];
             for (const obj of jsonObjects) {
                 if (typeof obj.reply === 'string') mergedReply = obj.reply.trim();
                 if (typeof obj.chat === 'string' && !mergedReply) mergedReply = obj.chat.trim();
+                if (Array.isArray(obj.commands)) {
+                    for (const cmd of obj.commands) {
+                        const normalized = normalizeCommandText(cmd);
+                        if (normalized) mergedCommands.push(normalized);
+                    }
+                }
                 if (Array.isArray(obj.actions)) {
                     for (const a of obj.actions) {
                         const na = normalizeAction(a);
@@ -407,10 +483,10 @@ export function parseBridgeResponse(response, expectStructured = false) {
                     if (na) mergedActions.push(na);
                 }
             }
-            if (mergedActions.length > 0 || mergedReply) {
+            if (mergedActions.length > 0 || mergedCommands.length > 0 || mergedReply) {
                 return {
                     chat: mergedReply,
-                    commands,
+                    commands: mergedCommands,
                     actions: mergedActions,
                     structured: true,
                 };
@@ -437,9 +513,12 @@ export function parseBridgeResponse(response, expectStructured = false) {
             const structuredActions = Array.isArray(parsed.actions)
                 ? parsed.actions.map(normalizeAction).filter(Boolean)
                 : [];
+            const structuredCommands = Array.isArray(parsed.commands)
+                ? parsed.commands.map(normalizeCommandText).filter(Boolean)
+                : [];
             return {
                 chat: reply,
-                commands,
+                commands: structuredCommands,
                 actions: structuredActions,
                 structured: true,
             };
@@ -449,7 +528,7 @@ export function parseBridgeResponse(response, expectStructured = false) {
     for (const raw of response.split('\n')) {
         const line = raw.trim();
         if (line.startsWith('COMMAND:')) {
-            const cmd = line.slice('COMMAND:'.length).trim();
+            const cmd = normalizeCommandText(line.slice('COMMAND:'.length));
             if (cmd) commands.push(cmd);
         } else if (line.startsWith('ACTION:')) {
             const rawAction = line.slice('ACTION:'.length).trim();
@@ -521,7 +600,11 @@ export class BridgeAgent {
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         console.log(`Initializing bridge agent: ${this.name}`);
-        this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '');
+        this._bridgeExamples = new BridgeExampleRetriever(this.prompter.embedding_model);
+        await this._bridgeExamples.init();
+        this._lastBridgeQuery = '';
+        this._lastBridgeExamplesText = '';
+        this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '', null, '');
         // â”€â”€ History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         this.history = new History(this);
 
@@ -575,7 +658,16 @@ export class BridgeAgent {
         serverProxy.setAgent(this);
         serverProxy.login();
 
-        await this.prompter.initExamples();
+        // Skip prompter.initExamples when the bridge prompt has no
+        // embedding-backed placeholders ( / ). The bridge
+        // builds its own example context semantically (see _buildBridgePromptContent).
+        const bridgePrompt = this.prompter.profile.conversing || '';
+        const usesEmbeddingPlaceholders = bridgePrompt.includes('$EXAMPLES') || bridgePrompt.includes('$CODE_DOCS');
+        if (usesEmbeddingPlaceholders) {
+            await this.prompter.initExamples();
+        } else {
+            console.log('Bridge prompt has no embedding placeholders; skipping initExamples.');
+        }
 
         if (load_mem) {
             const loadedData = this.history.load();
@@ -592,7 +684,8 @@ export class BridgeAgent {
             if (this._capabilities) {
                 sendLogToUI(`${this.name}: Bridge capabilities: protocol=${this._capabilities.protocol_version || 'legacy'}, provider=${this._capabilities.default_provider || 'unknown'}, typed_actions=${this._capabilities.supports_typed_actions === true}`);
                 // Refresh prompt profile with capabilities
-                this.prompter.profile.conversing = buildBridgeSystemPrompt(settings, '', this._capabilities);
+                // Refresh prompt profile with capabilities and current examples.
+                this.prompter.profile.conversing = await this._buildBridgePromptContent(this.history?.memory || '', this.history?.turns || null);
             }
             this._bridgeReachable = true;
             this._bridgeCommands = await this.fetchBridgeCommands();
@@ -647,6 +740,36 @@ export class BridgeAgent {
         });
     }
 
+    async _retrieveBridgeExamplesForHistory(history) {
+        try {
+            if (!this._bridgeExamples) return '';
+            // Find most recent user role message in the history; fall back
+            // to the lastBridgeQuery or the system message itself.
+            let query = this._lastBridgeQuery || '';
+            if (Array.isArray(history)) {
+                for (let i = history.length - 1; i >= 0; i--) {
+                    const m = history[i];
+                    if (m && m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
+                        query = m.content;
+                        break;
+                    }
+                }
+            }
+            if (!query) return '';
+            const snippets = await this._bridgeExamples.getRelevantSnippets(query, 3);
+            return formatBridgeExamples(snippets);
+        } catch (err) {
+            console.warn('Bridge example retrieval failed:', err.message || err);
+            return '';
+        }
+    }
+
+    async _buildBridgePromptContent(memory, history = this.history?.turns || null) {
+        const examplesText = await this._retrieveBridgeExamplesForHistory(history);
+        this._lastBridgeExamplesText = examplesText;
+        return buildBridgeSystemPrompt(settings, memory, this._capabilities, examplesText);
+    }
+
     async _promptConvoLocked(label, history, options = {}) {
         const mode = options.mode || 'queue';
         const frozenHistory = this._clonePromptHistory(history);
@@ -668,6 +791,12 @@ export class BridgeAgent {
         const startedAt = Date.now();
         try {
             console.log(`${this.name}: prompt start #${seq} ${label}`);
+            if (options.refreshBridgePrompt !== false && this.prompter?.profile) {
+                this.prompter.profile.conversing = await this._buildBridgePromptContent(
+                    this.history?.memory || '',
+                    history
+                );
+            }
             const response = await this.prompter.promptConvo(history);
             console.log(`${this.name}: prompt end #${seq} ${label} (${Date.now() - startedAt}ms)`);
             return response;
@@ -696,7 +825,8 @@ export class BridgeAgent {
         if (!state || !state.connected) return null;
 
         const inv = (state.inventory || [])
-            .map(i => `${i.count}x ${i.item.replace('minecraft:', '')}`)
+            .filter(i => i && i.item)
+            .map(i => `${i.count || 1}x ${i.item.replace('minecraft:', '')}`)
             .join(', ') || 'empty';
         const dim = (state.dimension || 'overworld').replace('minecraft:', '');
         const nearby = (state.nearby_players || []).join(', ') || 'none';
@@ -1284,7 +1414,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
+                content: await this._buildBridgePromptContent(this.history.memory, history),
             });
         }
 
@@ -1312,23 +1442,24 @@ export class BridgeAgent {
             }
         }
 
+        let actionsCancelled = false;
         if (actions.length > 0) {
             const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
-                this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `WARNING: Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+                const result = await this._handleBatchDispatchFailure('Batch dispatch failed', batchResult);
+                actionsCancelled = result.cancelled;
             }
         }
 
-        if (commands.length > 0) {
-            const batchResult = await this.bridge.sendBatchCommands(commands);
+        const dispatchCommands = pruneManualPrerequisiteCommandsBeforeCraft(commands, actions);
+        if (!actionsCancelled && dispatchCommands.length > 0) {
+            const batchResult = await this._sendBatchCommandsWithPreprocessing(dispatchCommands);
             if (batchResult.success) {
-                this._recordQueueDispatch('command', batchResult, commands.length);
+                this._recordQueueDispatch('command', batchResult, dispatchCommands.length);
             } else {
-                this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
-                sendOutputToServer(this.name, `WARNING: Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+                await this._handleBatchDispatchFailure('Batch command dispatch failed', batchResult);
             }
         }
 
@@ -1382,7 +1513,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
+                content: await this._buildBridgePromptContent(this.history.memory, history),
             });
         }
 
@@ -1413,25 +1544,24 @@ export class BridgeAgent {
             }
         }
 
+        let actionsCancelled = false;
         if (actions.length > 0) {
             const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
-                const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                const result = await this._handleBatchDispatchFailure('Batch dispatch failed', batchResult);
+                actionsCancelled = result.cancelled;
             }
         }
 
-        if (commands.length > 0) {
-            const batchResult = await this.bridge.sendBatchCommands(commands);
+        const dispatchCommands = pruneManualPrerequisiteCommandsBeforeCraft(commands, actions);
+        if (!actionsCancelled && dispatchCommands.length > 0) {
+            const batchResult = await this._sendBatchCommandsWithPreprocessing(dispatchCommands);
             if (batchResult.success) {
-                this._recordQueueDispatch('command', batchResult, commands.length);
+                this._recordQueueDispatch('command', batchResult, dispatchCommands.length);
             } else {
-                const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                await this._handleBatchDispatchFailure('Batch command dispatch failed', batchResult);
             }
         }
 
@@ -1468,7 +1598,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
+                content: await this._buildBridgePromptContent(this.history.memory, history),
             });
         }
         let response;
@@ -1516,27 +1646,26 @@ export class BridgeAgent {
         }
 
         // Dispatch actions via the batch queue.
+        let actionsCancelled = false;
         if (dispatchActions.length > 0) {
             const batchResult = await this._sendBatchWithBuildExpansion(dispatchActions);
             if (batchResult.success) {
                 this._continuationSource = source;
                 this._recordQueueDispatch('action', batchResult, dispatchActions.length);
             } else {
-                const errMsg = `Batch dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                const result = await this._handleBatchDispatchFailure('Batch dispatch failed', batchResult);
+                actionsCancelled = result.cancelled;
             }
         }
 
         // Remaining raw commands (parsed from COMMAND: lines, not typed actions)
-        if (commands.length > 0) {
-            const batchResult = await this.bridge.sendBatchCommands(commands);
+        const dispatchCommands = pruneManualPrerequisiteCommandsBeforeCraft(commands, dispatchActions);
+        if (!actionsCancelled && dispatchCommands.length > 0) {
+            const batchResult = await this._sendBatchCommandsWithPreprocessing(dispatchCommands);
             if (batchResult.success) {
-                this._recordQueueDispatch('command', batchResult, commands.length);
+                this._recordQueueDispatch('command', batchResult, dispatchCommands.length);
             } else {
-                const errMsg = `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                await this._handleBatchDispatchFailure('Batch command dispatch failed', batchResult);
             }
         }
 
@@ -1586,6 +1715,8 @@ export class BridgeAgent {
             'If the player asks to do something after the current task, use "append_after_current".',
             'If the player asks to make, craft, get, create, or build an item, include the needed craft/gather actions. Do not answer with chat only.',
             'For craft requests during an active task, prefer "append_after_current" unless the player clearly says instead/change/stop.',
+            'For smithing requests, only emit "smith" when the template, base, and addition are known. If the user says "smith my armor" or "smith my iron/diamond armor" without naming a netherite upgrade or trim template/material, ask for clarification with no actions.',
+            'Do not use find_entity for smithing_table; smithing tables are blocks and the smith worker finds a nearby one automatically.',
             '',
             'Return exactly one JSON object and no other text:',
             '{"decision":"continue|cancel_replace|append_after_current","reply":"<short optional chat>","actions":[],"commands":[]}',
@@ -1594,6 +1725,7 @@ export class BridgeAgent {
             '{"type":"move","provider":"baritone_chat","x":1,"y":64,"z":1}',
             '{"type":"follow","provider":"baritone_chat","target":"player_name"}',
             '{"type":"craft","provider":"baritone_chat","item":"stone_pickaxe","count":1}',
+            '{"type":"smith","template":"netherite_upgrade_smithing_template","base":"diamond_chestplate","addition":"netherite_ingot","output":"netherite_chestplate"}',
             '{"type":"raw_command","provider":"baritone_chat","command":"#sleep"}',
             '',
             `Queue status: ${queue.status || 'unknown'}`,
@@ -1672,28 +1804,37 @@ export class BridgeAgent {
             this._lastHadActions = false;
             this.history.add('system', `Interrupted active queue due to player request: ${message}`);
             sendOutputToServer(this.name, 'Interrupted active task');
+
+            // Wait for queue to become idle before dispatching replacement
+            const idle = await this._pollForQueueIdle(5000);
+            if (!idle) {
+                const errMsg = 'Active-task cancel completed but queue did not become idle within timeout';
+                this.history.add('system', errMsg);
+                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                this.history.save();
+                return;
+            }
         }
 
+        let actionsCancelled = false;
         if (decision.actions.length > 0) {
             const batchResult = await this._sendBatchWithBuildExpansion(decision.actions);
             if (batchResult.success) {
                 this._continuationSource = source;
                 this._recordQueueDispatch('action', batchResult, decision.actions.length);
             } else {
-                const errMsg = `Active-task action dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                const result = await this._handleBatchDispatchFailure('Active-task action dispatch failed', batchResult);
+                actionsCancelled = result.cancelled;
             }
         }
 
-        if (decision.commands.length > 0) {
-            const batchResult = await this.bridge.sendBatchCommands(decision.commands);
+        const dispatchCommands = pruneManualPrerequisiteCommandsBeforeCraft(decision.commands, decision.actions);
+        if (!actionsCancelled && dispatchCommands.length > 0) {
+            const batchResult = await this._sendBatchCommandsWithPreprocessing(dispatchCommands);
             if (batchResult.success) {
-                this._recordQueueDispatch('command', batchResult, decision.commands.length);
+                this._recordQueueDispatch('command', batchResult, dispatchCommands.length);
             } else {
-                const errMsg = `Active-task command dispatch failed: ${batchResult.error || 'unknown error'}`;
-                this.history.add('system', errMsg);
-                sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+                await this._handleBatchDispatchFailure('Active-task command dispatch failed', batchResult);
             }
         }
 
@@ -1715,6 +1856,65 @@ export class BridgeAgent {
             console.warn(`${this.name} failed to fetch bridge commands:`, err);
             return [];
         }
+    }
+
+    async _handleBatchDispatchFailure(label, batchResult, { notify = true } = {}) {
+        const detail = describeBatchDispatchFailure(batchResult);
+        const errMsg = `${label}: ${detail}`;
+        this.history.add('system', errMsg);
+        if (notify) {
+            sendOutputToServer(this.name, `WARNING: ${errMsg}`);
+        }
+
+        if (!shouldCancelAfterBatchDispatchFailure(batchResult)) {
+            return { detail, cancelled: false };
+        }
+
+        const cancelResult = await this.bridge.cancelQueue();
+        if (cancelResult.success) {
+            this._pendingContinuation = false;
+            this._lastHadActions = false;
+            this.history.add('system', `Cleared bridge queue after failed dispatch: ${detail}`);
+            if (notify) {
+                sendOutputToServer(this.name, 'Cleared bridge queue after failed dispatch.');
+            }
+        } else {
+            const cancelErr = `Failed to clear bridge queue after dispatch failure: ${cancelResult.error || 'unknown error'}`;
+            this.history.add('system', cancelErr);
+            if (notify) {
+                sendOutputToServer(this.name, `WARNING: ${cancelErr}`);
+            }
+        }
+        return { detail, cancelled: true };
+    }
+
+    /**
+     * Poll bridge state until queue status is idle/disabled/cancelled,
+     * or the timeout is reached.
+     * @param {number} timeoutMs  Max time to poll in milliseconds.
+     * @returns {Promise<boolean>}  true if queue became idle within timeout.
+     */
+    async _pollForQueueIdle(timeoutMs = 5000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const state = await this.bridge.getQueueState();
+            if (state) {
+                const status = String(state.status || '').toLowerCase();
+                if (status === 'idle' || status === 'disabled' || status === 'cancelled') {
+                    return true;
+                }
+            }
+            await new Promise(r => setTimeout(r, 400));
+        }
+        // Final check via full state
+        try {
+            const full = await this.bridge.getState();
+            if (full?.queue) {
+                const s = String(full.queue.status || '').toLowerCase();
+                if (s === 'idle' || s === 'disabled' || s === 'cancelled') return true;
+            }
+        } catch { }
+        return false;
     }
 
     async clearAllMemory(preserveImportant = false) {
@@ -1997,7 +2197,7 @@ export class BridgeAgent {
         if (wantStructured) {
             history.push({
                 role: 'system',
-                content: buildBridgeSystemPrompt(settings, this.history.memory, this._capabilities),
+                content: await this._buildBridgePromptContent(this.history.memory, history),
             });
         }
 
@@ -2043,20 +2243,23 @@ export class BridgeAgent {
             this._updateEpisodicMemory(response, topic, satisfiedDrive || 'curiosity');
         }
 
+        let actionsCancelled = false;
         if (actions.length > 0) {
             const batchResult = await this._sendBatchWithBuildExpansion(actions);
             if (batchResult.success) {
                 this._recordQueueDispatch('action', batchResult, actions.length);
             } else {
-                this.history.add('system', `Batch dispatch failed: ${batchResult.error || 'unknown error'}`);
+                const result = await this._handleBatchDispatchFailure('Batch dispatch failed', batchResult, { notify: false });
+                actionsCancelled = result.cancelled;
             }
         }
-        if (commands.length > 0) {
-            const batchResult = await this.bridge.sendBatchCommands(commands);
+        const dispatchCommands = pruneManualPrerequisiteCommandsBeforeCraft(commands, actions);
+        if (!actionsCancelled && dispatchCommands.length > 0) {
+            const batchResult = await this._sendBatchCommandsWithPreprocessing(dispatchCommands);
             if (batchResult.success) {
-                this._recordQueueDispatch('command', batchResult, commands.length);
+                this._recordQueueDispatch('command', batchResult, dispatchCommands.length);
             } else {
-                this.history.add('system', `Batch command dispatch failed: ${batchResult.error || 'unknown error'}`);
+                await this._handleBatchDispatchFailure('Batch command dispatch failed', batchResult, { notify: false });
             }
         }
 
@@ -2144,6 +2347,12 @@ export class BridgeAgent {
         // Expand ore variants and prepend portal travel when needed.
         // Uses the most recent state snapshot (this._lastState) for
         // current dimension and position.
+        const beforePrune = expanded.length;
+        expanded = pruneManualPrerequisitesBeforeCraft(expanded);
+        if (expanded.length !== beforePrune) {
+            this.history.add('system', 'Dropped manual mine/smelt prerequisite actions before craft; the bridge craft planner will resolve dependencies atomically.');
+        }
+
         const processed = await preprocessMineActions(
             expanded,
             this._lastState,
@@ -2151,6 +2360,14 @@ export class BridgeAgent {
         );
 
         return this.bridge.sendBatch(processed);
+    }
+
+    async _sendBatchCommandsWithPreprocessing(commands) {
+        const actions = (commands || [])
+            .map(command => normalizeCommandText(command))
+            .filter(Boolean)
+            .map(command => ({ type: 'raw_command', provider: 'baritone_chat', command }));
+        return this._sendBatchWithBuildExpansion(actions);
     }
 
     _ambientLog(entry) {

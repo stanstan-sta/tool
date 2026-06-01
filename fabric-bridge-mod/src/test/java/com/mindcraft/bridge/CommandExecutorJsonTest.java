@@ -90,4 +90,96 @@ class CommandExecutorJsonTest {
         assertNotNull(result);
         assertEquals(0, result.size());
     }
+
+    @Test
+    void sleepTry_translatesToQueuedSleepCommand() {
+        CommandExecutor.TranslatedAction result = CommandExecutor.translateTypedJson("{\"type\":\"sleep_try\"}");
+
+        assertTrue(result.ok());
+        assertEquals("sleep_try", result.actionType());
+        assertEquals("queued", result.lifecycle());
+        assertEquals("#sleep", result.command());
+    }
+
+    @Test
+    void rawCommandSleepAliasesNormalizeToSleepCommand() {
+        CommandExecutor.TranslatedAction plain = CommandExecutor.translateTypedJson(
+            "{\"type\":\"raw_command\",\"command\":\"sleep\"}");
+        CommandExecutor.TranslatedAction task = CommandExecutor.translateTypedJson(
+            "{\"type\":\"raw_command\",\"command\":\"#task sleep\"}");
+
+        assertTrue(plain.ok());
+        assertEquals("#sleep", plain.command());
+        assertTrue(task.ok());
+        assertEquals("#sleep", task.command());
+    }
+
+    @Test
+    void rawCommandForbiddenCommandIsRejected() {
+        CommandExecutor.TranslatedAction result = CommandExecutor.translateTypedJson(
+            "{\"type\":\"raw_command\",\"command\":\"/op player\"}");
+
+        assertFalse(result.ok());
+        assertEquals("raw_command_forbidden", result.failureCode());
+    }
+
+    @Test
+    void brewSmithEnchantTranslateAsGenericWorkers() {
+        CommandExecutor.TranslatedAction brew = CommandExecutor.translateTypedJson(
+            "{\"type\":\"brew\",\"potions\":\"minecraft:water_bottle\",\"ingredient\":\"minecraft:nether_wart\"}");
+        CommandExecutor.TranslatedAction smith = CommandExecutor.translateTypedJson(
+            "{\"type\":\"smith\",\"template\":\"minecraft:netherite_upgrade_smithing_template\",\"base\":\"minecraft:diamond_chestplate\",\"addition\":\"minecraft:netherite_ingot\"}");
+        CommandExecutor.TranslatedAction enchant = CommandExecutor.translateTypedJson(
+            "{\"type\":\"enchant\",\"item\":\"minecraft:diamond_sword\"}");
+
+        assertTrue(brew.ok());
+        assertTrue(brew.genericWorker());
+        assertEquals("#brew", brew.command());
+        assertTrue(smith.ok());
+        assertTrue(smith.genericWorker());
+        assertEquals("#smith", smith.command());
+        assertTrue(enchant.ok());
+        assertTrue(enchant.genericWorker());
+        assertEquals("#enchant", enchant.command());
+    }
+
+    @Test
+    void bridgeMineCommandForGatherUsesBaritoneTargetTotalPlusCraftReserve() {
+        CommandExecutor.MakePlan plan = new CommandExecutor.MakePlan();
+        plan.addSnapshot("minecraft:cobblestone", 2);
+        CommandExecutor.GatherProvider gather = new CommandExecutor.GatherProvider(
+                java.util.List.of("cobblestone", "stone"), "minecraft:cobblestone");
+
+        String command = CommandExecutor.bridgeMineCommandForGather(plan, gather, 1);
+
+        assertEquals("#mine 8 cobblestone stone", command);
+    }
+
+    @Test
+    void bridgeMineCommandForGatherDoesNotReserveOreDrops() {
+        CommandExecutor.MakePlan plan = new CommandExecutor.MakePlan();
+        plan.addSnapshot("minecraft:raw_iron", 2);
+        CommandExecutor.GatherProvider gather = new CommandExecutor.GatherProvider(
+                java.util.List.of("iron_ore", "deepslate_iron_ore"), "minecraft:raw_iron");
+
+        String command = CommandExecutor.bridgeMineCommandForGather(plan, gather, 1);
+
+        assertEquals("#mine 3 iron_ore deepslate_iron_ore", command);
+    }
+
+    @Test
+    void coalesceMineStepsUsesTargetTotalAndPreservesAliases() {
+        var steps = java.util.List.of(
+                new CommandExecutor.MakeStep(CommandExecutor.MakeStepKind.MINE,
+                        "raw_iron", 3, "#mine 3 iron_ore deepslate_iron_ore"),
+                new CommandExecutor.MakeStep(CommandExecutor.MakeStepKind.MINE,
+                        "raw_iron", 5, "#mine 5 iron_ore deepslate_iron_ore"));
+
+        java.util.List<CommandExecutor.MakeStep> coalesced = CommandExecutor.coalesceMakeSteps(steps);
+
+        assertEquals(1, coalesced.size());
+        assertEquals(5, coalesced.get(0).count());
+        assertEquals("#mine 5 iron_ore deepslate_iron_ore", coalesced.get(0).command());
+    }
+
 }

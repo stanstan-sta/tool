@@ -264,7 +264,7 @@ export function getAllBiomes() {
 export function getItemCraftingRecipes(itemName) {
     let itemId = getItemId(itemName);
     if (!mcdata.recipes[itemId]) {
-        return null;
+        return [];
     }
 
     let recipes = [];
@@ -498,7 +498,7 @@ export function getDetailedCraftingPlan(targetItem, count = 1, current_inventory
 }
 
 function isBaseItem(item) {
-    return loopingItems.has(item) || getItemCraftingRecipes(item) === null;
+    return loopingItems.has(item) || getItemCraftingRecipes(item).length === 0;
 }
 
 function craftItem(item, count, inventory, leftovers, crafted = { required: {}, steps: [], leftovers: {} }) {

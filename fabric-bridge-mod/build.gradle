@@ -10,6 +10,10 @@ checkstyle {
     configProperties = ['config.loc': rootProject.file('config/checkstyle')]
 }
 
+configurations.checkstyle {
+    exclude group: 'com.google.collections', module: 'google-collections'
+}
+
 checkstyleMain {
     maxWarnings = 1000
 }

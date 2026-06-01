@@ -25,7 +25,7 @@ public class MiningProvider implements ItemProvider {
         // Portal travel if target requires Nether
         boolean isNetherTarget = CommandExecutor.NETHER_GATHER_TARGETS.contains(target);
         if (isNetherTarget && !dim.contains("nether")) {
-            steps.add(new PlanStep("raw_command", "{\"command\":\"#portal_travel minecraft:the_nether\"}"));
+            steps.add(new PlanStep("portal_travel", "{\"dimension\":\"minecraft:the_nether\"}"));
         }
 
         // Tool-tier check
@@ -70,7 +70,7 @@ public class MiningProvider implements ItemProvider {
 
         // Portal return
         if (isNetherTarget && !dim.contains("nether")) {
-            steps.add(new PlanStep("raw_command", "{\"command\":\"#return_to_overworld\"}"));
+            steps.add(new PlanStep("return_to_overworld", "{}"));
         }
 
         return new ProviderPlan(true, null, steps);

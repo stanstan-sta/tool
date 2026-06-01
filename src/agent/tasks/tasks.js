@@ -307,8 +307,8 @@ export class Task {
 
     // Add this method if you want to manually reset the hells_kitchen progress
     resetHellsKitchenProgress() {
-        if (this.task_id && this.task_id.endsWith('hells_kitchen')) {
-            hellsKitchenProgressManager.resetTask(this.task_id);
+        if (this.data?.task_id && this.data.task_id.endsWith('hells_kitchen')) {
+            hellsKitchenProgressManager.resetTask(this.data.task_id);
             console.log('Hells Kitchen progress reset manually');
         }
     }
@@ -444,8 +444,8 @@ export class Task {
             if (this.data.human_count > 0 && this.agent.count_id === 0) {
                 // this.num_humans = num_keys - this.data.num_agents;
                 if (this.data.human_count !== this.data.usernames.length) {
-                    console.log(`Number of human players ${this.human_count} does not match the number of usernames provided. ${this.data.usernames.length}`);
-                    throw new Error(`Number of human players ${this.human_count} does not match the number of usernames provided. ${this.data.usernames.length}`);
+                    console.log(`Number of human players ${this.data.human_count} does not match the number of usernames provided. ${this.data.usernames.length}`);
+                    throw new Error(`Number of human players ${this.data.human_count} does not match the number of usernames provided. ${this.data.usernames.length}`);
                     return;
                 }
                 

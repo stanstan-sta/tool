@@ -35,7 +35,7 @@ export function selectAPI(profile) {
         profile = {model: profile};
     }
     // backwards compatibility with local->ollama
-    if (profile.api?.includes('local') || profile.model?.includes('local')) {
+    if (profile.api === 'local' || profile.api?.startsWith('local:') || profile.model === 'local' || profile.model?.startsWith('local:')) {
         profile.api = 'ollama';
         if (profile.model) {
             profile.model = profile.model.replace('local', 'ollama');
@@ -60,6 +60,12 @@ export function selectAPI(profile) {
                 profile.api = 'mistral';
             else if (profile.model.includes('deepseek'))
                 profile.api = 'deepseek';
+            // HuggingFace org/model names that contain 'qwen' (e.g.
+            // Qwen/Qwen3-Embedding-0.6B) must NOT fall through to the qwen chat
+            // adapter. HF org-prefixed model strings only get routed to HF if
+            // the user explicitly sets api: 'huggingface'.
+            else if (looksLikeHuggingFaceModel(profile.model))
+                profile.api = 'huggingface';
             else if (profile.model.includes('qwen'))
                 profile.api = 'qwen';
         }
@@ -86,4 +92,28 @@ export function createModel(profile) {
     }
     const model = new apiMap[profile.api](profile.model, profile.url, profile.params);
     return model;
+}
+
+/**
+ * Heuristic: does this look like a HuggingFace org/model identifier? We
+ * recognise a slash as the org/repo separator and reject strings that
+ * contain spaces or other whitespace. Examples that match:
+ *   Qwen/Qwen3-Embedding-0.6B
+ *   BAAI/bge-small-en-v1.5
+ *   sentence-transformers/all-MiniLM-L6-v2
+ * Examples that do NOT match:
+ *   qwen-plus           (no slash)
+ *   gpt-4               (no slash)
+ *   Qwen3-Embedding-0.6B (no slash)
+ */
+function looksLikeHuggingFaceModel(model) {
+    if (typeof model !== 'string') return false;
+    if (/\s/.test(model)) return false;
+    const idx = model.indexOf('/');
+    if (idx <= 0 || idx === model.length - 1) return false;
+    const org = model.slice(0, idx);
+    const repo = model.slice(idx + 1);
+    if (!/^[A-Za-z0-9._-]+$/.test(org)) return false;
+    if (!/^[A-Za-z0-9._-]+$/.test(repo)) return false;
+    return true;
 }

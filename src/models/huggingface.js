@@ -1,12 +1,15 @@
 import { toSinglePrompt } from '../utils/text.js';
 import { getKey } from '../utils/keys.js';
 import { HfInference } from "@huggingface/inference";
+import { normaliseEmbeddingVector } from './embedding_normaliser.js';
 
 export class HuggingFace {
   static prefix = 'huggingface';
   constructor(model_name, url, params) {
     // Remove 'huggingface/' prefix if present
-    this.model_name = model_name.replace('huggingface/', '');
+    this.model_name = typeof model_name === 'string'
+      ? model_name.replace('huggingface/', '')
+      : null;
     this.url = url;
     this.params = params;
 
@@ -80,7 +83,54 @@ export class HuggingFace {
     return finalRes;
   }
 
-  async embed(text) {
-    throw new Error('Embeddings are not supported by HuggingFace.');
+  /**
+   * Embedding adapter.
+   *
+   * Supports the Qwen3-Embedding-0.6B model and other HuggingFace feature-
+   * extraction models. Qwen3 embeddings are instruction-aware: queries should
+   * be prefixed with a task instruction and documents left bare (or vice versa).
+   * Callers can pass { intent: 'query' | 'document' } to opt in. Unknown intent
+   * values, or when the model is not instruction-aware, fall back to raw text.
+   *
+   * @param {string|string[]} text
+   * @param {{intent?: 'query'|'document', instruction?: string, dim?: number}} [options]
+   * @returns {Promise<number[]>}
+   */
+  async embed(text, options = {}) {
+    const model = this.model_name || 'Qwen/Qwen3-Embedding-0.6B';
+    const inputs = Array.isArray(text) ? text : String(text);
+
+    const isQwen3 = /Qwen3-?Embedding/i.test(model);
+    let effectiveInputs = inputs;
+    if (isQwen3) {
+      const intent = options.intent === 'query' || options.intent === 'document'
+        ? options.intent
+        : (Array.isArray(inputs) ? 'document' : 'document');
+      const instruction = typeof options.instruction === 'string'
+        ? options.instruction
+        : (intent === 'query'
+          ? 'Given a web search query, retrieve relevant passages that answer the query'
+          : '');
+      effectiveInputs = Array.isArray(inputs)
+        ? inputs.map(t => instruction ? `Instruct: ${instruction}\nQuery: ${t}` : t)
+        : (instruction ? `Instruct: ${instruction}\nQuery: ${inputs}` : inputs);
+    }
+
+    try {
+      const res = await this.huggingface.featureExtraction({
+        model,
+        inputs: effectiveInputs,
+      });
+      const expectedDim = Number.isFinite(options.dim) ? options.dim : null;
+      // If a single string was sent, the response is [[...]]; flatten to one vector.
+      // If an array was sent, the response is a per-input list of vectors.
+      if (Array.isArray(text)) {
+        return res.map(v => normaliseEmbeddingVector(v, { expectedDim, label: `embed:${model}` }));
+      }
+      return normaliseEmbeddingVector(res, { expectedDim, label: `embed:${model}` });
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      throw new Error(`HuggingFace embed(${model}) failed: ${reason}`);
+    }
   }
 }

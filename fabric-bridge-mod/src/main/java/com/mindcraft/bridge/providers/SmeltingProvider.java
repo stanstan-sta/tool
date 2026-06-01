@@ -66,41 +66,13 @@ public class SmeltingProvider implements ItemProvider {
                     }
                     if (!inputResolved) return new ProviderPlan(false, "NO_INPUT_" + ItemIds.strip(input), steps);
 
-                    // Acquire fuel using proper fuel capacity calculation
-                    int bestCap = CommandExecutor.fuelCapacityItems("minecraft:coal_block");
-                    String fuel = "minecraft:coal_block";
-                    for (String candidate : new String[]{"minecraft:coal_block", "minecraft:coal", "minecraft:charcoal"}) {
-                        int cap = CommandExecutor.fuelCapacityItems(candidate);
-                        if (cap > bestCap) { bestCap = cap; fuel = candidate; }
+                    int missingFuelCapacity = missingFuelCapacity(ctx, count, input);
+                    if (missingFuelCapacity > 0) {
+                        int coalNeeded = Math.max(1, (int) Math.ceil(missingFuelCapacity / 8.0));
+                        ProviderPlan fuelPlan = new MiningProvider().plan("minecraft:coal", coalNeeded, ctx);
+                        if (!fuelPlan.ok()) return new ProviderPlan(false, "NO_FUEL", steps);
+                        steps.addAll(fuelPlan.steps());
                     }
-                    int fuelNeeded = Math.max(1, (int) Math.ceil((double) count / bestCap));
-                    boolean fuelResolved = false;
-                    for (ItemProvider p : CommandExecutor.allProviders()) {
-                        if (p instanceof SmeltingProvider) continue;
-                        if (p.canProvide(fuel, ctx)) {
-                            ProviderPlan sub = p.plan(fuel, fuelNeeded, ctx);
-                            if (sub.ok()) {
-                                steps.addAll(sub.steps());
-                                fuelResolved = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!fuelResolved) {
-                        fuel = "minecraft:charcoal";
-                        for (ItemProvider p : CommandExecutor.allProviders()) {
-                            if (p instanceof SmeltingProvider) continue;
-                            if (p.canProvide(fuel, ctx)) {
-                                ProviderPlan sub = p.plan(fuel, fuelNeeded, ctx);
-                                if (sub.ok()) {
-                                    steps.addAll(sub.steps());
-                                    fuelResolved = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (!fuelResolved) return new ProviderPlan(false, "NO_FUEL", steps);
 
                     steps.add(new PlanStep("raw_command", "{\"command\":\"#task smelt " + ItemIds.strip(input) + " " + count + "\"}"));
                     return new ProviderPlan(true, null, steps);
@@ -110,5 +82,16 @@ public class SmeltingProvider implements ItemProvider {
             }
         }
         return new ProviderPlan(false, "NO_RECIPE", List.of());
+    }
+
+    private static int missingFuelCapacity(PlanContext ctx, int smeltCount, String avoidItemId) {
+        int availableCapacity = 0;
+        String avoid = ItemIds.normalize(avoidItemId);
+        for (var entry : ctx.inventory().entrySet()) {
+            String item = ItemIds.normalize(entry.getKey());
+            if (item.equals(avoid)) continue;
+            availableCapacity += entry.getValue() * CommandExecutor.fuelCapacityItems(item);
+        }
+        return Math.max(0, smeltCount - availableCapacity);
     }
 }

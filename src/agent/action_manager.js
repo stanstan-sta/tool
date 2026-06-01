@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+
 export class ActionManager {
     constructor(agent) {
         this.agent = agent;

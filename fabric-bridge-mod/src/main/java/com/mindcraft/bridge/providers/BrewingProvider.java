@@ -147,25 +147,25 @@ public class BrewingProvider implements ItemProvider {
             List<PlanStep> steps = new ArrayList<>();
 
             if (id.equals("minecraft:water_bottle")) {
-                int hasBottles = ctx.inventory().getOrDefault("minecraft:glass_bottle", 0);
-                if (hasBottles < count) {
-                    int missing = count - hasBottles;
-                    boolean resolved = resolveIngredient("minecraft:glass_bottle", missing, steps, ctx);
-                    if (!resolved) return new ProviderPlan(false, "NO_BOTTLES", steps);
+                // Water bottles cannot be auto-filled — BrewWorker can only
+                // move existing water bottles into a stand for further brewing.
+                // A real water-filling worker (right-click on water with bottle)
+                // would be needed to produce water_bottle from glass_bottle.
+                int hasWaterBottles = ctx.inventory().getOrDefault("minecraft:water_bottle", 0);
+                if (hasWaterBottles >= count) {
+                    return new ProviderPlan(true, null, List.of());
                 }
-                steps.add(new PlanStep("brew", "{\"potions\":\"minecraft:water_bottle\",\"count\":" + count + "}"));
-                return new ProviderPlan(true, null, steps);
+                return new ProviderPlan(false, "NO_WATER_BOTTLES", steps);
             }
 
             BrewingRecipe recipe = BREWING_RECIPES.get(id);
             if (recipe == null) return new ProviderPlan(false, "NO_BREW_RECIPE", steps);
 
-            int hasBottles = ctx.inventory().getOrDefault("minecraft:glass_bottle", 0);
-            if (hasBottles < count) {
-                int missing = count - hasBottles;
-                boolean resolved = resolveIngredient("minecraft:glass_bottle", missing, steps, ctx);
-                if (!resolved) return new ProviderPlan(false, "NO_BOTTLES", steps);
-            }
+            // Water bottles in inventory serve as brewing containers.
+            // Empty glass bottles cannot be auto-filled into water bottles,
+            // so we don't require them here. The recursive plan resolution
+            // for water_bottle (the input of most potions) will fail with
+            // NO_WATER_BOTTLES if insufficient water bottles exist.
 
             int hasFuel = ctx.inventory().getOrDefault("minecraft:blaze_powder", 0);
             if (hasFuel <= 0) {
@@ -183,8 +183,7 @@ public class BrewingProvider implements ItemProvider {
                 if (!resolved) return new ProviderPlan(false, "NO_MODIFIER_" + recipe.modifier(), steps);
             }
 
-            String actionJson = "{\"potions\":\"" + id + "\",\"count\":" + count + "}";
-            steps.add(new PlanStep("brew", actionJson));
+            steps.add(brewStep(recipe, count));
             return new ProviderPlan(true, null, steps);
         } finally {
             inProgress.remove(normalizedId);
@@ -207,15 +206,19 @@ public class BrewingProvider implements ItemProvider {
             String id = ItemIds.normalize(potionId);
 
             if (id.equals("minecraft:water_bottle")) {
-                steps.add(new PlanStep("brew", "{\"potions\":\"minecraft:water_bottle\",\"count\":" + count + "}"));
-                return new ProviderPlan(true, null, steps);
+                int hasWaterBottles = ctx.inventory().getOrDefault("minecraft:water_bottle", 0);
+                if (hasWaterBottles >= count) {
+                    return new ProviderPlan(true, null, List.of());
+                }
+                return new ProviderPlan(false, "NO_WATER_BOTTLES", steps);
             }
 
             BrewingRecipe recipe = BREWING_RECIPES.get(id);
             if (recipe == null) return new ProviderPlan(false, "NO_BREW_RECIPE", steps);
 
             if (!ctx.inventory().containsKey(recipe.input())) {
-                planRecursive(recipe.input(), count, ctx, steps, depth + 1);
+                ProviderPlan basePlan = planRecursive(recipe.input(), count, ctx, steps, depth + 1);
+                if (!basePlan.ok()) return basePlan;
             }
 
             if (!ctx.inventory().containsKey(recipe.modifier())) {
@@ -223,10 +226,20 @@ public class BrewingProvider implements ItemProvider {
                 if (!resolved) return new ProviderPlan(false, "NO_MODIFIER_" + recipe.modifier(), steps);
             }
 
+            steps.add(brewStep(recipe, count));
             return new ProviderPlan(true, null, steps);
         } finally {
             inProgress.remove(normalizedId);
         }
+    }
+
+    private static PlanStep brewStep(BrewingRecipe recipe, int count) {
+        String actionJson = "{\"potions\":\"" + recipe.input()
+            + "\",\"ingredient\":\"" + recipe.modifier()
+            + "\",\"fuel\":\"minecraft:blaze_powder\""
+            + ",\"output\":\"" + recipe.output()
+            + "\",\"count\":" + count + "}";
+        return new PlanStep("brew", actionJson);
     }
 
     private boolean resolveIngredient(String itemId, int count, List<PlanStep> steps, PlanContext ctx) {

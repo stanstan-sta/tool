@@ -87,7 +87,10 @@ export class Prompter {
             this.embedding_model = createModel(embedding_model_profile);
         }
         else {
-            this.embedding_model = createModel({api: chat_model_profile.api});
+            // No embedding model configured. Leave the field null so consumers
+            // (Examples, SkillLibrary) can fall back to lexical / word-overlap
+            // selection rather than silently using the chat model.
+            this.embedding_model = null;
         }
 
         this.skill_libary = new SkillLibrary(agent, this.embedding_model);

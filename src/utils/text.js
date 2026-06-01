@@ -27,12 +27,14 @@ export function toSinglePrompt(turns, system=null, stop_seq='***', model_nicknam
 }
 
 function _getWords(text) {
-    return text.replace(/[^a-zA-Z ]/g, '').toLowerCase().split(' ');
+    if (text === null || text === undefined) return [];
+    return String(text).replace(/[^a-zA-Z ]/g, '').toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 export function wordOverlapScore(text1, text2) {
     const words1 = _getWords(text1);
     const words2 = _getWords(text2);
+    if (words1.length === 0 || words2.length === 0) return 0;
     const intersection = words1.filter(word => words2.includes(word));
     return intersection.length / (words1.length + words2.length - intersection.length);
 }

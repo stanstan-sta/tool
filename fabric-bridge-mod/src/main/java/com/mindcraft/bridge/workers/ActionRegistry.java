@@ -55,10 +55,10 @@ public class ActionRegistry {
             new String[]{"item"}, new String[]{"count"}, "Craft or acquire item with full auto-planning"));
         registerSpec(new ActionSpec("flee", "bridge", ActionLifecycle.QUEUED, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{}, new String[]{"distance"}, "Move away from nearest hostile"));
-        registerSpec(new ActionSpec("attack", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
-            new String[]{}, new String[]{"target_type", "count", "search_time_s", "until_items", "retreat_hp", "max_distance"}, "Melee hunt state machine"));
-        registerSpec(new ActionSpec("sleep_try", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
-            new String[]{}, new String[]{}, "Sleep cascade: try bed -> cached bed -> craft bed"));
+        registerWorker(new ActionSpec("attack", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"target_type", "count", "search_time_s", "until_items", "retreat_hp", "max_distance"}, "Melee hunt state machine"), new CombatWorker());
+        registerSpec(new ActionSpec("sleep_try", "bridge", ActionLifecycle.QUEUED, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{}, "Queue a sleep attempt with #sleep"));
         registerSpec(new ActionSpec("build_schematic", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"origin", "size", "palette", "blocks"}, new String[]{"name"}, "Build from in-memory schematic payload"));
         registerSpec(new ActionSpec("cancel_build", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
@@ -87,12 +87,13 @@ public class ActionRegistry {
             new String[]{"x", "y", "z"}, new String[]{"direction"}, "Interact with block"));
         registerSpec(new ActionSpec("interact_entity", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"entity_id"}, new String[]{}, "Interact with entity"));
-        registerSpec(new ActionSpec("smith", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
-            new String[]{"template", "base", "addition"}, new String[]{"output"}, "Smith item on smithing table"));
-        registerSpec(new ActionSpec("brew", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
-            new String[]{}, new String[]{"ingredient", "potions", "fuel"}, "Brew potions"));
-        registerSpec(new ActionSpec("enchant", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
-            new String[]{}, new String[]{"item", "level", "lapis"}, "Enchant item"));
+        registerWorker(new ActionSpec("smith", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"template", "base", "addition"}, new String[]{"output"},
+            "Use a smithing table for a known recipe only. Netherite upgrade requires netherite_upgrade_smithing_template + diamond gear + netherite_ingot. Armor trim requires a specified *_armor_trim_smithing_template + armor + trim material. Worker auto-finds the table."), new SmithWorker());
+        registerWorker(new ActionSpec("brew", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"ingredient", "potions", "fuel"}, "Brew potions"), new BrewWorker());
+        registerWorker(new ActionSpec("enchant", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"item", "level", "lapis"}, "Enchant item"), new EnchantWorker());
         registerSpec(new ActionSpec("anvil", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"input1", "input2"}, new String[]{"output", "name"}, "Use anvil"));
         registerSpec(new ActionSpec("grindstone", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
@@ -186,7 +187,7 @@ public class ActionRegistry {
         registerWorker(new ActionSpec("cure_villager", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.GENERIC_WORKER,
             new String[]{}, new String[]{}, "Cure zombie villager"), new LootWorker());
         registerWorker(new ActionSpec("find_entity", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.GENERIC_WORKER,
-            new String[]{}, new String[]{"entity_type"}, "Find nearest entity of type"), new LootWorker());
+            new String[]{}, new String[]{"entity_type"}, "Find nearest living/item entity by type. Not for blocks or workstation blocks such as smithing_table."), new LootWorker());
         registerWorker(new ActionSpec("feed_entity", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.GENERIC_WORKER,
             new String[]{"entity_id"}, new String[]{}, "Feed an entity"), new LootWorker());
 

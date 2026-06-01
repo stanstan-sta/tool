@@ -74,7 +74,18 @@ public class StateCollector {
         } else if (clean.contains("Task failed:")) {
             String reason = clean.substring(clean.indexOf("Task failed:") + "Task failed:".length()).trim();
             TaskQueue.getInstance().onBaritoneFailed(reason);
+        } else if (isBaritoneFailureMessage(clean)) {
+            TaskQueue.getInstance().onBaritoneFailed(clean);
         }
+    }
+
+    private static boolean isBaritoneFailureMessage(String clean) {
+        String lower = clean.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("unable to find any path")
+                || lower.contains("cancelling mine")
+                || lower.contains("canceling mine")
+                || lower.contains("no path")
+                || lower.contains("path calculation failed");
     }
 
     /**

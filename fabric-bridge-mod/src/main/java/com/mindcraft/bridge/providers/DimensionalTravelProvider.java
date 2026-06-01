@@ -30,39 +30,18 @@ public class DimensionalTravelProvider implements ItemProvider {
             steps.add(new PlanStep("craft", "{\"item\":\"minecraft:flint_and_steel\",\"count\":1}"));
         } else if (id.equals("minecraft:end_portal_frame")) {
             return new ProviderPlan(false, "UNOBTAINABLE", List.of());
+        } else if (id.equals("minecraft:nether_portal")) {
+            return new ProviderPlan(false, "UNSUPPORTED_NETHER_PORTAL", List.of());
         }
 
         return new ProviderPlan(true, null, steps);
     }
 
     public ProviderPlan planEndTravel(PlanContext ctx) {
-        List<PlanStep> steps = new ArrayList<>();
-
-        int hasEyes = ctx.inventory().getOrDefault("minecraft:eye_of_ender", 0);
-        if (hasEyes < 12) {
-            int missing = 12 - hasEyes;
-            steps.add(new PlanStep("craft", "{\"item\":\"minecraft:eye_of_ender\",\"count\":" + missing + "}"));
-        }
-
-        steps.add(new PlanStep("locate_stronghold", "{}"));
-        steps.add(new PlanStep("fill_portal", "{}"));
-        steps.add(new PlanStep("portal_travel", "{\"dimension\":\"the_end\"}"));
-
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED_END_TRAVEL", List.of());
     }
 
     public ProviderPlan planNetherTravel(PlanContext ctx) {
-        List<PlanStep> steps = new ArrayList<>();
-
-        boolean hasFlintAndSteel = ctx.inventory().containsKey("minecraft:flint_and_steel");
-        if (!hasFlintAndSteel) {
-            steps.add(new PlanStep("craft", "{\"item\":\"minecraft:flint_and_steel\",\"count\":1}"));
-        }
-
-        steps.add(new PlanStep("find_portal", "{\"dimension\":\"the_nether\"}"));
-        steps.add(new PlanStep("light_portal", "{}"));
-        steps.add(new PlanStep("portal_travel", "{\"dimension\":\"the_nether\"}"));
-
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED_NETHER_TRAVEL", List.of());
     }
 }

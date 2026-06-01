@@ -1,10 +1,10 @@
-import { cosineSimilarity } from './math.js';
+import { safeCosineSimilarity } from '../models/embedding_normaliser.js';
 import { stringifyTurns, wordOverlapScore } from './text.js';
 
 export class Examples {
     constructor(model, select_num=2) {
         this.examples = [];
-        this.model = model;
+        this.model = model || null;
         this.select_num = select_num;
         this.embeddings = {};
     }
@@ -21,7 +21,6 @@ export class Examples {
     async load(examples) {
         this.examples = examples;
         if (!this.model) return; // Early return if no embedding model
-        
         if (this.select_num === 0)
             return;
 
@@ -34,12 +33,13 @@ export class Examples {
                         this.embeddings[turn_text] = embedding;
                     });
             });
-            
+
             // Wait for all embeddings to complete
             await Promise.all(embeddingPromises);
         } catch (err) {
             console.warn('Error with embedding model, using word-overlap instead.');
             this.model = null;
+            this.embeddings = {};
         }
     }
 
@@ -48,21 +48,50 @@ export class Examples {
             return [];
 
         let turn_text = this.turnsToText(turns);
-        if (this.model !== null) {
-            let embedding = await this.model.embed(turn_text);
-            this.examples.sort((a, b) => 
-                cosineSimilarity(embedding, this.embeddings[this.turnsToText(b)]) -
-                cosineSimilarity(embedding, this.embeddings[this.turnsToText(a)])
-            );
+
+        // No embedding model -> always fall back to word overlap.
+        if (this.model === null) {
+            const scored = this.examples.map(example => ({
+                example,
+                score: wordOverlapScore(turn_text, this.turnsToText(example))
+            }));
+            scored.sort((a, b) => b.score - a.score);
+            return JSON.parse(JSON.stringify(scored.slice(0, this.select_num).map(s => s.example)));
         }
-        else {
-            this.examples.sort((a, b) => 
-                wordOverlapScore(turn_text, this.turnsToText(b)) -
-                wordOverlapScore(turn_text, this.turnsToText(a))
-            );
+
+        // Embedding model exists, but try the call defensively. Any failure
+        // (network, mismatch, dim) demotes the model and falls back to word overlap.
+        let queryEmbedding = null;
+        try {
+            queryEmbedding = await this.model.embed(turn_text);
+            if (!Array.isArray(queryEmbedding) || queryEmbedding.length === 0 || !queryEmbedding.every(Number.isFinite)) {
+                throw new Error('invalid embedding response');
+            }
+        } catch (err) {
+            console.warn('Error with embedding model, using word-overlap instead.');
+            this.model = null;
+            return this._wordOverlapRelevant(turn_text);
         }
-        let selected = this.examples.slice(0, this.select_num);
-        return JSON.parse(JSON.stringify(selected)); // deep copy
+
+        const scored = this.examples.map(example => {
+            const key = this.turnsToText(example);
+            const emb = this.embeddings[key];
+            const score = Array.isArray(emb) && emb.length === queryEmbedding.length
+                ? safeCosineSimilarity(queryEmbedding, emb)
+                : wordOverlapScore(turn_text, key);
+            return { example, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        return JSON.parse(JSON.stringify(scored.slice(0, this.select_num).map(s => s.example)));
+    }
+
+    _wordOverlapRelevant(turn_text) {
+        const scored = this.examples.map(example => ({
+            example,
+            score: wordOverlapScore(turn_text, this.turnsToText(example))
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        return JSON.parse(JSON.stringify(scored.slice(0, this.select_num).map(s => s.example)));
     }
 
     async createExampleMessage(turns) {

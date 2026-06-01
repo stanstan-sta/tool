@@ -24,49 +24,22 @@ public class VillagerManipulationProvider implements ItemProvider {
         List<PlanStep> steps = new ArrayList<>();
 
         if (id.equals("minecraft:enchanted_book")) {
-            steps.add(new PlanStep("cycle_lectern", "{\"enchantment\":\"mending\"}"));
+            return new ProviderPlan(false, "UNSUPPORTED_ENCHANTED_BOOK", steps);
         } else if (id.equals("minecraft:emerald_block")) {
-            steps.add(new PlanStep("cure_villager", "{}"));
+            return new ProviderPlan(false, "UNSUPPORTED_CURE_VILLAGER", steps);
         } else if (id.equals("minecraft:lectern")) {
             steps.add(new PlanStep("craft", "{\"item\":\"minecraft:lectern\",\"count\":1}"));
+            return new ProviderPlan(true, null, steps);
         }
 
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED", steps);
     }
 
     public ProviderPlan planLecternCycle(String enchantment, PlanContext ctx) {
-        List<PlanStep> steps = new ArrayList<>();
-
-        boolean hasLectern = ctx.inventory().containsKey("minecraft:lectern");
-        if (!hasLectern) {
-            steps.add(new PlanStep("craft", "{\"item\":\"minecraft:lectern\",\"count\":1}"));
-        }
-
-        steps.add(new PlanStep("place_block", "{\"block\":\"minecraft:lectern\"}"));
-        steps.add(new PlanStep("cycle_trades", "{\"enchantment\":\"" + enchantment + "\"}"));
-
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED_LECTERN_CYCLE", List.of());
     }
 
     public ProviderPlan planCureVillager(PlanContext ctx) {
-        List<PlanStep> steps = new ArrayList<>();
-
-        boolean hasPotion = ctx.inventory().containsKey("minecraft:splash_potion_of_weakness");
-        boolean hasApple = ctx.inventory().containsKey("minecraft:golden_apple");
-
-        if (!hasPotion) {
-            steps.add(new PlanStep("brew", "{\"potions\":\"splash_potion_of_weakness\",\"count\":1}"));
-        }
-
-        if (!hasApple) {
-            steps.add(new PlanStep("craft", "{\"item\":\"minecraft:golden_apple\",\"count\":1}"));
-        }
-
-        steps.add(new PlanStep("find_entity", "{\"type\":\"zombie_villager\"}"));
-        steps.add(new PlanStep("use_item", "{\"item\":\"minecraft:splash_potion_of_weakness\"}"));
-        steps.add(new PlanStep("feed_entity", "{\"item\":\"minecraft:golden_apple\"}"));
-        steps.add(new PlanStep("wait", "{\"duration\":300}"));
-
-        return new ProviderPlan(true, null, steps);
+        return new ProviderPlan(false, "UNSUPPORTED_CURE_VILLAGER", List.of());
     }
 }

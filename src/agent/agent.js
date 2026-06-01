@@ -501,22 +501,9 @@ export class Agent {
         this.bot.on('error' , (err) => {
             console.error('Error event!', err);
         });
-        // Use connection handler for runtime disconnects
-        this.bot.on('end', (reason) => {
-            if (!this._disconnectHandled) {
-                const { msg } = handleDisconnection(this.name, reason);
-                this.cleanKill(msg);
-            }
-        });
         this.bot.on('death', () => {
             this.actions.cancelResume();
             this.actions.stop();
-        });
-        this.bot.on('kicked', (reason) => {
-            if (!this._disconnectHandled) {
-                const { msg } = handleDisconnection(this.name, reason);
-                this.cleanKill(msg);
-            }
         });
         this.bot.on('messagestr', async (message, _, jsonMsg) => {
             if (jsonMsg.translate && jsonMsg.translate.startsWith('death') && message.startsWith(this.name)) {

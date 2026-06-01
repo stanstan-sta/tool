@@ -1,107 +1,124 @@
-export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilities = null) {
+export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilities = null, bridgeExamples = '') {
     const persona = settings.persona_preset === 'miku_nakano'
-        ? 'You are Miku Nakano. You play Minecraft. Chat naturally, keep replies short, and use baritone actions when needed.'
-        : 'You are playing minecraft. You chat naturally, keep replies short in a shy way, and use baritone actions when needed.';
+        ? 'You are Miku Nakano. You play Minecraft through the Fabric bridge. Chat naturally, keep replies short, and use bridge actions when needed.'
+        : 'You are playing Minecraft through the Fabric bridge. Chat naturally, keep replies short in a shy way, and use bridge actions when needed.';
     const facts = importantFacts ? String(importantFacts).trim() : (settings.important_memory ? String(settings.important_memory).trim() : '');
     const factsSection = facts ? `Important facts:\n${facts}` : '';
 
     const outputFormat = settings.bridge_structured_output
         ? [
-            'OUTPUT FORMAT: Your ENTIRE response must be a SINGLE JSON object. No text before it. No text after it. No markdown fences.',
-            '',
-            'If you need to perform actions:',
-            '  {"reply":"<short message>","actions":[<action1>,<action2>,...]}',
-            '',
-            'If you only need to chat:',
-            '  {"reply":"<your message>"}',
-            '',
-            'Optional fields for memory tracking (include when relevant):',
-            '  {"topic":"<one-word topic of this reply>","satisfied_drive":"<social|curiosity|rest|safety>"}',
-          ].join('\n')
+            'OUTPUT FORMAT:',
+            '- Your ENTIRE response must be one JSON object.',
+            '- No text before or after the JSON. No markdown fences.',
+            '- If you need to act: {"reply":"<short message>","actions":[<action1>,<action2>]}',
+            '- If you only need to chat: {"reply":"<your message>"}',
+            '- Optional memory fields: "topic" and "satisfied_drive" ("social", "curiosity", "rest", or "safety").',
+        ].join('\n')
         : [
             'RESPONSE FORMAT:',
-            'Your ENTIRE response must be exactly one JSON object. Nothing else.',
-            '',
-            'With actions:  {"reply":"<short msg>","actions":[{...},{...}]}',
-            'Chat only:     {"reply":"<your message>"}',
-            '',
-            'Optional: add "topic":"<topic>" and "satisfied_drive":"<social|curiosity|rest|safety>" to help memory.',
-            '',
-            'Do NOT put reasoning, numbered steps, or extra text outside the {}.',
-          ].join('\n');
+            '- Your ENTIRE response must be one JSON object. Nothing else.',
+            '- With actions: {"reply":"<short message>","actions":[{...},{...}]}',
+            '- Chat only: {"reply":"<your message>"}',
+            '- Optional memory fields: "topic" and "satisfied_drive" ("social", "curiosity", "rest", or "safety").',
+            '- Do not include reasoning, numbered plans, COMMAND lines, ACTION lines, or text outside the JSON object.',
+        ].join('\n');
 
     const actionTypes = buildActionDocs(capabilities);
 
     const taskQueueRules = [
-            'TASK QUEUE:',
-            '- You can send multiple actions in one response — they queue and run sequentially.',
-            '- While queue is "executing" → wait for it to become "idle" before sending more actions.',
-            '- Queue "paused" = a task failed. Send a new action to abandon the failed batch and replan, or cancel all.',
-            '- Queue "idle" → free to send actions.',
-            '- Use "cancel" only when the user asks to stop/interrupt/change the current active task. If you include cancel, put the replacement action after it in the same actions array.',
-            '- For generic wood requests, mine target "wood" instead of guessing a tree species like oak_log.',
-            '- [Baritone] messages in history show task progress — use them to track completion.',
-          ].join('\n');
+        'TASK QUEUE:',
+        '- You can send multiple actions in one response; the bridge queues them and runs them sequentially.',
+        '- If the queue is idle, you may send the next needed action or batch.',
+        '- If the queue is executing or draining, do not add unrelated work unless the user asked to append it after the current task.',
+        '- If the user asks to stop, interrupt, come back, change targets, or do something instead, use {"type":"cancel"} followed by the replacement action in the same actions array.',
+        '- If the queue is paused or failed, abandon the failed batch with a fresh action plan or cancel all. Do not assume the old plan will continue.',
+        '- Baritone/Bridge messages in history show task progress; use them to decide whether to continue, replan, or wait.',
+    ].join('\n');
+
+    const actionSelectionRules = [
+        'ACTION SELECTION:',
+        '- Prefer typed bridge actions over raw commands.',
+        '- Use "move" for coordinates, "follow" for following a player, and "mine" when the user explicitly asks to mine a specific block.',
+        '- Direct "mine" actions are preprocessed by Node: ore aliases are normalized, ore variants are expanded, and nether/end mining can automatically prepend portal travel.',
+        '- Use exactly one final "craft" action for concrete craftable/material goals. Do not add prerequisite mine, smelt, tool, or fuel actions; the bridge craft planner resolves recipes, mining, smelting, fuel, tools, and portal travel atomically.',
+        '- Use "obtain" when the goal is broader than normal crafting/mining, such as farming, fishing, mob drops, villager trading, fluids, husbandry, brewing, enchanting, or provider-based acquisition.',
+        '- Do not manually expand recipe chains. Ask for the final concrete item or final provider goal and let the bridge planner add prerequisites.',
+        '- Use "smith" only for a fully specified smithing-table operation. If the user says "smith my armor", "smith my iron armor", or "smith my diamond armor" without saying netherite upgrade or naming an armor trim/template/material, ask a short clarification question and do not emit actions.',
+        '- Do not invent armor trim templates or trim materials. A smith action needs a real template, base item, and addition item the user requested or that is unambiguous from "netherite upgrade".',
+        '- Smithing tables are blocks/workstations, not entities. Do not use "find_entity" for smithing_table; the smith worker automatically finds and opens a nearby smithing table.',
+        '- If a plan mines in the Nether or End and then moves/gotos to Overworld coordinates, insert "return_to_overworld" before that movement.',
+        '- Use "sleep_try" for sleeping; it queues the bridge sleep command. Do not use beds in the Nether.',
+        '- Use explicit actions such as "portal_travel", "return_to_overworld", "collect_fluid", "farm", "fish", "hunt_mob", "clear_hostiles", "shear", "milk", "breed", and "tame" when they directly match the user request and appear in the action list.',
+        '- Use "raw_command" only for these allowlisted commands: #sleep, #goto, #mine, #cancel, #stop, #task smelt. Prefer typed actions even for these.',
+        '- Never invent action types. If no listed action fits, reply briefly that you cannot do that yet.',
+    ].join('\n');
+
+    const itemRules = [
+        'ITEM RULES:',
+        '- Item names must be concrete Minecraft item/block ids without "minecraft:" when possible, for example "iron_pickaxe", "diamond", or "oak_log".',
+        '- Category words are not items: "iron_armor", "tools", "food", "weapons", "blocks", "building_materials", "supplies", and "gear". Pick specific items.',
+        '- For a requested set, emit one action per concrete item in the same actions array. Iron armor is iron_helmet, iron_chestplate, iron_leggings, and iron_boots.',
+        '- Netherite gear is smithing, not normal crafting. Do not use "craft" for netherite armor or tools. Use "smith" only when template/base/addition are known, or "obtain" for the final netherite item if the user explicitly asked for netherite gear.',
+        '- A netherite upgrade is exactly netherite_upgrade_smithing_template + diamond armor/tool + netherite_ingot. Iron armor cannot be upgraded to netherite; if asked to smith iron armor, ask which armor trim template and material to apply.',
+        '- Armor trims use a *_armor_trim_smithing_template, an armor piece, and a trim material such as iron_ingot, gold_ingot, copper_ingot, lapis_lazuli, emerald, diamond, netherite_ingot, redstone, amethyst_shard, or quartz.',
+        '- For generic wood requests, use mine target "wood" instead of guessing a tree species.',
+        '- If the user asks for a non-craftable or unsupported item and no listed action/provider fits, reply briefly instead of inventing a workaround.',
+    ].join('\n');
 
     const safetyRules = [
-            'SAFETY RULES:',
-            '- The bridge handles basic self-defense automatically. If armed and HP >= 14, the bot auto-attacks hostiles that enter range. If unarmed or low HP, it auto-flees. You only need to react if you want different behavior (e.g. retreat instead of engage, or kite a specific mob).',
-            '- For explicit hunts (gathering drops, clearing an area), use the attack action with target_type, count, or until_items.',
-            '- Never mine trees, ores, or blocks as a response to danger.',
-            '- Retreat to a well-lit area or the player\'s base before resuming other tasks.',
-          ].join('\n');
+        'SAFETY RULES:',
+        '- The bridge handles basic self-defense automatically. If armed and HP >= 14, the bot auto-attacks hostiles that enter range. If unarmed or low HP, it auto-flees.',
+        '- For explicit hunts or clearing an area, use combat actions such as "attack", "hunt_mob", or "clear_hostiles" with target_type, count, until_items, radius, or retreat_hp as appropriate.',
+        '- Never mine trees, ores, or blocks as a response to danger.',
+        '- Retreat to a well-lit area or the player base before resuming other tasks.',
+    ].join('\n');
 
     const netherRules = [
-            'NETHER SAFETY:',
-            '- Piglins are hostile unless you wear at least one piece of gold armor.',
-            '- Ghasts shoot fireballs from far away; dodge or shoot them back.',
-            '- Magma cubes and wither skeletons are melee threats — flee if unarmed.',
-            '- You cannot sleep in the Nether. Beds explode if used.',
-            '- The Nether has no natural water sources.',
-          ].join('\n');
-
-    const craftingRules = [
-            'CRAFTING RULES:',
-            '- For ANY material goal — crafted items, ingots, ores, gems, raw blocks — send ONE craft action for the final item. The Fabric bridge auto-resolves ALL prerequisites: mining, smelting, planks, sticks, fuel, tools, and dimension travel.',
-            '- Use {"type":"craft","item":"<name>","count":<N>} e.g. {"type":"craft","item":"iron_pickaxe","count":1}.',
-            '- NEVER manually expand recipe chains. NEVER ask about prerequisites. NEVER refuse just because inventory is missing materials. Send the craft action and let the bridge planner handle everything.',
-            '- Use the mine action only when the user explicitly wants to mine a specific block with current tools.',
-            '- If the player asks for a non-craftable or unsupported item, reply briefly instead of inventing action types.',
-            '- Item names are always single concrete items (e.g. "iron_helmet"), not categories. "iron_armor" is NOT an item; a full set is four actions: iron_helmet, iron_chestplate, iron_leggings, iron_boots. Same for gold, diamond, netherite, leather, chainmail, turtle.',
-            '- "tools" is not an item — use the specific tool you need (iron_pickaxe, iron_axe, iron_shovel, iron_hoe, iron_sword). Same pattern for wooden/stone/gold/diamond/netherite.',
-            '- Other common category words that are NOT items: "food", "weapons", "blocks", "building_materials", "supplies", "gear". Pick specific items instead.',
-            '- If the user asks for a set ("give me iron armor"), emit one craft action PER piece in the same actions array.',
-          ].join('\n');
-
-    const topographyDocs = settings.use_textual_topography
-            ? 'You have a map of nearby terrain. Use it to plan navigation — don\'t make up terrain that isn\'t there.'
-            : '';
+        'NETHER SAFETY:',
+        '- Piglins are hostile unless you wear at least one piece of gold armor.',
+        '- Ghasts attack from far away; dodge or use ranged attacks.',
+        '- Magma cubes and wither skeletons are melee threats; flee if unarmed or low HP.',
+        '- You cannot sleep in the Nether. Beds explode if used.',
+        '- The Nether has no natural water sources.',
+    ].join('\n');
 
     const buildingRules = [
-            'HOUSE BUILDING:',
-            '- If the user asks for a house, shelter, cabin, tower, or pit — use the build_house action with your best defaults.',
-            '- Do NOT emit place_block or raw mining/crafting commands yourself. The bridge plans it all and prepends the needed crafts.',
-            '- When you lack info (template/size/material), set only the fields you know; the bridge will prompt the user for the rest.',
-            '- Available templates: cabin, tower, pit — plus any the user previously scanned (template:"saved:<name>").',
-            '- If the user says "build one like that one" or points at an existing building, emit {"type":"scan_building","name":"<name>"} first, then build with template:"saved:<name>" next turn.',
-            '- After a build completes, ask the user if they like it. If they say yes/nice/perfect, emit {"type":"rate_build","score":1}. If they say no/rebuild/ugly, score -1. Neutral: 0.',
-            '- Location: if you do NOT include an origin field, the bridge auto-picks a safe, level spot near the bot and flattens the floor to match the terrain. Only include origin if the user explicitly gave coordinates.',
-            '- If the user says "here", "where I am", or "right here", include origin:{x:<bot.x>, y:<bot.y>, z:<bot.z>} using the current bot position from state.',
-            '- If the user gives only a vibe (e.g. "something small for tonight"), default to {"type":"build_house","template":"pit","size":"small","material":"oak"}.',
-            '- Use cancel_build to abort a house in progress.',
-          ].join('\n');
+        'HOUSE BUILDING:',
+        '- If the user asks for a house, shelter, cabin, tower, or pit, use "build_house".',
+        '- Do not emit place_block, raw mining commands, or raw crafting commands for houses. The Node bridge expands build_house into material planning plus build_schematic.',
+        '- If the user gives a full request, fill template, size, material, biome, origin, floors, or window when known.',
+        '- If important build fields are missing, still emit build_house with only known fields and keep reply short, such as "Sure." The bridge will ask the specific follow-up question.',
+        '- Available built-in templates: cabin, tower, pit. Saved templates use template:"saved:<name>".',
+        '- If the user points at an existing building or says "build one like that", emit {"type":"scan_building","name":"<name>"} first, then use template:"saved:<name>" on a later turn.',
+        '- If the user explicitly says "here", "where I am", "right here", or gives coordinates, include origin. Otherwise omit origin so the bridge can find a safe, level nearby site.',
+        '- After the bridge reports a build completion, ask whether the user likes it. Only emit "rate_build" after the user gives feedback.',
+        '- Use "cancel_build" to abort an active house build.',
+    ].join('\n');
+
+    const topographyDocs = settings.use_textual_topography
+        ? 'TOPOGRAPHY: You may receive a nearby terrain map. Use it for navigation and build placement, but do not invent terrain that is not shown.'
+        : '';
 
     const examples = [
-            'EXAMPLES:',
-            'Chat only:  {"reply":"Yeah, the weather is nice today."}',
-            'Move:       {"reply":"On my way.","actions":[{"type":"move","provider":"baritone_chat","x":100,"y":64,"z":-200}]}',
-            'Craft:      {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}]}',
-            'Gather:     {"reply":"On it.","actions":[{"type":"craft","provider":"baritone_chat","item":"diamond","count":3}]}',
-            'Combat:     {"reply":"Die zombie!","actions":[{"type":"attack","provider":"baritone_chat","target_type":"zombie","count":3}]}',
-            'Craft+meta: {"reply":"Let me make that.","actions":[{"type":"craft","provider":"baritone_chat","item":"iron_pickaxe","count":1}],"topic":"crafting tools","satisfied_drive":"social"}',
-            'House:      {"reply":"On it, one small oak cabin coming up.","actions":[{"type":"build_house","provider":"baritone_chat","template":"cabin","size":"small","material":"oak"}]}',
-            'House (wait):{"reply":"Sure — cabin, tower, or pit shelter?","actions":[{"type":"build_house","provider":"baritone_chat"}]}',
-          ].join('\n');
+        'EXAMPLES:',
+        'Chat only: {"reply":"Yeah, the weather is nice today."}',
+        'Move: {"reply":"On my way.","actions":[{"type":"move","x":100,"y":64,"z":-200}]}',
+        'Mine explicit block: {"reply":"I will grab some.","actions":[{"type":"mine","target":"netherrack","count":64}]}',
+        'Craft concrete item: {"reply":"I will make one.","actions":[{"type":"craft","item":"iron_pickaxe","count":1}]}',
+        'General acquisition: {"reply":"I will try to get that.","actions":[{"type":"obtain","item":"cod","count":3}]}',
+        'Armor set: {"reply":"I will make the set.","actions":[{"type":"craft","item":"iron_helmet","count":1},{"type":"craft","item":"iron_chestplate","count":1},{"type":"craft","item":"iron_leggings","count":1},{"type":"craft","item":"iron_boots","count":1}]}',
+        'Ambiguous smithing: {"reply":"Do you want a netherite upgrade or an armor trim? Which template and material?","actions":[]}',
+        'Netherite upgrade: {"reply":"I will upgrade it.","actions":[{"type":"smith","template":"netherite_upgrade_smithing_template","base":"diamond_chestplate","addition":"netherite_ingot","output":"netherite_chestplate"}]}',
+        'Armor trim: {"reply":"I will apply that trim.","actions":[{"type":"smith","template":"dune_armor_trim_smithing_template","base":"diamond_chestplate","addition":"gold_ingot"}]}',
+        'Combat: {"reply":"I will clear them.","actions":[{"type":"clear_hostiles","radius":16}]}',
+        'House: {"reply":"Sure.","actions":[{"type":"build_house","template":"cabin","size":"small","material":"oak"}]}',
+        'House missing details: {"reply":"Sure.","actions":[{"type":"build_house"}]}',
+        'Cancel and replace: {"reply":"Okay, switching.","actions":[{"type":"cancel"},{"type":"follow","target":"player_name"}]}',
+    ].join('\n');
+
+    const semanticExamples = (typeof bridgeExamples === 'string' && bridgeExamples.trim())
+        ? bridgeExamples.trim()
+        : '';
 
     return [
         persona,
@@ -109,93 +126,94 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilit
         outputFormat,
         actionTypes,
         taskQueueRules,
+        actionSelectionRules,
+        itemRules,
         safetyRules,
         netherRules,
-        craftingRules,
         buildingRules,
         topographyDocs,
         examples,
+        semanticExamples,
     ].filter(Boolean).join('\n\n');
 }
 
-// Node-only virtual actions that exist on the Node side, not in the Java mod
+// Node-only virtual actions that exist on the Node side, not in the Java mod.
 const NODE_ONLY_ACTIONS = [
     {
         type: 'build_house',
         required: [],
-        optional: ['template', 'size', 'material', 'biome', 'origin'],
-        description: 'Build a house from a template (cabin, tower, pit, saved:<name>). The bridge asks follow-ups if fields are missing. Do NOT emit place_block or raw crafting yourself — the bridge pre-plans all materials.',
+        optional: ['template', 'size', 'material', 'biome', 'origin', 'floors', 'window'],
+        description: 'Build a house from a template. Node expands this into material gathering and build_schematic. Missing fields trigger a bridge follow-up question.',
     },
     {
         type: 'scan_building',
         required: [],
         optional: ['name', 'size', 'origin'],
-        description: 'Scan the building in front of the bot (default size 9x6x9) and save it as a reusable template',
+        description: 'Scan the building in front of the bot and save it as a reusable template.',
     },
     {
         type: 'rate_build',
         required: ['score'],
         optional: ['comment'],
-        description: 'Record a rating for the most recently finished house (-1 bad, 0 neutral, 1 good); biases future template selection',
+        description: 'Record a rating for the most recently completed house after the user gives feedback.',
     },
 ];
 
 function formatActionSpec(action) {
-    const required = Array.isArray(action.required) && action.required.length
-        ? ` required=[${action.required.join(', ')}]`
-        : '';
-    const optional = Array.isArray(action.optional) && action.optional.length
-        ? ` optional=[${action.optional.join(', ')}]`
-        : '';
-    const desc = action.description ? ` — ${action.description}` : '';
-    return `  {"type":"${action.type}"${required}${optional}}${desc}`;
+    const fields = [];
+    if (Array.isArray(action.required) && action.required.length) {
+        fields.push(`required: ${action.required.join(', ')}`);
+    }
+    if (Array.isArray(action.optional) && action.optional.length) {
+        fields.push(`optional: ${action.optional.join(', ')}`);
+    }
+    if (action.provider) fields.push(`provider: ${action.provider}`);
+    if (action.lifecycle) fields.push(`lifecycle: ${action.lifecycle}`);
+    if (action.dispatch) fields.push(`dispatch: ${action.dispatch}`);
+
+    const fieldText = fields.length ? ` (${fields.join('; ')})` : '';
+    const desc = action.description ? ` - ${action.description}` : '';
+    return `- ${action.type}${fieldText}${desc}`;
 }
 
 function buildActionDocs(capabilities) {
     const bridgeActions = Array.isArray(capabilities?.actions) ? capabilities.actions : null;
 
     if (!bridgeActions) {
-        // Fallback: hardcoded action docs (backward compat when no capabilities)
         return [
-            'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
+            'ACTION TYPES:',
+            '- move (required: x, y, z) - Walk to coordinates.',
+            '- mine (required: target; optional: count, secondaryTarget) - Mine blocks. Node can add portal travel for nether/end targets.',
+            '- follow (required: target) - Follow a player.',
+            '- cancel - Cancel queued and active work.',
+            '- craft (required: item; optional: count) - Craft/acquire concrete recipe/material goals through the bridge planner.',
+            '- obtain (required: item; optional: count) - Provider-based acquisition when available.',
+            '- smith (required: template, base, addition; optional: output) - Use a smithing table for a known netherite upgrade or armor trim only.',
+            '- attack (optional: target_type, count, search_time_s, until_items, retreat_hp, max_distance) - Hunt/fight entities.',
+            '- sleep_try - Queue a sleep attempt.',
+            '- portal_travel (required: dimension) - Travel to a different dimension via the nether portal.',
+            '- return_to_overworld - Return from the nether/end to the overworld via portal.',
+            '- hunt_mob (optional: target_type, count, radius) - Hunt and kill specific mob types.',
+            '- clear_hostiles (optional: radius, retreat_hp) - Clear hostile mobs within a radius.',
+            '- build_house (optional: template, size, material, biome, origin, floors, window) - Node-side house builder.',
+            '- cancel_build - Stop an in-progress house build.',
+            '- scan_building (optional: name, size, origin) - Save a nearby structure as a reusable template.',
+            '- rate_build (required: score; optional: comment) - Rate the latest completed build.',
+            '- raw_command (required: command) - Restricted escape hatch only for allowlisted commands.',
             '',
-            '  {"type":"move",         "x":<int>,"y":<int>,"z":<int>}       — walk to coordinates',
-            '  {"type":"mine",         "target":"<block>","count":<int>}    — mine blocks',
-            '  {"type":"follow",       "target":"<player_name>"}            — follow a player',
-            '  {"type":"craft",        "item":"<item_name>","count":<int>}  — craft using nearest table',
-            '  {"type":"build_house",   "template":"<cabin|tower|pit|saved:name>","size":"<small|medium|large>","material":"<oak|spruce|cobblestone|sandstone|...>","biome":"<optional>"}',
-            '                                                            — build a house from a template. The bridge asks follow-up questions if fields are missing.',
-            '  {"type":"cancel_build"}                                   — stop an in-progress house build',
-            '  {"type":"scan_building", "name":"<save_name>", "size":{"x":9,"y":6,"z":9}, "origin":{"x":..,"y":..,"z":..}}',
-            '                                                            — scan the building in front of the bot and save it as a reusable template',
-            '  {"type":"rate_build",    "score":<-1|0|1>, "comment":"<free text>"}',
-            '                                                            — record a rating for the most recently finished house; biases future picks',
-            '  {"type":"flee",         "distance":<int>}                  — run away from nearest hostile (default 24 blocks)',
-            '  {"type":"attack",      "target_type":"<entity_type>","count":<int>,"search_time_s":<int>,"until_items":{"<item>":<count>},"retreat_hp":<int>} — hunt and kill hostiles (auto-search, approach, fight, loot). until_items overrides count; count then serves as the max-kills safety ceiling',
-            '  {"type":"cancel"}                                            — cancel all queued actions',
-            '  {"type":"raw_command",  "command":"#<baritone_cmd>"}         — any other Baritone command',
-            '',
-            'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
-            '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-            'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
-            'Only these type values exist: move, mine, follow, cancel, craft, attack, build_house, cancel_build, scan_building, rate_build, raw_command.',
-            'Never invent new types. For anything else, use raw_command with the # prefix.',
+            'Only use listed action types. The bridge may expose more actions through runtime capabilities when connected.',
         ].join('\n');
     }
 
-    // Merge Java bridge actions with Node-only virtual actions
     const all = [...bridgeActions, ...NODE_ONLY_ACTIONS];
     const allowedNames = all.map(a => a.type).join(', ');
 
     return [
-        'ACTION TYPES (use inside "actions" array — put "provider":"baritone_chat" on every action):',
+        'ACTION TYPES:',
+        'Use only these actions. The "provider" field is optional; routing is determined by type.',
         '',
         ...all.map(a => formatActionSpec(a)),
         '',
-        'Common raw_commands: #farm, #explore, #surface, #sethome <name>, #home <name>, #goto nether_portal (for travelling to overworld or nether)',
-        '  #craft, #mine <count> <block>, #task interact <x> <y> <z>, #task smelt <item>, #task chest <x> <y> <z> withdraw <item> <count>, #task enqueue <cmd>, #task status, #task cancel',
-        'Prefer tracked bridge actions: craft, mine, sleep_try, #task smelt, and #task interact. Use sleep_try for sleeping; it auto-falls-back to cached beds and bed crafting.',
         `Only these type values exist: ${allowedNames}.`,
-        'Never invent new types. For anything else, use raw_command with the # prefix.',
     ].join('\n');
 }

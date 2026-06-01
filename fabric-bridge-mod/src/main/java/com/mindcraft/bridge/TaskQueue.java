@@ -16,6 +16,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * FIFO task queue for the Fabric Bridge Mod.
@@ -94,6 +95,7 @@ public class TaskQueue {
         return t;
     });
     private volatile ScheduledFuture<?> activeTimeoutFuture = null;
+    private volatile ScheduledFuture<?> deferredDispatchFuture = null;
 
     private volatile PendingTask activeTask = null;
     private volatile boolean activePostActionStarted = false;
@@ -103,6 +105,8 @@ public class TaskQueue {
     private volatile boolean enabled = true;
     private volatile long lastActivityMs = System.currentTimeMillis();
     private volatile boolean cancellationRequested = false;
+    private volatile CountDownLatch cancelGate = new CountDownLatch(0);
+    private volatile long generation = 0;
 
     private TaskQueue() {}
 
@@ -231,11 +235,13 @@ public class TaskQueue {
     }
 
     public void onBaritoneComplete() {
+        long gen = generation;
         PendingTask active = activeTask;
         if (active == null) {
             chatDebug("[Bridge] DEBUG: ignored Baritone complete with no active task");
             return;
         }
+        if (gen != generation) return;
 
         if (active.completion() == CompletionPolicy.BARITONE_TASK_CHAT) {
             completeActiveId(active.id(), null);
@@ -252,11 +258,13 @@ public class TaskQueue {
     }
 
     public void onBaritoneFailed(String reason) {
+        long gen = generation;
         PendingTask active = activeTask;
         if (active == null) {
             chatDebug("[Bridge] DEBUG: ignored Baritone failure with no active task - " + reason);
             return;
         }
+        if (gen != generation) return;
 
         if (active.completion() == CompletionPolicy.BARITONE_TASK_CHAT
                 || active.completion() == CompletionPolicy.BRIDGE_CALLBACK) {
@@ -278,6 +286,7 @@ public class TaskQueue {
         lock.lock();
         try {
             cancellationRequested = true;
+            cancelActiveTimeoutFuture();
             pending.clear();
             suspended.clear();
             activeTask = null;
@@ -285,10 +294,13 @@ public class TaskQueue {
             activeSettleStarted = false;
             paused = false;
             lastFailureReason = "cancelled";
+            cancelGate = new CountDownLatch(1);
+            generation++;
             lastActivityMs = System.currentTimeMillis();
         } finally {
             lock.unlock();
         }
+        WorkerThreads.interruptAll("cancelAll");
         try {
             CommandExecutor.execute("#cancel");
         } catch (Throwable t) {
@@ -307,6 +319,8 @@ public class TaskQueue {
 
     public void resetCancellation() {
         cancellationRequested = false;
+        cancelGate.countDown();
+        generation++;
     }
 
     public boolean discardPausedFailure() {
@@ -333,6 +347,7 @@ public class TaskQueue {
         PendingTask active = activeTask;
         if (command == null || active == null) return false;
         if (!active.command().trim().equalsIgnoreCase(command.trim())) return false;
+        cancelActiveTimeoutFuture();
         chatDebug("[Bridge] DEBUG: bridge task failed - " + reason);
         lastFailureReason = reason == null ? "unknown" : reason;
         paused = true;
@@ -346,14 +361,19 @@ public class TaskQueue {
     private boolean failActiveId(long id, String reason) {
         lock.lock();
         try {
-            if (activeTask == null || activeTask.id() != id) {
+            PendingTask active = activeTask;
+            if (active == null || active.id() != id) {
                 return false;
             }
-            lastFailureReason = reason;
-            activeTask = null;
+            cancelActiveTimeoutFuture();
+            String failure = reason == null ? "unknown" : reason;
+            chatDebug("[Bridge] DEBUG: bridge task failed - " + failure);
+            lastFailureReason = failure;
+            paused = true;
             activePostActionStarted = false;
             activeSettleStarted = false;
             lastActivityMs = System.currentTimeMillis();
+            StateCollector.pushWorldEvent("queue_failed", active.command() + " - " + failure);
             return true;
         } finally {
             lock.unlock();
@@ -361,17 +381,31 @@ public class TaskQueue {
     }
 
     public void resume() {
-        paused = false;
-        lastFailureReason = null;
-        if (activeTask == null) {
-            dispatchIfIdle();
-        } else {
-            CommandExecutor.execute(activeTask.command());
+        lock.lock();
+        try {
+            resetCancellation();
+            if (activeTask == null) {
+                paused = false;
+                lastFailureReason = null;
+                dispatchIfIdle();
+                return;
+            }
+            // Restart active task through normal queue machinery so timeout,
+            // Baritone plan watcher, and idle fallback watcher are restarted.
+            paused = false;
+            lastFailureReason = null;
+            activePostActionStarted = false;
+            activeSettleStarted = false;
+            lastActivityMs = System.currentTimeMillis();
+            startActiveTask(activeTask);
+        } finally {
+            lock.unlock();
         }
     }
 
     public void skip() {
         if (!paused) return;
+        resetCancellation();
         suspended.clear();
         activeTask = null;
         activePostActionStarted = false;
@@ -382,15 +416,26 @@ public class TaskQueue {
     }
 
     public void retry() {
-        if (!paused || activeTask == null) return;
-        paused = false;
-        lastFailureReason = null;
-        CommandExecutor.execute(activeTask.command());
+        lock.lock();
+        try {
+            if (!paused || activeTask == null) return;
+            // Restart through normal queue machinery so timeout,
+            // Baritone plan watcher, and idle fallback watcher are restarted.
+            paused = false;
+            lastFailureReason = null;
+            activePostActionStarted = false;
+            activeSettleStarted = false;
+            lastActivityMs = System.currentTimeMillis();
+            startActiveTask(activeTask);
+        } finally {
+            lock.unlock();
+        }
     }
 
     public long createActiveTrackingTask(String command, String actionType) {
         lock.lock();
         try {
+            discardPausedFailure();
             if (activeTask != null || paused) return -1L;
             long id = ids.getAndIncrement();
             PendingTask task = new PendingTask(id, command, actionType, TaskKind.IMMEDIATE,
@@ -629,11 +674,34 @@ public class TaskQueue {
         lock.lock();
         try {
             if (activeTask == null && !paused) {
+                if (deferDispatchIfBlocked()) {
+                    return;
+                }
                 dispatchNext();
             }
         } finally {
             lock.unlock();
         }
+    }
+
+    private boolean deferDispatchIfBlocked() {
+        CountDownLatch gate = cancelGate;
+        if (gate.getCount() == 0) return false;
+        // Cancel was called but no new task has been enqueued yet.
+        // Defer dispatch — resetCancellation() (called on next enqueue)
+        // will count down the latch and allow dispatch to proceed.
+        ScheduledFuture<?> existing = deferredDispatchFuture;
+        if (existing == null || existing.isDone()) {
+            deferredDispatchFuture = scheduler.schedule(() -> {
+                // If the gate hasn't been counted down after 1s, proceed anyway
+                // (avoid indefinite deferral if no new task arrives).
+                if (cancelGate.getCount() > 0) {
+                    cancelGate = new CountDownLatch(0);
+                }
+                dispatchIfIdle();
+            }, 1_000L, TimeUnit.MILLISECONDS);
+        }
+        return true;
     }
 
     private void dispatchNext() {
@@ -646,12 +714,17 @@ public class TaskQueue {
     }
 
     private void startActiveTask(PendingTask next) {
+        lastFailureReason = null;
         if (next.completion() == CompletionPolicy.WORKER_THREAD) {
             startWorkerThread(next);
             return;
         }
 
-        CommandExecutor.execute(next.command());
+        try {
+            CommandExecutor.execute(next.command());
+        } catch (Throwable t) {
+            MindcraftBridgeMod.LOGGER.warn("Failed to execute command: {}", next.command(), t);
+        }
 
         if (next.completion() == CompletionPolicy.IMMEDIATE) {
             completeActiveId(next.id(), null);
@@ -718,9 +791,20 @@ public class TaskQueue {
 
     private void startTimeoutWatcher(PendingTask task) {
         ScheduledFuture<?> future = scheduler.schedule(() -> {
-            completeActiveId(task.id(), "timeout");
+            if (task.kind() == TaskKind.WORKER) {
+                cancellationRequested = true;
+            }
+            failActiveId(task.id(), "timeout");
         }, task.timeoutMs(), TimeUnit.MILLISECONDS);
         activeTimeoutFuture = future;
+    }
+
+    private void cancelActiveTimeoutFuture() {
+        ScheduledFuture<?> future = activeTimeoutFuture;
+        if (future != null && !future.isDone()) {
+            future.cancel(false);
+        }
+        activeTimeoutFuture = null;
     }
 
     private void startBaritonePlanWatcher(PendingTask task) {
@@ -733,6 +817,7 @@ public class TaskQueue {
             while (true) {
                 PendingTask active = activeTask;
                 if (active == null || active.id() != task.id() || paused) return;
+                long gen = generation;
 
                 Integer pendingCount = readBaritoneTaskPlanPendingCount();
                 Boolean pathingBusy = readBaritonePathingBusy();
@@ -756,6 +841,7 @@ public class TaskQueue {
 
                 if (!busy && (sawBusy || elapsed > startupGraceFor(task.command()))
                         && System.currentTimeMillis() - lastBusyAt > quietPeriodFor(task.command())) {
+                    if (gen != generation) return;
                     if (task.completion() == CompletionPolicy.BRIDGE_CALLBACK) {
                         chatDebug("[Bridge] DEBUG: Baritone idle; bridge callback for "
                                 + task.command());
@@ -839,8 +925,8 @@ public class TaskQueue {
             if (baritone == null) return null;
             Object pathing = baritone.getClass().getMethod("getPathingBehavior").invoke(baritone);
             if (pathing == null) return null;
-            Object hasGoal = pathing.getClass().getMethod("hasGoal").invoke(pathing);
-            return hasGoal instanceof Boolean ? (Boolean) hasGoal : null;
+            Object goal = pathing.getClass().getMethod("getGoal").invoke(pathing);
+            return goal != null ? Boolean.TRUE : Boolean.FALSE;
         } catch (Throwable ignored) {
             return null;
         }
@@ -926,12 +1012,14 @@ public class TaskQueue {
                 PendingTask active = activeTask;
                 if (active == null || active.id() != task.id()) return;
                 if (paused || isCancellationRequested()) return;
+                long gen = generation;
 
                 boolean idle = isBaritoneIdleFallbackReady();
                 if (idle) {
                     if (idleSince < 0L) idleSince = System.currentTimeMillis();
                     long settle = Math.max(250L, task.settleMs());
                     if (System.currentTimeMillis() - idleSince >= settle) {
+                        if (gen != generation) return;
                         completeActiveId(task.id(), "baritone-idle-fallback");
                         return;
                     }
@@ -1026,11 +1114,7 @@ public class TaskQueue {
     }
 
     private boolean finishActiveId(long id, String reason) {
-        ScheduledFuture<?> future = activeTimeoutFuture;
-        if (future != null && !future.isDone()) {
-            future.cancel(false);
-            activeTimeoutFuture = null;
-        }
+        cancelActiveTimeoutFuture();
         PendingTask active = activeTask;
         if (active == null || active.id() != id) return false;
         activeTask = null;

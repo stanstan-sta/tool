@@ -77,30 +77,52 @@ class SmeltingProviderTest {
         }
 
         @Test
-        @DisplayName("returns NO_FUEL when no fuel source available")
-        void returnsNoFuelWhenNoFuel() {
+        @DisplayName("resolves fuel via provider chain even when not in inventory")
+        void resolvesFuelViaProviders() {
             Map<String, Integer> inventory = new HashMap<>();
             inventory.put("minecraft:cobblestone", 10);
             PlanContext ctx = new PlanContext(inventory, "overworld", true, true);
 
             ProviderPlan plan = provider.plan("minecraft:stone", 1, ctx);
 
-            assertFalse(plan.ok());
-            assertEquals("NO_FUEL", plan.failureCode());
+            assertTrue(plan.ok(), "Should resolve fuel through available providers even without fuel in inventory");
+            assertTrue(plan.steps().stream()
+                .anyMatch(s -> s.actionType().equals("mine")
+                    && s.payloadJson().contains("coal")),
+                "Should mine coal when no inventory fuel is available");
+            assertFalse(plan.steps().stream()
+                .anyMatch(s -> s.payloadJson().contains("coal_block")),
+                "Should not plan coal_block as the default missing fuel");
         }
 
         @Test
-        @DisplayName("returns NO_INPUT when input material unavailable")
-        void returnsNoInputWhenMissing() {
+        @DisplayName("uses existing wood fuel instead of planning coal")
+        void usesExistingWoodFuel() {
+            Map<String, Integer> inventory = new HashMap<>();
+            inventory.put("minecraft:furnace", 1);
+            inventory.put("minecraft:cobblestone", 10);
+            inventory.put("minecraft:oak_planks", 4);
+            PlanContext ctx = new PlanContext(inventory, "overworld", true, true);
+
+            ProviderPlan plan = provider.plan("minecraft:stone", 1, ctx);
+
+            assertTrue(plan.ok());
+            assertFalse(plan.steps().stream()
+                .anyMatch(s -> s.actionType().equals("mine")
+                    && s.payloadJson().contains("coal")),
+                "Existing planks should satisfy fuel without mining coal");
+        }
+
+        @Test
+        @DisplayName("resolves input via providers even when not in inventory")
+        void resolvesInputViaProviders() {
             Map<String, Integer> inventory = new HashMap<>();
             inventory.put("minecraft:coal_block", 1);
             PlanContext ctx = new PlanContext(inventory, "overworld", true, true);
 
             ProviderPlan plan = provider.plan("minecraft:stone", 1, ctx);
 
-            assertFalse(plan.ok());
-            assertTrue(plan.failureCode().startsWith("NO_INPUT_"),
-                "Failure code should start with NO_INPUT_ but was: " + plan.failureCode());
+            assertTrue(plan.ok(), "Should resolve input through available providers even without cobblestone in inventory");
         }
 
         @Test
