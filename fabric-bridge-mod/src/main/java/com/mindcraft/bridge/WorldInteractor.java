@@ -17,6 +17,10 @@ public final class WorldInteractor {
     }
 
     public static boolean interactBlock(BlockPos pos, Direction direction) {
+        return interactBlock(pos, direction, Hand.MAIN_HAND);
+    }
+
+    public static boolean interactBlock(BlockPos pos, Direction direction, Hand hand) {
         return Boolean.TRUE.equals(ClientThread.call(() -> {
             MinecraftClient client = MinecraftClient.getInstance();
             ClientPlayerEntity player = client.player;
@@ -24,12 +28,16 @@ public final class WorldInteractor {
             if (player == null || im == null || client.world == null) return false;
             Vec3d hit = Vec3d.ofCenter(pos);
             BlockHitResult bhr = new BlockHitResult(hit, direction, pos, false);
-            im.interactBlock(player, Hand.MAIN_HAND, bhr);
+            im.interactBlock(player, hand == null ? Hand.MAIN_HAND : hand, bhr);
             return true;
         }));
     }
 
     public static boolean interactEntity(int entityId) {
+        return interactEntity(entityId, Hand.MAIN_HAND);
+    }
+
+    public static boolean interactEntity(int entityId, Hand hand) {
         return Boolean.TRUE.equals(ClientThread.call(() -> {
             MinecraftClient client = MinecraftClient.getInstance();
             ClientPlayerEntity player = client.player;
@@ -37,7 +45,7 @@ public final class WorldInteractor {
             if (player == null || im == null || client.world == null) return false;
             var entity = client.world.getEntityById(entityId);
             if (entity == null) return false;
-            im.interactEntity(player, entity, Hand.MAIN_HAND);
+            im.interactEntity(player, entity, hand == null ? Hand.MAIN_HAND : hand);
             return true;
         }));
     }

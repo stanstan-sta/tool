@@ -1,5 +1,6 @@
 import { strictFormat } from '../utils/text.js';
 import { toolCallToCommand } from '../agent/commands/index.js';
+const VISION_UNSUPPORTED_TOKEN = 'vision_model_unsupported';
 
 export class Ollama {
     static prefix = 'ollama';
@@ -77,6 +78,8 @@ export class Ollama {
                 if (err.message?.toLowerCase().includes('context length') && turns.length > 1) {
                     console.log('Context length exceeded, trying again with shorter context.');
                     return await this.sendRequest(turns.slice(1), systemMessage);
+                } else if (/image_url|image input|vision|unsupported image|does not support image/i.test(String(err.message || err))) {
+                    res = VISION_UNSUPPORTED_TOKEN;
                 } else if (err.status === 404) {
                     res = `Ollama returned 404. Verify the base URL (${this.url}) and that the model "${model}" is available.`;
                 } else {

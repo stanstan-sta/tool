@@ -35,18 +35,26 @@ public class CraftingProvider implements ItemProvider {
             return new ProviderPlan(false, "CYCLE_DETECTED_" + normalizedId, List.of());
         }
 
+        PlanLedger child = ctx.ledger().fork();
+        int missingOutput = child.consume(itemId, count);
+        if (missingOutput <= 0) {
+            ctx.ledger().commitFrom(child);
+            return new ProviderPlan(true, null, List.of());
+        }
+        PlanContext childCtx = ctx.withLedger(child);
+
         String key = ItemIds.strip(itemId);
         CommandExecutor.RecipeData recipe = CommandExecutor.RECIPE_DATABASE.get(key);
         if (recipe == null) return new ProviderPlan(false, "NO_RECIPE", List.of());
 
         inProgress.add(normalizedId);
         try {
-            int batches = (count + recipe.outputCount - 1) / recipe.outputCount;
+            int batches = (missingOutput + recipe.outputCount - 1) / recipe.outputCount;
             Map<String, Integer> neededIngredients = new HashMap<>();
 
             for (CommandExecutor.GridSlot slot : recipe.slots) {
                 if (slot.ingredientPatterns.isEmpty()) continue;
-                String ingredient = resolveAmbiguousPattern(slot.ingredientPatterns, ctx);
+                String ingredient = resolveAmbiguousPattern(slot.ingredientPatterns, childCtx);
                 neededIngredients.merge(ingredient, batches, Integer::sum);
             }
 
@@ -57,30 +65,32 @@ public class CraftingProvider implements ItemProvider {
                 if (slot.gridIndex > 4) { needsCraftingTable = true; break; }
             }
             if (needsCraftingTable) {
-                int hasTable = ctx.inventory().getOrDefault("minecraft:crafting_table", 0);
+                int hasTable = child.available("minecraft:crafting_table");
                 if (hasTable <= 0) {
                     steps.add(new PlanStep("craft", "{\"item\":\"minecraft:crafting_table\",\"count\":1}"));
+                    child.produce("minecraft:crafting_table", 1);
                 }
             }
 
             for (Map.Entry<String, Integer> entry : neededIngredients.entrySet()) {
                 String ing = entry.getKey();
                 int needed = entry.getValue();
-                int have = ctx.inventory().getOrDefault(ItemIds.normalize(ing), 0);
-                int missing = needed - have;
+                int missing = child.consume(ing, needed);
                 if (missing <= 0) continue;
 
                 CommandExecutor.GatherProvider gp = CommandExecutor.GATHER_PROVIDERS.get(ItemIds.normalize(ing));
                 if (gp != null) {
                     String requiredTool = CommandExecutor.MINE_TOOL_REQUIREMENTS.get(gp.mineTarget());
-                    if (requiredTool != null && !ctx.inventory().containsKey(ItemIds.normalize(requiredTool))) {
+                    if (requiredTool != null && !child.hasToolOrReserved(requiredTool)) {
                         int toolIdx = CommandExecutor.PICKAXE_TIERS.indexOf(ItemIds.normalize(requiredTool));
                         boolean craftedTool = false;
                         for (int i = Math.max(0, toolIdx); i < CommandExecutor.PICKAXE_TIERS.size(); i++) {
                             String candidate = CommandExecutor.PICKAXE_TIERS.get(i);
-                            if (ctx.inventory().containsKey(candidate)) { craftedTool = true; break; }
+                            if (child.hasToolOrReserved(candidate)) { craftedTool = true; break; }
                             if (CommandExecutor.RECIPE_DATABASE.containsKey(ItemIds.strip(candidate))) {
                                 steps.add(new PlanStep("craft", "{\"item\":\"" + candidate + "\",\"count\":1}"));
+                                child.produce(candidate, 1);
+                                child.reserveTool(candidate);
                                 craftedTool = true;
                                 break;
                             }
@@ -94,9 +104,12 @@ public class CraftingProvider implements ItemProvider {
                 boolean resolved = false;
                 for (ItemProvider p : CommandExecutor.allProviders()) {
                     if (p == this) continue;
-                    if (p.canProvide(ing, ctx)) {
-                        ProviderPlan sub = p.plan(ing, missing, ctx);
+                    PlanLedger fork = child.fork();
+                    PlanContext forkCtx = childCtx.withLedger(fork);
+                    if (p.canProvide(ing, forkCtx)) {
+                        ProviderPlan sub = p.plan(ing, missing, forkCtx);
                         if (sub.ok()) {
+                            child.commitFrom(fork);
                             steps.addAll(sub.steps());
                             resolved = true;
                             break;
@@ -105,8 +118,10 @@ public class CraftingProvider implements ItemProvider {
                 }
 
                 if (!resolved && CommandExecutor.RECIPE_DATABASE.containsKey(ItemIds.strip(ing))) {
-                    ProviderPlan sub = planInternal(ing, missing, ctx, depth + 1);
+                    PlanLedger fork = child.fork();
+                    ProviderPlan sub = planInternal(ing, missing, childCtx.withLedger(fork), depth + 1);
                     if (sub.ok()) {
+                        child.commitFrom(fork);
                         steps.addAll(sub.steps());
                         resolved = true;
                     }
@@ -117,8 +132,11 @@ public class CraftingProvider implements ItemProvider {
                 }
             }
 
-            String craftJson = "{\"item\":\"" + itemId + "\",\"count\":" + count + "}";
+            String craftJson = "{\"item\":\"" + itemId + "\",\"count\":" + missingOutput + "}";
             steps.add(new PlanStep("craft", craftJson));
+            child.produce(itemId, batches * recipe.outputCount);
+            child.consume(itemId, missingOutput);
+            ctx.ledger().commitFrom(child);
             return new ProviderPlan(true, null, steps);
         } finally {
             inProgress.remove(normalizedId);

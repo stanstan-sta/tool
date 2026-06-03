@@ -3,6 +3,7 @@ package com.mindcraft.bridge;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
+import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
@@ -23,6 +24,7 @@ import net.minecraft.screen.MerchantScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.SmithingScreenHandler;
 import net.minecraft.screen.StonecutterScreenHandler;
+import net.minecraft.screen.slot.Slot;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.entity.passive.VillagerEntity;
 import net.minecraft.util.Identifier;
@@ -157,6 +159,10 @@ public class CommandExecutor {
         }
         if ("transfer_items".equals(type)) {
             return immediate(type, executeTransferItemsAction(actionJson));
+        }
+        TranslatedAction bridgeAction = translateBridgeStateAction(type, actionJson);
+        if (bridgeAction != null) {
+            return bridgeAction;
         }
         if ("interact_block".equals(type)) {
             return immediate(type, executeInteractBlockAction(actionJson));
@@ -298,6 +304,97 @@ public class CommandExecutor {
 
     public static TranslatedAction ofGenericWorker(String type, String command, String message) {
         return new TranslatedAction(true, type, "self_executing", command, null, message, true);
+    }
+
+    private static TranslatedAction translateBridgeStateAction(String type, String actionJson) {
+        switch (type) {
+            case "screen_click_slot": {
+                Integer slot = requireInt(actionJson, "slot");
+                if (slot == null) return missing(type, "slot");
+                if (slot < 0) return invalid(type, "slot");
+                String action = extractJsonString(actionJson, "action");
+                if (action != null && parseSlotActionType(action) == null) return invalid(type, "action");
+                Integer button = optionalInt(actionJson, "button", 0);
+                if (button == null || button < 0) return invalid(type, "button");
+                return immediate(type, executeScreenClickSlotAction(actionJson));
+            }
+            case "container_deposit": {
+                Integer slot = optionalInt(actionJson, "slot", -1);
+                String item = extractJsonString(actionJson, "item");
+                if ((slot == null || slot < 0) && (item == null || item.isBlank())) return missing(type, "item_or_slot");
+                if (slot != null && slot < -1) return invalid(type, "slot");
+                return immediate(type, executeContainerMoveAction(actionJson, true));
+            }
+            case "container_withdraw": {
+                Integer slot = optionalInt(actionJson, "slot", -1);
+                String item = extractJsonString(actionJson, "item");
+                if ((slot == null || slot < 0) && (item == null || item.isBlank())) return missing(type, "item_or_slot");
+                if (slot != null && slot < -1) return invalid(type, "slot");
+                return immediate(type, executeContainerMoveAction(actionJson, false));
+            }
+            case "container_quick_move": {
+                Integer slot = requireInt(actionJson, "slot");
+                if (slot == null) return missing(type, "slot");
+                if (slot < 0) return invalid(type, "slot");
+                return immediate(type, executeContainerQuickMoveAction(actionJson));
+            }
+            case "look": {
+                if (requireFloat(actionJson, "yaw") == null) return missing(type, "yaw");
+                if (requireFloat(actionJson, "pitch") == null) return missing(type, "pitch");
+                return immediate(type, executeLookAction(actionJson));
+            }
+            case "look_at": {
+                String entityId = extractJsonPrimitive(actionJson, "entity_id");
+                boolean hasCoords = extractJsonPrimitive(actionJson, "x") != null
+                        && extractJsonPrimitive(actionJson, "y") != null
+                        && extractJsonPrimitive(actionJson, "z") != null;
+                if ((entityId == null || entityId.isBlank()) && !hasCoords) return missing(type, "target");
+                return immediate(type, executeLookAtAction(actionJson));
+            }
+            case "press_key": {
+                String key = extractJsonString(actionJson, "key");
+                if (key == null || key.isBlank()) return missing(type, "key");
+                if (resolveKeyName(key) == null) return invalid(type, "key");
+                Integer durationMs = optionalInt(actionJson, "duration_ms", null);
+                if (durationMs != null && (durationMs < 0 || durationMs > 5000)) return invalid(type, "duration_ms");
+                return immediate(type, executePressKeyAction(actionJson));
+            }
+            case "swing":
+                return immediate(type, executeSwingAction(actionJson));
+            case "attack_entity": {
+                Integer entityId = requireInt(actionJson, "entity_id");
+                if (entityId == null) return missing(type, "entity_id");
+                return immediate(type, executeAttackEntityAction(actionJson));
+            }
+            case "use_item_on_block": {
+                if (requireInt(actionJson, "x") == null || requireInt(actionJson, "y") == null || requireInt(actionJson, "z") == null) {
+                    return missing(type, "coordinates");
+                }
+                String direction = firstNonBlank(extractJsonString(actionJson, "face"), extractJsonString(actionJson, "direction"));
+                if (direction != null && parseDirection(direction) == null) return invalid(type, "face");
+                return immediate(type, executeUseItemOnBlockAction(actionJson));
+            }
+            case "use_item_on_entity": {
+                Integer entityId = requireInt(actionJson, "entity_id");
+                if (entityId == null) return missing(type, "entity_id");
+                return immediate(type, executeUseItemOnEntityAction(actionJson));
+            }
+            case "hold_use_item": {
+                Integer durationMs = optionalInt(actionJson, "duration_ms", 500);
+                if (durationMs == null || durationMs < 0 || durationMs > 5000) return invalid(type, "duration_ms");
+                return immediate(type, executeHoldUseItemAction(actionJson));
+            }
+            default:
+                return null;
+        }
+    }
+
+    private static TranslatedAction missing(String type, String field) {
+        return new TranslatedAction(false, type, null, null, "missing_" + field, type + " requires " + field);
+    }
+
+    private static TranslatedAction invalid(String type, String field) {
+        return new TranslatedAction(false, type, null, null, "invalid_" + field, type + " has invalid " + field);
     }
 
     public static void execute(String command) {
@@ -964,6 +1061,18 @@ public class CommandExecutor {
         player.setPitch(pitch);
     }
 
+    private static void lookAtPosition(ClientPlayerEntity player, Vec3d target) {
+        double dx = target.x - player.getX();
+        double dy = target.y - player.getEyeY();
+        double dz = target.z - player.getZ();
+        double distXZ = Math.sqrt(dx * dx + dz * dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = (float) Math.toDegrees(Math.atan2(-dy, distXZ));
+        player.setYaw(yaw);
+        player.setHeadYaw(yaw);
+        player.setPitch(clampPitch(pitch));
+    }
+
     // ─── Build (schematic) action orchestration ──────────────────────────────────────────────────────
 
     /**
@@ -1457,6 +1566,124 @@ public class CommandExecutor {
     private static Integer parseIntSafe(String s) {
         if (s == null) return null;
         try { return Integer.parseInt(s.trim()); } catch (NumberFormatException nfe) { return null; }
+    }
+
+    private static Integer requireInt(String json, String key) {
+        return parseIntSafe(extractJsonPrimitive(json, key));
+    }
+
+    private static Integer optionalInt(String json, String key, Integer fallback) {
+        Integer parsed = parseIntSafe(extractJsonPrimitive(json, key));
+        return parsed != null ? parsed : fallback;
+    }
+
+    private static Float requireFloat(String json, String key) {
+        String value = extractJsonPrimitive(json, key);
+        if (value == null) return null;
+        try {
+            float f = Float.parseFloat(value.trim());
+            return Float.isFinite(f) ? f : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Double optionalDouble(String json, String key, Double fallback) {
+        String value = extractJsonPrimitive(json, key);
+        if (value == null) return fallback;
+        try {
+            double d = Double.parseDouble(value.trim());
+            return Double.isFinite(d) ? d : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static float clampPitch(float pitch) {
+        return Math.max(-90.0f, Math.min(90.0f, pitch));
+    }
+
+    private static float normalizeYaw(float yaw) {
+        float normalized = yaw % 360.0f;
+        if (normalized > 180.0f) normalized -= 360.0f;
+        if (normalized < -180.0f) normalized += 360.0f;
+        return normalized;
+    }
+
+    private static Boolean optionalBoolean(String json, String key, Boolean fallback) {
+        String value = extractJsonPrimitive(json, key);
+        if (value == null) return fallback;
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        if ("true".equals(normalized)) return true;
+        if ("false".equals(normalized)) return false;
+        return fallback;
+    }
+
+    private static SlotActionType parseSlotActionType(String raw) {
+        if (raw == null || raw.isBlank()) return SlotActionType.PICKUP;
+        String normalized = raw.trim().toUpperCase(Locale.ROOT);
+        if ("CLICK".equals(normalized) || "LEFT".equals(normalized) || "RIGHT".equals(normalized)) return SlotActionType.PICKUP;
+        if ("SHIFT_CLICK".equals(normalized)) return SlotActionType.QUICK_MOVE;
+        try {
+            return SlotActionType.valueOf(normalized);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static Direction parseDirection(String raw) {
+        if (raw == null || raw.isBlank()) return Direction.UP;
+        try {
+            return Direction.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static Hand parseHand(String raw) {
+        if (raw == null || raw.isBlank()) return Hand.MAIN_HAND;
+        String hand = raw.trim().toLowerCase(Locale.ROOT);
+        return hand.equals("off") || hand.equals("offhand") || hand.equals("off_hand")
+                ? Hand.OFF_HAND : Hand.MAIN_HAND;
+    }
+
+    private static String resolveKeyName(String raw) {
+        if (raw == null) return null;
+        String key = raw.trim().toLowerCase(Locale.ROOT).replace("-", "_");
+        return switch (key) {
+            case "forward", "w" -> "forward";
+            case "back", "backward", "s" -> "back";
+            case "left", "a" -> "left";
+            case "right", "d" -> "right";
+            case "jump", "space" -> "jump";
+            case "sneak", "crouch", "shift" -> "sneak";
+            case "sprint" -> "sprint";
+            case "attack", "mouse1" -> "attack";
+            case "use", "use_item", "mouse2" -> "use";
+            case "drop", "q" -> "drop";
+            case "inventory", "e" -> "inventory";
+            default -> null;
+        };
+    }
+
+    private static KeyBinding resolveKey(MinecraftClient client, String raw) {
+        if (client == null || client.options == null) return null;
+        String key = resolveKeyName(raw);
+        if (key == null) return null;
+        return switch (key) {
+            case "forward" -> client.options.forwardKey;
+            case "back" -> client.options.backKey;
+            case "left" -> client.options.leftKey;
+            case "right" -> client.options.rightKey;
+            case "jump" -> client.options.jumpKey;
+            case "sneak" -> client.options.sneakKey;
+            case "sprint" -> client.options.sprintKey;
+            case "attack" -> client.options.attackKey;
+            case "use" -> client.options.useKey;
+            case "drop" -> client.options.dropKey;
+            case "inventory" -> client.options.inventoryKey;
+            default -> null;
+        };
     }
 
     private static String executeCraftAction(String actionJson) {
@@ -6644,6 +6871,247 @@ public class CommandExecutor {
         }
     }
 
+    private static String executeScreenClickSlotAction(String actionJson) {
+        int slot = Integer.parseInt(extractJsonPrimitive(actionJson, "slot"));
+        int button = optionalInt(actionJson, "button", 0);
+        SlotActionType actionType = parseSlotActionType(extractJsonString(actionJson, "action"));
+        if (actionType == null) actionType = SlotActionType.PICKUP;
+        Integer expectedSyncId = optionalInt(actionJson, "sync_id", null);
+        String preflight = ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (client.currentScreen == null || player == null || player.currentScreenHandler == null) return "screen_not_open";
+            ScreenHandler handler = player.currentScreenHandler;
+            if (expectedSyncId != null && handler.syncId != expectedSyncId) return "sync_id_mismatch";
+            if (slot < 0 || slot >= handler.slots.size()) return "invalid_slot";
+            return "ok";
+        });
+        if (!"ok".equals(preflight)) return "screen_click_slot: " + (preflight == null ? "transfer_failed" : preflight);
+        boolean ok = ScreenDriver.click(slot, button, actionType);
+        return ok ? "screen_click_slot: clicked " + slot : "screen_click_slot: transfer_failed";
+    }
+
+    private static String executeContainerQuickMoveAction(String actionJson) {
+        int slot = Integer.parseInt(extractJsonPrimitive(actionJson, "slot"));
+        boolean ok = ScreenDriver.quickMove(slot);
+        return ok ? "container_quick_move: moved " + slot : "container_quick_move: failed";
+    }
+
+    private static String executeContainerMoveAction(String actionJson, boolean deposit) {
+        String slotStr = extractJsonPrimitive(actionJson, "slot");
+        String item = extractJsonString(actionJson, "item");
+        int count = Math.max(1, optionalInt(actionJson, "count", 1));
+        Integer expectedSyncId = optionalInt(actionJson, "sync_id", null);
+        Integer requestedSlot = parseIntSafe(slotStr);
+        String norm = item == null ? null : ItemIds.normalize(item);
+        String result = ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (player == null || client.interactionManager == null || player.currentScreenHandler == null) return "screen_not_open";
+            ScreenHandler handler = player.currentScreenHandler;
+            if (expectedSyncId != null && handler.syncId != expectedSyncId) return "sync_id_mismatch";
+            if (requestedSlot != null && requestedSlot >= 0) {
+                if (requestedSlot >= handler.slots.size()) return "invalid_slot";
+                Slot requested = handler.slots.get(requestedSlot);
+                if (isPlayerSlot(requested, player) != deposit) return "invalid_slot";
+            }
+            if (norm == null) return "item_not_found";
+            int sourceSlot = -1;
+            for (int i = 0; i < handler.slots.size(); i++) {
+                var slotObj = handler.slots.get(i);
+                boolean playerSlot = isPlayerSlot(slotObj, player);
+                if (deposit != playerSlot) continue;
+                if (requestedSlot != null && requestedSlot >= 0 && requestedSlot != i) continue;
+                ItemStack stack = slotObj.getStack();
+                if (!stack.isEmpty() && ItemIds.fromStack(stack).equals(norm) && stack.getCount() >= count) {
+                    sourceSlot = i;
+                    break;
+                }
+            }
+            if (sourceSlot < 0) return "item_not_found";
+
+            ItemStack sourceStack = handler.slots.get(sourceSlot).getStack();
+            int destinationSlot = -1;
+            for (int i = 0; i < handler.slots.size(); i++) {
+                Slot slotObj = handler.slots.get(i);
+                if (isPlayerSlot(slotObj, player) == deposit) continue;
+                ItemStack stack = slotObj.getStack();
+                if (stack.isEmpty()) {
+                    if (count <= sourceStack.getMaxCount()) {
+                        destinationSlot = i;
+                        break;
+                    }
+                    continue;
+                }
+                if (ItemIds.fromStack(stack).equals(norm) && stack.getCount() + count <= stack.getMaxCount()) {
+                    destinationSlot = i;
+                    break;
+                }
+            }
+            if (destinationSlot < 0) return "insufficient_space";
+
+            int beforeSource = sourceStack.getCount();
+            ItemStack beforeDest = handler.slots.get(destinationSlot).getStack().copy();
+            client.interactionManager.clickSlot(handler.syncId, sourceSlot, 0, SlotActionType.PICKUP, player);
+            sleep(30);
+            for (int i = 0; i < count; i++) {
+                client.interactionManager.clickSlot(handler.syncId, destinationSlot, 1, SlotActionType.PICKUP, player);
+                sleep(15);
+            }
+            client.interactionManager.clickSlot(handler.syncId, sourceSlot, 0, SlotActionType.PICKUP, player);
+            sleep(80);
+
+            ItemStack afterSource = handler.slots.get(sourceSlot).getStack();
+            ItemStack afterDest = handler.slots.get(destinationSlot).getStack();
+            int expectedSource = beforeSource - count;
+            int expectedDest = beforeDest.isEmpty() ? count : beforeDest.getCount() + count;
+            boolean sourceOk = expectedSource == 0 ? afterSource.isEmpty() : (!afterSource.isEmpty() && ItemIds.fromStack(afterSource).equals(norm) && afterSource.getCount() == expectedSource);
+            boolean destOk = !afterDest.isEmpty() && ItemIds.fromStack(afterDest).equals(norm) && afterDest.getCount() == expectedDest;
+            return sourceOk && destOk ? "ok:" + sourceSlot + "->" + destinationSlot + ":" + count : "transfer_failed";
+        });
+        if (result == null) result = "transfer_failed";
+        if (result.startsWith("ok:")) {
+            return (deposit ? "container_deposit: moved " : "container_withdraw: moved ") + result.substring(3);
+        }
+        return (deposit ? "container_deposit: " : "container_withdraw: ") + result;
+    }
+
+    private static boolean isPlayerSlot(Slot slot, ClientPlayerEntity player) {
+        return slot != null && player != null && slot.inventory == player.getInventory();
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        return a != null && !a.isBlank() ? a : b;
+    }
+
+    private static String executeLookAction(String actionJson) {
+        float yaw = normalizeYaw(Float.parseFloat(extractJsonPrimitive(actionJson, "yaw")));
+        float pitch = clampPitch(Float.parseFloat(extractJsonPrimitive(actionJson, "pitch")));
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (player == null) return false;
+            player.setYaw(yaw);
+            player.setHeadYaw(yaw);
+            player.setPitch(pitch);
+            return true;
+        }));
+        return ok ? "look: set" : "look: not connected";
+    }
+
+    private static String executeLookAtAction(String actionJson) {
+        Integer entityId = optionalInt(actionJson, "entity_id", null);
+        Double x = optionalDouble(actionJson, "x", null);
+        Double y = optionalDouble(actionJson, "y", null);
+        Double z = optionalDouble(actionJson, "z", null);
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (player == null || client.world == null) return false;
+            if (entityId != null) {
+                Entity entity = client.world.getEntityById(entityId);
+                if (entity == null) return false;
+                lookAtEntity(player, entity);
+                return true;
+            }
+            if (x == null || y == null || z == null) return false;
+            lookAtPosition(player, new Vec3d(x, y, z));
+            return true;
+        }));
+        return ok ? "look_at: set" : "look_at: target unavailable";
+    }
+
+    private static String executePressKeyAction(String actionJson) {
+        String keyName = extractJsonString(actionJson, "key");
+        boolean pressed = Boolean.TRUE.equals(optionalBoolean(actionJson, "pressed", true));
+        Integer parsedDuration = optionalInt(actionJson, "duration_ms", null);
+        int durationMs = parsedDuration != null ? parsedDuration : (pressed ? 80 : 0);
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            KeyBinding key = resolveKey(client, keyName);
+            if (key == null) return false;
+            key.setPressed(pressed);
+            return true;
+        }));
+        if (!ok) return "press_key: unavailable";
+        if (pressed && durationMs > 0) {
+            sleep(Math.min(durationMs, 5000));
+            ClientThread.run(() -> {
+                KeyBinding key = resolveKey(MinecraftClient.getInstance(), keyName);
+                if (key != null) key.setPressed(false);
+            });
+        }
+        return "press_key: " + (pressed ? "pressed " : "released ") + resolveKeyName(keyName);
+    }
+
+    private static String executeSwingAction(String actionJson) {
+        Hand hand = parseHand(extractJsonString(actionJson, "hand"));
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null) return false;
+            client.player.swingHand(hand);
+            return true;
+        }));
+        return ok ? "swing: swung" : "swing: not connected";
+    }
+
+    private static String executeAttackEntityAction(String actionJson) {
+        int entityId = Integer.parseInt(extractJsonPrimitive(actionJson, "entity_id"));
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            if (player == null || client.world == null || client.interactionManager == null) return false;
+            Entity entity = client.world.getEntityById(entityId);
+            if (entity == null) return false;
+            lookAtEntity(player, entity);
+            client.interactionManager.attackEntity(player, entity);
+            player.swingHand(Hand.MAIN_HAND);
+            return true;
+        }));
+        return ok ? "attack_entity: attacked" : "attack_entity: target unavailable";
+    }
+
+    private static String executeUseItemOnBlockAction(String actionJson) {
+        try {
+            int x = Integer.parseInt(extractJsonPrimitive(actionJson, "x"));
+            int y = Integer.parseInt(extractJsonPrimitive(actionJson, "y"));
+            int z = Integer.parseInt(extractJsonPrimitive(actionJson, "z"));
+            Direction direction = parseDirection(firstNonBlank(extractJsonString(actionJson, "face"), extractJsonString(actionJson, "direction")));
+            if (direction == null) direction = Direction.UP;
+            Hand hand = parseHand(extractJsonString(actionJson, "hand"));
+            BlockPos pos = new BlockPos(x, y, z);
+            return WorldInteractor.interactBlock(pos, direction, hand) ? "use_item_on_block: used" : "use_item_on_block: failed";
+        } catch (NumberFormatException e) {
+            return "use_item_on_block: invalid coordinates";
+        }
+    }
+
+    private static String executeUseItemOnEntityAction(String actionJson) {
+        int entityId = Integer.parseInt(extractJsonPrimitive(actionJson, "entity_id"));
+        Hand hand = parseHand(extractJsonString(actionJson, "hand"));
+        return WorldInteractor.interactEntity(entityId, hand) ? "use_item_on_entity: used" : "use_item_on_entity: target unavailable";
+    }
+
+    private static String executeHoldUseItemAction(String actionJson) {
+        int durationMs = optionalInt(actionJson, "duration_ms", 500);
+        Hand hand = parseHand(extractJsonString(actionJson, "hand"));
+        boolean ok = Boolean.TRUE.equals(ClientThread.call(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null || client.interactionManager == null) return false;
+            client.options.useKey.setPressed(true);
+            client.interactionManager.interactItem(client.player, hand);
+            return true;
+        }));
+        if (!ok) return "hold_use_item: not connected";
+        sleep(Math.min(durationMs, 5000));
+        ClientThread.run(() -> {
+            MinecraftClient client = MinecraftClient.getInstance();
+            client.options.useKey.setPressed(false);
+            if (client.player != null) client.player.stopUsingItem();
+        });
+        return "hold_use_item: held";
+    }
+
     private static String executeInteractBlockAction(String actionJson) {
         String xStr = extractJsonPrimitive(actionJson, "x");
         String yStr = extractJsonPrimitive(actionJson, "y");
@@ -6763,9 +7231,14 @@ public class CommandExecutor {
                 String target = extractJsonString(json, "target");
                 String count = extractJsonPrimitive(json, "count");
                 String secondary = extractJsonString(json, "secondaryTarget");
+                String mode = extractJsonString(json, "mode");
                 if (target == null) return null;
+                String effectiveCount = count != null ? count : "64";
+                if (mode == null || !mode.equalsIgnoreCase("ensure_inventory")) {
+                    effectiveCount = additionalMineTargetCount(target, effectiveCount);
+                }
                 StringBuilder sb = new StringBuilder("#mine ");
-                sb.append(count != null ? count : "64").append(" ").append(expandMineTarget(target));
+                sb.append(effectiveCount).append(" ").append(expandMineTarget(target));
                 if (secondary != null) sb.append(" ").append(secondary);
                 return sb.toString();
             }
@@ -6780,6 +7253,36 @@ public class CommandExecutor {
     }
 
     // â”€â”€â”€ JSON extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private static String additionalMineTargetCount(String target, String requestedCount) {
+        int requested = 64;
+        try {
+            requested = Math.max(1, Integer.parseInt(requestedCount));
+        } catch (NumberFormatException ignored) {}
+        return String.valueOf(countInventoryForMineTarget(target) + requested);
+    }
+
+    private static int countInventoryForMineTarget(String target) {
+        String normalized = ItemIds.normalize(target);
+        try {
+            return ClientThread.call(() -> {
+                MinecraftClient client = MinecraftClient.getInstance();
+                ClientPlayerEntity player = client == null ? null : client.player;
+                if (player == null) return 0;
+                int total = 0;
+                PlayerInventory inv = player.getInventory();
+                for (int i = 0; i < inv.size(); i++) {
+                    ItemStack stack = inv.getStack(i);
+                    if (!stack.isEmpty() && ItemIds.fromStack(stack).equals(normalized)) {
+                        total += stack.getCount();
+                    }
+                }
+                return total;
+            });
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
 
     public static String normalizeRawBaritoneCommand(String command) {
         if (command == null) return null;

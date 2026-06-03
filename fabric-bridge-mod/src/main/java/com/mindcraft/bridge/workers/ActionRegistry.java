@@ -83,6 +83,30 @@ public class ActionRegistry {
             new String[]{}, new String[]{}, "Close open screen"));
         registerSpec(new ActionSpec("transfer_items", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"item", "count", "from_slot", "to_slot"}, new String[]{}, "Transfer items between slots"));
+        registerSpec(new ActionSpec("screen_click_slot", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"slot"}, new String[]{"button", "action", "sync_id"}, "Click a slot in the currently open screen"));
+        registerSpec(new ActionSpec("container_deposit", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"item", "slot", "count", "sync_id"}, "Move an exact item count from player inventory into the open container"));
+        registerSpec(new ActionSpec("container_withdraw", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"item", "slot", "count", "sync_id"}, "Move an exact item count from the open container into player inventory"));
+        registerSpec(new ActionSpec("container_quick_move", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"slot"}, new String[]{}, "Shift-click a screen slot"));
+        registerSpec(new ActionSpec("look", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"yaw", "pitch"}, new String[]{}, "Set player yaw and pitch"));
+        registerSpec(new ActionSpec("look_at", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"x", "y", "z", "entity_id"}, "Look at coordinates or an entity"));
+        registerSpec(new ActionSpec("press_key", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"key"}, new String[]{"pressed", "duration_ms"}, "Press or release a movement or action key"));
+        registerSpec(new ActionSpec("swing", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"hand"}, "Swing main hand or offhand"));
+        registerSpec(new ActionSpec("attack_entity", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"entity_id"}, new String[]{}, "Attack an entity by id"));
+        registerSpec(new ActionSpec("use_item_on_block", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"x", "y", "z"}, new String[]{"face", "direction", "hand"}, "Use held item on a block"));
+        registerSpec(new ActionSpec("use_item_on_entity", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{"entity_id"}, new String[]{"hand"}, "Use held item on an entity"));
+        registerSpec(new ActionSpec("hold_use_item", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+            new String[]{}, new String[]{"duration_ms", "hand"}, "Hold use-item briefly"));
         registerSpec(new ActionSpec("interact_block", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"x", "y", "z"}, new String[]{"direction"}, "Interact with block"));
         registerSpec(new ActionSpec("interact_entity", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
@@ -291,7 +315,7 @@ public class ActionRegistry {
             sb.append("}");
         }
         sb.append("],");
-        sb.append("\"state_fields\":[\"selected_slot\",\"held_items\",\"equipment\",\"effects\",\"xp\",\"open_screen\"],");
+        sb.append("\"state_fields\":[\"selected_slot\",\"held_items\",\"equipment\",\"equipment_detail\",\"effects\",\"xp\",\"open_screen\",\"targeted_block\",\"targeted_entity\",\"environment\",\"nearby_block_entities\"],");
         sb.append("\"queue_fields\":[\"active_id\",\"active_action_type\",\"active\",\"kind\",\"completion\",\"pending\",\"paused\",\"lastFailure\",\"status\",\"failure_code\",\"elapsed_ms\",\"timeout_ms\",\"cancellable\"],");
         sb.append("\"version\":\"1.1.0\"");
         sb.append("}");

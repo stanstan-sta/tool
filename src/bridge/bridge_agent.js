@@ -11,6 +11,7 @@ import settings from '../agent/settings.js';
 import { EventDetector } from './event_detector.js';
 import { DriveModel } from './drive_model.js';
 import { preprocessMineActions } from './mine_preprocessor.js';
+import { buildFabricStateLines, summarizeOpenScreen } from './state_summary.js';
 import {
     resolveBuildRequest,
     mergeBuildRequest,
@@ -33,6 +34,13 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } fr
 const POLL_MIN_MS = 800;
 const POLL_DEFAULT_MS = 2000;
 const POLL_MAX_MS = 5000;
+const VISION_UNSUPPORTED_TOKEN = 'vision_model_unsupported';
+const VISION_INSPECT_ACTIONS = new Set([
+    'inspect_view_with_vision',
+    'inspect_screen_with_vision',
+    'look_and_inspect',
+]);
+const DEFAULT_LOOK_STABILIZE_MS = 200;
 
 function clamp(n, min, max) {
     return Math.min(max, Math.max(min, n));
@@ -227,6 +235,162 @@ function normalizeAction(action) {
     }
     if (!action.type) return null;
     return action;
+}
+
+function isVisionInspectAction(action) {
+    return !!action && typeof action === 'object' && VISION_INSPECT_ACTIONS.has(action.type);
+}
+
+function isVisionUnsupportedResponse(text) {
+    return /vision_model_unsupported|vision is only supported|does not support image|image input|image_url|unsupported image/i.test(String(text || ''));
+}
+
+function sleepMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function finiteNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function firstFiniteField(obj, fields) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (const field of fields) {
+        const number = finiteNumber(obj[field]);
+        if (number !== null) return number;
+    }
+    return null;
+}
+
+function parseLookEntityId(value, { looseString = false } = {}) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'object') {
+        const direct = firstFiniteField(value, ['entity_id', 'entityId', 'entity', 'id']);
+        return direct === null ? null : Math.trunc(direct);
+    }
+    const text = String(value || '').trim();
+    if (!text) return null;
+    const labeled = text.match(/\b(?:entity[_\s-]?id|entity|id)\s*[:=#]?\s*(-?\d+)\b/i);
+    if (labeled) return Number(labeled[1]);
+    if (looseString && /^-?\d+$/.test(text)) return Number(text);
+    return null;
+}
+
+function parseLookCoordinatesText(text, { loose = false } = {}) {
+    const value = String(text || '').trim();
+    if (!value) return null;
+    const labeled = value.match(/\bx\s*[:=]?\s*(-?\d+(?:\.\d+)?).*?\by\s*[:=]?\s*(-?\d+(?:\.\d+)?).*?\bz\s*[:=]?\s*(-?\d+(?:\.\d+)?)/i);
+    if (labeled) {
+        return { x: Number(labeled[1]), y: Number(labeled[2]), z: Number(labeled[3]) };
+    }
+    if (!loose && !/\b(?:at|pos|position|coords?|coordinates?)\b|[,()]/i.test(value)) return null;
+    const nums = value.match(/-?\d+(?:\.\d+)?/g);
+    if (!nums || nums.length < 3) return null;
+    return { x: Number(nums[0]), y: Number(nums[1]), z: Number(nums[2]) };
+}
+
+function parseLookCoordinates(value, options = {}) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'object') {
+        const source = value.position || value.pos || value.location || value;
+        const x = firstFiniteField(source, ['x', 'target_x', 'targetX']);
+        const y = firstFiniteField(source, ['y', 'target_y', 'targetY']);
+        const z = firstFiniteField(source, ['z', 'target_z', 'targetZ']);
+        if (x !== null && y !== null && z !== null) return { x, y, z };
+        return null;
+    }
+    return parseLookCoordinatesText(value, options);
+}
+
+function buildLookAtActionForInspect(action) {
+    const sources = [
+        { value: action, loose: true },
+        { value: action?.target, loose: true },
+        { value: action?.position, loose: true },
+        { value: action?.pos, loose: true },
+        { value: action?.location, loose: true },
+        { value: action?.subject, loose: false },
+        { value: action?.question, loose: false },
+    ];
+    for (const source of sources) {
+        const entityId = parseLookEntityId(source.value, { looseString: source.loose });
+        if (entityId !== null) return { type: 'look_at', entity_id: entityId };
+    }
+    for (const source of sources) {
+        const coords = parseLookCoordinates(source.value, { loose: source.loose });
+        if (coords) return { type: 'look_at', ...coords };
+    }
+    return null;
+}
+
+function getOpenScreenSlots(openScreen) {
+    if (!openScreen?.open) return null;
+    if (Array.isArray(openScreen.slots)) return openScreen.slots;
+    if (Array.isArray(openScreen.slot_summary)) return openScreen.slot_summary;
+    return null;
+}
+
+function cleanStackName(stack) {
+    return String(stack?.item || stack?.id || stack?.name || stack?.type || '')
+        .replace(/^minecraft:/i, '');
+}
+
+function formatOpenScreenSlot(slot) {
+    if (!slot || typeof slot !== 'object') return '';
+    const stack = slot.stack && typeof slot.stack === 'object' ? slot.stack : slot;
+    const name = cleanStackName(stack);
+    if (!name) return '';
+    const countRaw = Number(stack.count ?? stack.qty ?? stack.quantity ?? 1);
+    const count = Number.isFinite(countRaw) && countRaw > 1 ? `${countRaw}x ` : '';
+    const index = slot.index ?? slot.slot ?? slot.slot_id ?? slot.slotId;
+    return `${index !== undefined ? `slot ${index}: ` : ''}${count}${name}`;
+}
+
+function structuredOpenScreenSlotSummary(openScreen, limit = 24) {
+    const slots = getOpenScreenSlots(openScreen);
+    if (!slots) return '';
+    const label = openScreen.title || openScreen.name || openScreen.handler_class || openScreen.screen_class || 'open_screen';
+    const sync = openScreen.sync_id !== undefined ? ` (sync ${openScreen.sync_id})` : '';
+    const formatted = slots.map(formatOpenScreenSlot).filter(Boolean);
+    const visible = formatted.slice(0, limit);
+    const suffix = formatted.length > visible.length ? ` (+${formatted.length - visible.length} more)` : '';
+    const contents = visible.length > 0 ? `${visible.join(', ')}${suffix}` : 'no occupied slots';
+    return `Open screen slots: ${label}${sync}: ${contents}`;
+}
+
+function visionInspectActionText(action) {
+    return [action?.question, action?.subject, action?.target]
+        .map(value => {
+            if (value === null || value === undefined) return '';
+            return typeof value === 'object' ? JSON.stringify(value) : String(value);
+        })
+        .join(' ')
+        .trim();
+}
+
+function isVisualOnlyScreenQuestion(action) {
+    const text = visionInspectActionText(action);
+    if (!text) return false;
+    return /\b(?:look like|appearance|visual|screenshot|image|pixels?|colou?r|shape|layout|button|icon|tooltip|cursor|highlight|selected|recipe book|progress bar|text on|title shown)\b/i.test(text);
+}
+
+function canAnswerScreenFromSlots(action, openScreen) {
+    if (!getOpenScreenSlots(openScreen)) return false;
+    if (isVisualOnlyScreenQuestion(action)) return false;
+    const text = visionInspectActionText(action);
+    if (!text) return true;
+    return /\b(?:slot|slots|stack|stacks|item|items|contain|contains|contents?|container|chest|barrel|shulker|inventory|screen|gui|menu|what(?:'s| is) in)\b/i.test(text);
+}
+
+function relayOutputToServer(name, text) {
+    try {
+        if (!serverProxy?.getSocket?.()) return;
+        sendOutputToServer(name, text);
+    } catch (err) {
+        console.warn(`Unable to relay bridge output: ${err.message || err}`);
+    }
 }
 
 function normalizeCommandText(command) {
@@ -637,6 +801,7 @@ export class BridgeAgent {
         this._ambientBucketCredits = settings.bridge_ambient_budget_per_hour || 4;
         this._ambientLastRefillMs = Date.now();
         this._ambientLogPath = `./bots/${this.name}/ambient.log`;
+        this._lastAmbientVisionAt = 0;
         mkdirSync(`./bots/${this.name}`, { recursive: true });
 
         // â”€â”€ Fabric bridge HTTP client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -779,7 +944,7 @@ export class BridgeAgent {
             console.log(`${this.name}: prompt busy; ${mode === 'queue' ? 'queueing' : 'dropping'} ${label}`);
             if (mode === 'drop') return null;
             return await new Promise(resolve => {
-                this._promptQueue.push({ seq, label, history: frozenHistory, options: { ...options, mode: 'queue' }, resolve });
+                this._promptQueue.push({ kind: 'text', seq, label, history: frozenHistory, options: { ...options, mode: 'queue' }, resolve });
             });
         }
 
@@ -809,7 +974,56 @@ export class BridgeAgent {
             const next = this._promptQueue.shift();
             if (next) {
                 setTimeout(async () => {
-                    const result = await this._promptConvoLocked(next.label, next.history, next.options);
+                    const result = next.kind === 'vision'
+                        ? await this._promptBridgeVisionLocked(next.label, next.history, next.imageBuffer, next.options)
+                        : await this._promptConvoLocked(next.label, next.history, next.options);
+                    next.resolve(result);
+                }, 0);
+            }
+        }
+    }
+
+    async _promptBridgeVisionLocked(label, history, imageBuffer, options = {}) {
+        const mode = options.mode || 'drop';
+        const frozenHistory = this._clonePromptHistory(history);
+        const seq = ++this._promptSeq;
+
+        if (this._promptInFlight) {
+            console.log(`${this.name}: prompt busy; ${mode === 'queue' ? 'queueing vision prompt' : 'dropping'} ${label}`);
+            if (mode === 'drop') return null;
+            return await new Promise(resolve => {
+                this._promptQueue.push({ kind: 'vision', seq, label, history: frozenHistory, imageBuffer, options: { ...options, mode: 'queue' }, resolve });
+            });
+        }
+
+        return await this._runPromptBridgeVisionNow(seq, label, frozenHistory, imageBuffer, options);
+    }
+
+    async _runPromptBridgeVisionNow(seq, label, history, imageBuffer, options = {}) {
+        this._promptInFlight = true;
+        const startedAt = Date.now();
+        try {
+            console.log(`${this.name}: vision prompt start #${seq} ${label}`);
+            if (options.refreshBridgePrompt !== false && this.prompter?.profile) {
+                this.prompter.profile.conversing = await this._buildBridgePromptContent(
+                    this.history?.memory || '',
+                    history
+                );
+            }
+            const response = await this.prompter.promptBridgeVisionConvo(history, imageBuffer);
+            console.log(`${this.name}: vision prompt end #${seq} ${label} (${Date.now() - startedAt}ms)`);
+            return response;
+        } catch (err) {
+            console.error(`${this.name}: vision prompt failed #${seq} ${label}`, err);
+            return '';
+        } finally {
+            this._promptInFlight = false;
+            const next = this._promptQueue.shift();
+            if (next) {
+                setTimeout(async () => {
+                    const result = next.kind === 'vision'
+                        ? await this._promptBridgeVisionLocked(next.label, next.history, next.imageBuffer, next.options)
+                        : await this._promptConvoLocked(next.label, next.history, next.options);
                     next.resolve(result);
                 }, 0);
             }
@@ -824,45 +1038,11 @@ export class BridgeAgent {
     _buildStateContext(state) {
         if (!state || !state.connected) return null;
 
-        const inv = (state.inventory || [])
-            .filter(i => i && i.item)
-            .map(i => `${i.count || 1}x ${i.item.replace('minecraft:', '')}`)
-            .join(', ') || 'empty';
-        const dim = (state.dimension || 'overworld').replace('minecraft:', '');
-        const nearby = (state.nearby_players || []).join(', ') || 'none';
-        const entities = (state.nearby_entities || [])
-            .slice(0, 5)
-            .map(e => `${e.type}@(${e.x},${e.y},${e.z})`)
-            .join(', ') || 'none';
-
-        let ctx = `CURRENT STATE:\n`;
-        ctx += `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}\n`;
-        ctx += `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}\n`;
-
-        // Phase 1: held items + equipment
-        const held = state.held_items?.main_hand?.item
-            ? state.held_items.main_hand.item.replace('minecraft:', '')
-            : 'empty';
-        const armor = state.equipment
-            ? ['head', 'chest', 'legs', 'feet']
-                .map(slot => state.equipment[slot]?.item?.replace('minecraft:', '') || 'empty')
-                .join('/')
-            : 'unknown';
-        ctx += `Held: ${held}  Armor: ${armor}\n`;
-
-        // Phase 1: status effects (defensive, check field presence)
-        if (state.effects && state.effects.length > 0) {
-            ctx += `Effects: ${state.effects.map(e => `${(e.id || '').replace('minecraft:', '')}(${e.amplifier + 1})`).join(', ')}\n`;
-        }
-
-        // Phase 1: open screen (defensive)
-        if (state.open_screen?.open) {
-            ctx += `Open screen: ${state.open_screen.handler_class || '?'}\n`;
-        }
-
-        ctx += `Inventory: ${inv}\n`;
-        ctx += `Nearby players: ${nearby}\n`;
-        ctx += `Nearby entities: ${entities}`;
+        let ctx = `CURRENT STATE:\n${buildFabricStateLines(state, {
+            inventoryLimit: 18,
+            screenSlotLimit: 16,
+            entityLimit: 5,
+        }).join('\n')}`;
 
         // â”€â”€ Crafting analysis based on wiki recipe validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctx += this._buildCraftingAnalysis(state.inventory);
@@ -2178,6 +2358,42 @@ export class BridgeAgent {
         return base;
     }
 
+    async _captureAmbientVisionIfEligible(state, sourceLabel) {
+        if (sourceLabel !== 'ambient') return null;
+        if (!state || !state.connected) return null;
+        if (settings.allow_vision !== true) return null;
+        if (settings.bridge_ambient_vision_enabled === false) return null;
+        if (!this.prompter?.vision_model?.sendVisionRequest) return null;
+
+        const now = Date.now();
+        const minGap = Math.max(30_000, Number(settings.bridge_ambient_vision_min_gap_ms || 180_000));
+        if (now - this._lastAmbientVisionAt < minGap) return null;
+
+        const qualityRaw = Number(settings.bridge_vision_quality);
+        const downscaleRaw = Number(settings.bridge_vision_downscale);
+        const quality = Number.isFinite(qualityRaw) ? Math.max(0.1, Math.min(1, qualityRaw)) : 0.8;
+        const downscale = Number.isFinite(downscaleRaw) ? Math.max(1, Math.min(8, Math.round(downscaleRaw))) : 2;
+
+        try {
+            const shot = await this.bridge.getScreenshot({ quality, downscale });
+            if (!shot?.buffer?.length) return null;
+            this._lastAmbientVisionAt = now;
+            this._ambientLog({
+                t: now,
+                event: 'ambient_vision_captured',
+                bytes: shot.buffer.length,
+                width: shot.width,
+                height: shot.height,
+                quality: shot.quality,
+                downscale: shot.downscale,
+            });
+            return shot;
+        } catch (err) {
+            this._ambientLog({ t: now, event: 'ambient_vision_failed', error: String(err?.message || err) });
+            return null;
+        }
+    }
+
     async _dispatchProactiveTurn(state, sourceLabel) {
         const stateContext = this._buildStateContext(state);
         if (stateContext) {
@@ -2203,7 +2419,20 @@ export class BridgeAgent {
 
         let response;
         try {
-            response = await this._promptConvoLocked('proactive:' + sourceLabel, history, { mode: 'drop' });
+            const visionShot = await this._captureAmbientVisionIfEligible(state, sourceLabel);
+            if (visionShot) {
+                const visionHistory = history.concat({
+                    role: 'system',
+                    content: `A current first-person screenshot is attached for this ambient/improvise turn. Use it together with CURRENT STATE when deciding whether to speak, move, mine, craft, or stay silent. Screenshot: ${visionShot.width || '?'}x${visionShot.height || '?'}, ${visionShot.mimeType || 'image/jpeg'}, quality ${visionShot.quality || settings.bridge_vision_quality || 0.8}.`
+                });
+                response = await this._promptBridgeVisionLocked('proactive:' + sourceLabel + ':vision', visionHistory, visionShot.buffer, { mode: 'drop' });
+                if (/vision is only supported|does not support image|image input|image_url/i.test(String(response || ''))) {
+                    this._ambientLog({ t: Date.now(), event: 'ambient_vision_unsupported', response: String(response).slice(0, 200) });
+                    response = await this._promptConvoLocked('proactive:' + sourceLabel + ':text-fallback', history, { mode: 'drop' });
+                }
+            } else {
+                response = await this._promptConvoLocked('proactive:' + sourceLabel, history, { mode: 'drop' });
+            }
         } catch (err) {
             console.error(`LLM error in ${sourceLabel}:`, err);
             return '';
@@ -2316,6 +2545,18 @@ export class BridgeAgent {
             return this.bridge.sendBatch(actions);
         }
 
+        if (actions.some(isVisionInspectAction)) {
+            const consumed = await this._consumeVisionInspectActions(actions);
+            actions = consumed.remaining;
+            if (actions.length === 0) {
+                return {
+                    success: true,
+                    queued: 0,
+                    output: consumed.results.join('\n') || 'vision inspect completed',
+                };
+            }
+        }
+
         // ── Step 1: Node-side build expansion ──────────────────────────
         const nodeHandled = new Set(['build_house', 'scan_building', 'rate_build']);
         const hasNodeType = actions.some(a => a && nodeHandled.has(a.type));
@@ -2377,6 +2618,91 @@ export class BridgeAgent {
         } catch (err) {
             console.error('Failed to write ambient log:', err);
         }
+    }
+
+    _extractVisionInspectText(response) {
+        if (isVisionUnsupportedResponse(response)) return VISION_UNSUPPORTED_TOKEN;
+        const parsed = parseBridgeResponse(String(response || ''), settings.bridge_structured_output === true);
+        const text = (parsed.chat || '').trim();
+        return text || String(response || '').trim();
+    }
+
+    async _handleVisionInspectAction(action) {
+        const state = this._lastState || {};
+        if (action.type === 'inspect_screen_with_vision' && canAnswerScreenFromSlots(action, state.open_screen)) {
+            return structuredOpenScreenSlotSummary(state.open_screen, 24);
+        }
+
+        if (!this.prompter?.vision_model?.sendVisionRequest) {
+            return VISION_UNSUPPORTED_TOKEN;
+        }
+
+        if (action.type === 'look_and_inspect') {
+            const lookAction = buildLookAtActionForInspect(action);
+            if (lookAction) {
+                const lookResult = await this.bridge.sendBatch([lookAction]);
+                if (lookResult && lookResult.success === false) {
+                    return `vision_inspect_failed: look_at_failed: ${describeBatchDispatchFailure(lookResult)}`;
+                }
+                const stabilizeRaw = Number(settings.bridge_vision_look_stabilize_ms);
+                const stabilizeMs = Number.isFinite(stabilizeRaw)
+                    ? clamp(stabilizeRaw, 0, 2000)
+                    : DEFAULT_LOOK_STABILIZE_MS;
+                if (stabilizeMs > 0) await sleepMs(stabilizeMs);
+            }
+        }
+
+        const qualityRaw = Number(settings.bridge_vision_quality);
+        const downscaleRaw = Number(settings.bridge_vision_downscale);
+        const shot = await this.bridge.getScreenshot({
+            quality: Number.isFinite(qualityRaw) ? qualityRaw : 0.8,
+            downscale: Number.isFinite(downscaleRaw) ? downscaleRaw : 2,
+        });
+        if (!shot?.buffer) {
+            return 'vision_inspect_failed: screenshot_unavailable';
+        }
+
+        const screenSummary = action.type === 'inspect_screen_with_vision'
+            ? summarizeOpenScreen(state.open_screen, 24)
+            : '';
+        const stateContext = state?.connected ? this._buildStateContext(state) : null;
+        const subject = action.subject || action.target || action.question || '';
+        const task = action.type === 'inspect_screen_with_vision'
+            ? 'Inspect the currently open Minecraft screen and visible GUI.'
+            : (action.type === 'look_and_inspect'
+                ? 'Inspect what the bot is looking at in the current first-person view.'
+                : 'Inspect the current first-person Minecraft view.');
+        const userPrompt = [
+            task,
+            subject ? `Focus: ${subject}` : '',
+            screenSummary ? `Prefer these open-screen slot details when interpreting the image: ${screenSummary}` : '',
+            `Screenshot: ${shot.width || '?'}x${shot.height || '?'}, ${shot.mimeType || 'image/jpeg'}.`,
+            'Reply with the concise inspection result. If the image cannot be processed, reply exactly vision_model_unsupported.',
+        ].filter(Boolean).join('\n');
+
+        const history = this.history?.getHistory ? this.history.getHistory() : [];
+        if (stateContext) history.push({ role: 'system', content: stateContext });
+        history.push({ role: 'user', content: userPrompt });
+
+        const response = await this._promptBridgeVisionLocked(`vision-inspect:${action.type}`, history, shot.buffer, { mode: 'queue' });
+        const text = this._extractVisionInspectText(response);
+        return text || 'vision_inspect_failed: empty_response';
+    }
+
+    async _consumeVisionInspectActions(actions) {
+        const remaining = [];
+        const results = [];
+        for (const action of actions || []) {
+            if (!isVisionInspectAction(action)) {
+                remaining.push(action);
+                continue;
+            }
+            const result = await this._handleVisionInspectAction(action);
+            results.push(result);
+            this.history?.add?.('system', `Vision inspect (${action.type}): ${result}`);
+            relayOutputToServer(this.name, result);
+        }
+        return { remaining, results };
     }
 
     // â”€â”€â”€ House build pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

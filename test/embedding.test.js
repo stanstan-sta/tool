@@ -9,10 +9,16 @@ import {
 import { wordOverlapScore } from '../src/utils/text.js';
 
 import { formatBridgeExamples, BRIDGE_EXAMPLE_LIBRARY, BridgeExampleRetriever } from '../src/bridge/bridge_examples.js';
+import {
+    BridgePromptPackRetriever,
+    buildPromptPackQuery,
+    formatBridgePromptPacks,
+} from '../src/bridge/bridge_prompt_retriever.js';
 
 import { buildBridgeSystemPrompt } from '../src/bridge/bridge_prompt.js';
 import { HuggingFace } from '../src/models/huggingface.js';
 import { selectAPI } from '../src/models/_model_map.js';
+import { LocalEmbedding } from '../src/models/local-embedding.js';
 import { BridgeAgent } from '../src/bridge/bridge_agent.js';
 
 // ─── normaliseEmbeddingVector ─────────────────────────────────────────────
@@ -183,6 +189,89 @@ test('BridgeExampleRetriever passes document and query intents to embedding mode
     assert.equal(snippets[0].intent, 'sleep');
 });
 
+// ─── BridgePromptPackRetriever ──────────────────────────────────────────────
+
+const TEST_PROMPT_PACKS = [
+    {
+        id: 'containers',
+        title: 'Containers',
+        actions: ['container_deposit', 'container_withdraw', 'inspect_screen_with_vision'],
+        triggers: ['chest', 'barrel', 'container', 'slots'],
+        requires: [],
+        priority: 70,
+        token_budget: 300,
+        content: 'Use open_screen.slots for known container contents. Do not invent unopened container contents.',
+    },
+    {
+        id: 'smithing',
+        title: 'Smithing',
+        actions: ['smith'],
+        triggers: ['smith', 'armor trim', 'netherite upgrade'],
+        requires: ['containers'],
+        priority: 90,
+        token_budget: 400,
+        content: 'Smith only with a known template, base, and addition. Ask when the smithing request is ambiguous.',
+    },
+    {
+        id: 'dimension_travel',
+        title: 'Dimension Travel',
+        actions: ['portal_travel', 'return_to_overworld'],
+        triggers: ['nether', 'overworld', 'return'],
+        requires: [],
+        priority: 80,
+        token_budget: 350,
+        content: 'Never send coordinates for one dimension while still in another dimension.',
+    },
+];
+
+test('BridgePromptPackRetriever fallback expands dependencies', async () => {
+    const retriever = new BridgePromptPackRetriever(null, TEST_PROMPT_PACKS);
+    await retriever.init();
+    const packs = await retriever.getRelevantPacks('can you smith my diamond armor?', { k: 1 });
+    assert.deepEqual(packs.map(p => p.id), ['smithing', 'containers']);
+});
+
+test('BridgePromptPackRetriever uses embedding document and query intents', async () => {
+    const calls = [];
+    const model = {
+        async embed(text, options = {}) {
+            calls.push({ text, options });
+            if (Array.isArray(text)) {
+                return text.map(doc => String(doc).includes('Dimension') ? [0, 1] : [1, 0]);
+            }
+            return [0, 1];
+        }
+    };
+    const retriever = new BridgePromptPackRetriever(model, TEST_PROMPT_PACKS);
+    await retriever.init();
+    const packs = await retriever.getRelevantPacks('mine netherrack then come back to me', { k: 1 });
+
+    assert(calls.some(c => c.options.intent === 'document'));
+    assert(calls.some(c => c.options.intent === 'query'));
+    assert.equal(packs[0].id, 'dimension_travel');
+});
+
+test('formatBridgePromptPacks emits bounded retrieved guidance', () => {
+    const formatted = formatBridgePromptPacks(TEST_PROMPT_PACKS, { tokenBudget: 500 });
+    assert(formatted.includes('BRIDGE TASK GUIDANCE'));
+    assert(formatted.includes('Smith only with a known template'));
+    assert(formatted.length < 2500);
+});
+
+test('buildPromptPackQuery uses latest user request and state', () => {
+    const query = buildPromptPackQuery({
+        history: [
+            { role: 'user', content: 'old request' },
+            { role: 'assistant', content: 'ok' },
+            { role: 'user', content: 'mine netherrack then come back' },
+        ],
+        stateContext: 'dimension=minecraft:overworld open_screen=false',
+        activeTask: 'none',
+    });
+    assert(query.includes('mine netherrack then come back'));
+    assert(query.includes('dimension=minecraft:overworld'));
+});
+
 test('HuggingFace Qwen3 embed uses featureExtraction and query instruction prefix', async () => {
     process.env.HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY || 'test-key';
     const hf = new HuggingFace('Qwen/Qwen3-Embedding-0.6B');
@@ -215,6 +304,35 @@ test('selectAPI routes HuggingFace org/model embedding ids to huggingface', () =
     assert.equal(prefixed.model, 'Qwen/Qwen3-Embedding-0.6B');
 });
 
+test('selectAPI routes local embedding profile prefix to local-embedding', () => {
+    const profile = selectAPI('local-embedding/Qwen/Qwen3-Embedding-0.6B');
+    assert.equal(profile.api, 'local-embedding');
+    assert.equal(profile.model, 'Qwen/Qwen3-Embedding-0.6B');
+});
+
+test('LocalEmbedding adapter normalises single and batch worker responses', async () => {
+    const adapter = new LocalEmbedding('Qwen/Qwen3-Embedding-0.6B', null, { dim: 3 });
+    const seen = [];
+    adapter._request = async payload => {
+        seen.push(payload);
+        if (Array.isArray(payload.texts)) {
+            return { embedding: [[1, 0, 0], [0, 1, 0]] };
+        }
+        return { embedding: [[1, 2, 3]] };
+    };
+
+    const single = await adapter.embed('mine netherrack', { intent: 'query', instruction: 'Find bridge examples' });
+    assert.deepEqual(single, [1, 2, 3]);
+
+    const batch = await adapter.embed(['a', 'b'], { intent: 'document' });
+    assert.deepEqual(batch, [[1, 0, 0], [0, 1, 0]]);
+
+    assert.equal(seen[0].intent, 'query');
+    assert.equal(seen[0].instruction, 'Find bridge examples');
+    assert.equal(seen[0].dim, 3);
+    assert.equal(seen[1].intent, 'document');
+});
+
 // ─── buildBridgeSystemPrompt with bridgeExamples ─────────────────────────
 
 test('buildBridgeSystemPrompt includes bridgeExamples when provided', () => {
@@ -222,6 +340,13 @@ test('buildBridgeSystemPrompt includes bridgeExamples when provided', () => {
     const examplesText = 'BRIDGE EXAMPLES:\n- {"reply":"test"}';
     const prompt = buildBridgeSystemPrompt(settings, '', null, examplesText);
     assert(prompt.includes(examplesText));
+});
+
+test('buildBridgeSystemPrompt includes retrieved task guidance when provided', () => {
+    const settings = { persona_preset: 'miku_nakano', bridge_structured_output: true };
+    const guidance = 'BRIDGE TASK GUIDANCE (retrieved):\n# Smithing\nAsk when smithing is ambiguous.';
+    const prompt = buildBridgeSystemPrompt(settings, '', null, '', guidance);
+    assert(prompt.includes(guidance));
 });
 
 test('buildBridgeSystemPrompt omits bridgeExamples section when empty', () => {

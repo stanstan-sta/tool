@@ -41,6 +41,7 @@ public class BridgeHttpServer {
         server.createContext("/queue/cancel", this::handleQueueCancel);
         server.createContext("/queue/state", this::handleQueueState);
         server.createContext("/read_blocks", this::handleReadBlocks);
+        server.createContext("/screenshot", this::handleScreenshot);
 
         // Single-threaded executor is fine — Minecraft main-thread work is
         // scheduled via MinecraftClient.execute() inside the handlers.
@@ -537,6 +538,33 @@ public class BridgeHttpServer {
         respond(ex, 200, CommandExecutor.discoverCommandsJson());
     }
 
+    private void handleScreenshot(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
+            return;
+        }
+        if (!isClientConnected()) {
+            respond(ex, 503, "{\"success\":false,\"error\":\"client_not_connected\"}");
+            return;
+        }
+        String query = ex.getRequestURI().getRawQuery();
+        Integer downscale = extractQueryInt(query, "downscale");
+        Float quality = extractQueryFloat(query, "quality");
+        int requestedDownscale = downscale == null ? 2 : downscale;
+        float requestedQuality = quality == null ? 0.8f : quality;
+        try {
+            ScreenshotCapture.Capture capture = ScreenshotCapture.captureJpeg(requestedDownscale, requestedQuality);
+            ex.getResponseHeaders().set("X-Mindcraft-Image-Width", String.valueOf(capture.width()));
+            ex.getResponseHeaders().set("X-Mindcraft-Image-Height", String.valueOf(capture.height()));
+            ex.getResponseHeaders().set("X-Mindcraft-Image-Quality", String.valueOf(capture.quality()));
+            ex.getResponseHeaders().set("X-Mindcraft-Image-Downscale", String.valueOf(capture.downscaleFactor()));
+            respondBytes(ex, 200, "image/jpeg", capture.bytes());
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            respond(ex, 503, "{\"success\":false,\"error\":\"screenshot_failed\",\"message\":\"" + jsonEscape(message) + "\"}");
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────────────────
@@ -592,6 +620,15 @@ public class BridgeHttpServer {
         }
     }
 
+    private static void respondBytes(HttpExchange ex, int status, String contentType, byte[] bytes) throws IOException {
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        ex.sendResponseHeaders(status, bytes.length);
+        try (OutputStream out = ex.getResponseBody()) {
+            out.write(bytes);
+        }
+    }
+
     /**
      * Tiny JSON string extractor — avoids pulling in a JSON library.
      * Finds the first occurrence of {@code "key":"value"} in the input.
@@ -638,6 +675,23 @@ public class BridgeHttpServer {
     static Integer extractQueryInt(String query, String key) {
         Long value = extractQueryLong(query, key);
         return value == null ? null : value.intValue();
+    }
+
+    static Float extractQueryFloat(String query, String key) {
+        if (query == null || query.isBlank()) return null;
+        String[] parts = query.split("&");
+        for (String part : parts) {
+            String[] kv = part.split("=", 2);
+            if (kv.length == 2 && key.equals(kv[0])) {
+                try {
+                    String decoded = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                    return Float.parseFloat(decoded);
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     static boolean extractQueryBoolean(String query, String key) {

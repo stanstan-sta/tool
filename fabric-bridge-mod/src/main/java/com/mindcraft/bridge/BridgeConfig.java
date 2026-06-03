@@ -19,6 +19,8 @@ public class BridgeConfig {
     public int queueMaxCapacity = 512;
     public int maxRequestBytes = 65536;
     public int maxSurfaceRadius = 16;
+    public int nearbyBlockEntityRadius = 16;
+    public int nearbyBlockEntityLimit = 24;
 
     // Timeouts (ms)
     public long clientThreadCallMs = 5000;

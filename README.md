@@ -23,6 +23,7 @@ Run the Node.js commands from `tool\`.
   - LM Studio
   - Ollama
   - or a cloud API key in `keys.json`
+- Python with `torch` and `transformers` for local Qwen3 embeddings
 
 ## Quick Start
 
@@ -61,12 +62,30 @@ Use one of these model formats:
 ```text
 lmstudio/model-name
 ollama/model-name
+local-embedding/Qwen/Qwen3-Embedding-0.6B
 openai/model-name
 anthropic/model-name
 google/model-name
 ```
 
 For cloud models, copy `keys.example.json` to `keys.json` and add the API key.
+
+Local embeddings do not need a Hugging Face API key. The active `miku.json`
+profile is configured to use `Qwen/Qwen3-Embedding-0.6B` through the local
+Python worker. The first run may download the model weights into the Hugging
+Face cache; later runs use the cached copy.
+
+Check the local embedding dependencies:
+
+```bat
+npm run embedding:check
+```
+
+Run a real local embedding smoke test:
+
+```bat
+npm run embedding:smoke
+```
 
 ### 3. Build and install the mods
 

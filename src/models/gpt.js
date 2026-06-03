@@ -1,6 +1,7 @@
 import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
+const VISION_UNSUPPORTED_TOKEN = 'vision_model_unsupported';
 
 export class GPT {
     static prefix = 'openai';
@@ -76,9 +77,9 @@ export class GPT {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
                 return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
-            } else if (err.message.includes('image_url')) {
+            } else if (/image_url|image input|vision|unsupported image|does not support image/i.test(String(err.message || err))) {
                 console.log(err);
-                res = 'Vision is only supported by certain models.';
+                res = VISION_UNSUPPORTED_TOKEN;
             } else {
                 console.log(err);
                 res = 'My brain disconnected, try again.';

@@ -245,6 +245,39 @@ test('nether mine followed by overworld move inserts return action', async () =>
     assert.equal(processed[1].target, 'netherrack');
 });
 
+test('nether mine followed by come-back coordinate saves overworld waypoint before movement', async () => {
+    const processed = await preprocessMineActions(
+        [
+            { type: 'mine', target: 'netherrack', count: 15 },
+            {
+                type: 'move',
+                x: 477,
+                y: 102,
+                z: 30,
+                playerName: 'Chengeration',
+                createdAt: '2026-06-03T00:00:00.000Z',
+            },
+        ],
+        { dimension: 'minecraft:overworld', x: 470, y: 102, z: 28 },
+        { readBlocks: async () => null },
+    );
+
+    assert.deepEqual(processed.map(action => action.type), [
+        'portal_travel',
+        'mine',
+        'return_to_overworld',
+        'move',
+    ]);
+    assert.deepEqual(processed[2].waypoint, {
+        dimension: 'minecraft:overworld',
+        x: 477,
+        y: 102,
+        z: 30,
+        playerName: 'Chengeration',
+        createdAt: '2026-06-03T00:00:00.000Z',
+    });
+});
+
 test('raw mine command batches get dimension-safe return before goto', async () => {
     const processed = await preprocessMineActions(
         [
@@ -262,6 +295,64 @@ test('raw mine command batches get dimension-safe return before goto', async () 
         'raw_command',
     ]);
     assert.equal(processed[1].command, '#mine 15 netherrack');
+});
+
+test('raw goto after nether mine carries saved overworld waypoint on return action', async () => {
+    const processed = await preprocessMineActions(
+        [
+            { type: 'raw_command', command: '#mine 15 netherrack' },
+            {
+                type: 'raw_command',
+                command: '#goto 477 102 30',
+                playerName: 'Chengeration',
+                createdAt: '2026-06-03T00:00:00.000Z',
+            },
+        ],
+        { dimension: 'minecraft:overworld', x: 470, y: 102, z: 28 },
+        { readBlocks: async () => null },
+    );
+
+    assert.deepEqual(processed.map(action => action.type), [
+        'portal_travel',
+        'raw_command',
+        'return_to_overworld',
+        'raw_command',
+    ]);
+    assert.deepEqual(processed[2].waypoint, {
+        dimension: 'minecraft:overworld',
+        x: 477,
+        y: 102,
+        z: 30,
+        playerName: 'Chengeration',
+        createdAt: '2026-06-03T00:00:00.000Z',
+    });
+});
+
+test('explicit return waypoint is preserved on inserted return action', async () => {
+    const waypoint = {
+        dimension: 'minecraft:overworld',
+        x: 12,
+        y: 70,
+        z: -9,
+        playerName: 'Alex',
+        createdAt: '2026-06-03T01:02:03.000Z',
+    };
+    const processed = await preprocessMineActions(
+        [
+            { type: 'mine', target: 'netherrack', count: 2 },
+            { type: 'move', x: 477, y: 102, z: 30, returnWaypoint: waypoint },
+        ],
+        { dimension: 'minecraft:overworld', x: 470, y: 102, z: 28 },
+        { readBlocks: async () => null },
+    );
+
+    assert.deepEqual(processed.map(action => action.type), [
+        'portal_travel',
+        'mine',
+        'return_to_overworld',
+        'move',
+    ]);
+    assert.deepEqual(processed[2].waypoint, waypoint);
 });
 
 test('manual mine and smelt prerequisites before craft are pruned', () => {
@@ -325,6 +416,43 @@ test('nether mine overworld target with subsequent non-mine action preserves ret
     // First action returns to overworld, last travel returns to nether
     assert.equal(processed[0].type, 'return_to_overworld');
     assert.equal(processed[2].dimension, 'nether');
+});
+
+test('end-origin mine overworld target returns to end after non-mine action', async () => {
+    const processed = await preprocessMineActions(
+        [
+            { type: 'mine', target: 'stone', count: 4 },
+            { type: 'move', x: 8, y: 70, z: 8 },
+        ],
+        { dimension: 'minecraft:the_end', x: 0, y: 70, z: 0 },
+        { readBlocks: async () => null },
+    );
+
+    assert.deepEqual(processed.map(action => action.type), [
+        'return_to_overworld',
+        'mine',
+        'portal_travel',
+        'move',
+    ]);
+    assert.equal(processed[2].dimension, 'end');
+});
+
+test('adjacent duplicate mine actions are suppressed after canonicalization', async () => {
+    const processed = await preprocessMineActions(
+        [
+            { type: 'mine', target: 'raw_iron', count: 3 },
+            { type: 'mine', target: 'iron_ore', count: 3 },
+            { type: 'raw_command', command: '#mine 5 raw_iron' },
+            { type: 'raw_command', command: '#mine 5 iron_ore' },
+        ],
+        { dimension: 'minecraft:overworld', x: 0, y: 64, z: 0 },
+        { readBlocks: async () => null },
+    );
+
+    assert.deepEqual(processed, [
+        { type: 'mine', target: 'iron_ore', count: 3 },
+        { type: 'raw_command', provider: 'baritone_chat', command: '#mine 5 iron_ore' },
+    ]);
 });
 
 test('raw #mine command preserves count and canonicalizes target', async () => {

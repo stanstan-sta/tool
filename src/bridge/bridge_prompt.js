@@ -1,4 +1,4 @@
-export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilities = null, bridgeExamples = '') {
+export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilities = null, bridgeExamples = '', bridgeTaskGuidance = '') {
     const persona = settings.persona_preset === 'miku_nakano'
         ? 'You are Miku Nakano. You play Minecraft through the Fabric bridge. Chat naturally, keep replies short, and use bridge actions when needed.'
         : 'You are playing Minecraft through the Fabric bridge. Chat naturally, keep replies short in a shy way, and use bridge actions when needed.';
@@ -48,6 +48,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilit
         '- Smithing tables are blocks/workstations, not entities. Do not use "find_entity" for smithing_table; the smith worker automatically finds and opens a nearby smithing table.',
         '- If a plan mines in the Nether or End and then moves/gotos to Overworld coordinates, insert "return_to_overworld" before that movement.',
         '- Use "sleep_try" for sleeping; it queues the bridge sleep command. Do not use beds in the Nether.',
+        '- Use "inspect_view_with_vision", "inspect_screen_with_vision", or "look_and_inspect" only when the user explicitly asks you to visually inspect the current view or screen.',
         '- Use explicit actions such as "portal_travel", "return_to_overworld", "collect_fluid", "farm", "fish", "hunt_mob", "clear_hostiles", "shear", "milk", "breed", and "tame" when they directly match the user request and appear in the action list.',
         '- Use "raw_command" only for these allowlisted commands: #sleep, #goto, #mine, #cancel, #stop, #task smelt. Prefer typed actions even for these.',
         '- Never invent action types. If no listed action fits, reply briefly that you cannot do that yet.',
@@ -113,11 +114,16 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilit
         'Combat: {"reply":"I will clear them.","actions":[{"type":"clear_hostiles","radius":16}]}',
         'House: {"reply":"Sure.","actions":[{"type":"build_house","template":"cabin","size":"small","material":"oak"}]}',
         'House missing details: {"reply":"Sure.","actions":[{"type":"build_house"}]}',
+        'Vision inspect: {"reply":"I will take a look.","actions":[{"type":"inspect_view_with_vision","question":"What am I looking at?"}]}',
+        'Screen inspect: {"reply":"I will inspect the screen.","actions":[{"type":"inspect_screen_with_vision","question":"What slots are visible?"}]}',
         'Cancel and replace: {"reply":"Okay, switching.","actions":[{"type":"cancel"},{"type":"follow","target":"player_name"}]}',
     ].join('\n');
 
     const semanticExamples = (typeof bridgeExamples === 'string' && bridgeExamples.trim())
         ? bridgeExamples.trim()
+        : '';
+    const retrievedTaskGuidance = (typeof bridgeTaskGuidance === 'string' && bridgeTaskGuidance.trim())
+        ? bridgeTaskGuidance.trim()
         : '';
 
     return [
@@ -132,6 +138,7 @@ export function buildBridgeSystemPrompt(settings, importantFacts = '', capabilit
         netherRules,
         buildingRules,
         topographyDocs,
+        retrievedTaskGuidance,
         examples,
         semanticExamples,
     ].filter(Boolean).join('\n\n');
@@ -156,6 +163,24 @@ const NODE_ONLY_ACTIONS = [
         required: ['score'],
         optional: ['comment'],
         description: 'Record a rating for the most recently completed house after the user gives feedback.',
+    },
+    {
+        type: 'inspect_view_with_vision',
+        required: [],
+        optional: ['question', 'subject'],
+        description: 'Inspect the current first-person view with the configured vision model. Node captures a screenshot and returns the result.',
+    },
+    {
+        type: 'inspect_screen_with_vision',
+        required: [],
+        optional: ['question', 'subject'],
+        description: 'Inspect the current open screen or GUI with the configured vision model. Node includes open-screen slot summaries when available.',
+    },
+    {
+        type: 'look_and_inspect',
+        required: [],
+        optional: ['question', 'subject', 'target'],
+        description: 'Inspect what the bot is currently looking at with the configured vision model.',
     },
 ];
 
@@ -199,6 +224,9 @@ function buildActionDocs(capabilities) {
             '- cancel_build - Stop an in-progress house build.',
             '- scan_building (optional: name, size, origin) - Save a nearby structure as a reusable template.',
             '- rate_build (required: score; optional: comment) - Rate the latest completed build.',
+            '- inspect_view_with_vision (optional: question, subject) - Node-side screenshot inspection.',
+            '- inspect_screen_with_vision (optional: question, subject) - Node-side GUI/screen inspection with slot summaries.',
+            '- look_and_inspect (optional: question, subject, target) - Node-side visual inspection of the current view.',
             '- raw_command (required: command) - Restricted escape hatch only for allowlisted commands.',
             '',
             'Only use listed action types. The bridge may expose more actions through runtime capabilities when connected.',

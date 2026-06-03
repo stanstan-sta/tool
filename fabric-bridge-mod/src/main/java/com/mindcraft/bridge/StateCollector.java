@@ -1,5 +1,7 @@
 package com.mindcraft.bridge;
 
+import net.minecraft.block.BlockState;
+import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
@@ -7,7 +9,12 @@ import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.Slot;
 import net.minecraft.client.world.ClientWorld;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
@@ -51,6 +58,19 @@ public class StateCollector {
 
     static final int LOW_HP_THRESHOLD = 8;
     static final int LOW_FOOD_THRESHOLD = 6;
+    private static final java.util.Set<String> NEARBY_BLOCK_SUMMARY_IDS = java.util.Set.of(
+            "minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel", "minecraft:shulker_box",
+            "minecraft:white_shulker_box", "minecraft:orange_shulker_box", "minecraft:magenta_shulker_box",
+            "minecraft:light_blue_shulker_box", "minecraft:yellow_shulker_box", "minecraft:lime_shulker_box",
+            "minecraft:pink_shulker_box", "minecraft:gray_shulker_box", "minecraft:light_gray_shulker_box",
+            "minecraft:cyan_shulker_box", "minecraft:purple_shulker_box", "minecraft:blue_shulker_box",
+            "minecraft:brown_shulker_box", "minecraft:green_shulker_box", "minecraft:red_shulker_box",
+            "minecraft:black_shulker_box", "minecraft:furnace", "minecraft:blast_furnace", "minecraft:smoker",
+            "minecraft:brewing_stand", "minecraft:smithing_table", "minecraft:enchanting_table",
+            "minecraft:lectern", "minecraft:nether_portal", "minecraft:repeater", "minecraft:comparator",
+            "minecraft:redstone_wire", "minecraft:lever", "minecraft:stone_button", "minecraft:oak_button",
+            "minecraft:stone_pressure_plate", "minecraft:oak_pressure_plate", "minecraft:hopper", "minecraft:dropper",
+            "minecraft:dispenser", "minecraft:observer", "minecraft:piston", "minecraft:sticky_piston");
 
     public static void pushWorldEvent(String type, String detail) {
         while (worldEventQueue.size() >= MAX_WORLD_EVENTS) {
@@ -350,6 +370,7 @@ public class StateCollector {
 
         // Phase 1: equipment
         appendEquipment(sb, player);
+        appendEquipmentDetail(sb, player);
 
         // Phase 1: status effects (sorted by id, no duration in hash)
         appendEffects(sb, player);
@@ -359,6 +380,10 @@ public class StateCollector {
 
         // Phase 1: open screen
         appendOpenScreen(sb, client, player);
+        appendTargetedBlock(sb, client, player);
+        appendTargetedEntity(sb, client, player);
+        appendEnvironment(sb, client, player);
+        appendNearbyBlockEntities(sb, player, client.world);
 
         if (includeSurfaceMap && client.world != null) {
             appendSurfaceMap(sb, player, client.world, surfaceRadius);
@@ -442,6 +467,10 @@ public class StateCollector {
         String screenClass = client.currentScreen == null ? "" : client.currentScreen.getClass().getName();
         String handlerClass = player.currentScreenHandler == null ? "" : player.currentScreenHandler.getClass().getName();
         boolean screenOpen = client.currentScreen != null;
+        String targetSig = targetSignature(client, player);
+        String envSig = environmentSignature(client, player);
+        String openScreenSig = openScreenSignature(client, player);
+        String blockEntitySig = nearbyBlockEntitiesSignature(player, client.world);
 
         String stateHash = x + "|" + y + "|" + z + "|" + health + "|" + hunger + "|" +
                 dim + "|" + mode + "|" + dayPhase + "|" + raining + "|" + thundering + "|" +
@@ -451,7 +480,8 @@ public class StateCollector {
                 headId + ":" + headCount + "|" + chestId + ":" + chestCount + "|" +
                 legsId + ":" + legsCount + "|" + feetId + ":" + feetCount + "|" +
                 effectsSig + "|" +
-                screenOpen + "|" + screenClass + "|" + handlerClass;
+                screenOpen + "|" + screenClass + "|" + handlerClass + "|" + openScreenSig + "|" +
+                targetSig + "|" + envSig + "|" + blockEntitySig;
         TaskQueue.QueueState qs = TaskQueue.getInstance().getQueueState();
         stateHash += "|" + qs.status() + "|" + (qs.activeActionType() != null ? qs.activeActionType() : "") + "|" +
                 qs.pending() + "|" + qs.paused() + "|" + (qs.lastFailure() != null ? qs.lastFailure() : "") + "|" +
@@ -546,6 +576,24 @@ public class StateCollector {
         return "{\"item\":\"" + escape(itemId) + "\",\"count\":" + stack.getCount() + "}";
     }
 
+    private static String stackDetailJson(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "{\"empty\":true,\"item\":null,\"count\":0,\"max_count\":0,\"damage\":0,\"max_damage\":0,\"name\":null}";
+        }
+        return "{\"empty\":false"
+                + ",\"item\":\"" + escape(getItemId(stack)) + "\""
+                + ",\"count\":" + stack.getCount()
+                + ",\"max_count\":" + stack.getMaxCount()
+                + ",\"damage\":" + (stack.isDamageable() ? stack.getDamage() : 0)
+                + ",\"max_damage\":" + (stack.isDamageable() ? stack.getMaxDamage() : 0)
+                + ",\"name\":\"" + escape(stack.getName().getString()) + "\""
+                + "}";
+    }
+
+    private static String cursorStackJson(ItemStack stack) {
+        return stack == null || stack.isEmpty() ? "null" : stackDetailJson(stack);
+    }
+
     private static void appendHeldItems(StringBuilder sb, ClientPlayerEntity player) {
         sb.append("\"selected_slot\":").append(player.getInventory().getSelectedSlot()).append(",");
         sb.append("\"held_items\":{");
@@ -560,6 +608,19 @@ public class StateCollector {
         sb.append("\"chest\":").append(stackJson(player.getEquippedStack(EquipmentSlot.CHEST))).append(",");
         sb.append("\"legs\":").append(stackJson(player.getEquippedStack(EquipmentSlot.LEGS))).append(",");
         sb.append("\"feet\":").append(stackJson(player.getEquippedStack(EquipmentSlot.FEET)));
+        sb.append("},");
+    }
+
+    private static void appendEquipmentDetail(StringBuilder sb, ClientPlayerEntity player) {
+        sb.append("\"equipment_detail\":{");
+        sb.append("\"main_hand\":").append(stackDetailJson(player.getMainHandStack())).append(",");
+        sb.append("\"offhand\":").append(stackDetailJson(player.getOffHandStack())).append(",");
+        sb.append("\"armor\":[");
+        sb.append("{\"slot\":\"head\",\"stack\":").append(stackDetailJson(player.getEquippedStack(EquipmentSlot.HEAD))).append("},");
+        sb.append("{\"slot\":\"chest\",\"stack\":").append(stackDetailJson(player.getEquippedStack(EquipmentSlot.CHEST))).append("},");
+        sb.append("{\"slot\":\"legs\",\"stack\":").append(stackDetailJson(player.getEquippedStack(EquipmentSlot.LEGS))).append("},");
+        sb.append("{\"slot\":\"feet\",\"stack\":").append(stackDetailJson(player.getEquippedStack(EquipmentSlot.FEET))).append("}");
+        sb.append("]");
         sb.append("},");
     }
 
@@ -606,11 +667,276 @@ public class StateCollector {
     private static void appendOpenScreen(StringBuilder sb, MinecraftClient client, ClientPlayerEntity player) {
         sb.append("\"open_screen\":{");
         boolean open = client.currentScreen != null;
+        ScreenHandler handler = open ? player.currentScreenHandler : null;
         sb.append("\"open\":").append(open).append(",");
         sb.append("\"screen_class\":").append(client.currentScreen == null ? "null" : "\"" + escape(client.currentScreen.getClass().getName()) + "\"").append(",");
-        sb.append("\"handler_class\":").append(player.currentScreenHandler == null ? "null" : "\"" + escape(player.currentScreenHandler.getClass().getName()) + "\"").append(",");
-        sb.append("\"sync_id\":").append(player.currentScreenHandler == null ? 0 : player.currentScreenHandler.syncId);
+        sb.append("\"handler_class\":").append(handler == null ? "null" : "\"" + escape(handler.getClass().getName()) + "\"").append(",");
+        sb.append("\"sync_id\":").append(handler == null ? 0 : handler.syncId).append(",");
+        sb.append("\"slot_count\":").append(handler == null ? 0 : handler.slots.size()).append(",");
+        appendSlotRange(sb, "container_slots", handler, player, false);
+        sb.append(",");
+        appendSlotRange(sb, "player_inventory_slots", handler, player, true);
+        sb.append(",");
+        sb.append("\"cursor\":").append(handler == null ? "null" : cursorStackJson(handler.getCursorStack())).append(",");
+        sb.append("\"slots\":[");
+        boolean first = true;
+        if (handler != null) {
+            for (int i = 0; i < handler.slots.size(); i++) {
+                Slot slot = handler.slots.get(i);
+                ItemStack stack = slot.getStack();
+                if (stack.isEmpty()) continue;
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{\"slot\":").append(i)
+                        .append(",\"section\":\"").append(escape(slotSection(slot, player))).append("\",");
+                appendStackDetailFields(sb, stack);
+                sb.append("}");
+            }
+        }
+        sb.append("]");
         sb.append("},");
+    }
+
+    private static void appendStackDetailFields(StringBuilder sb, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            sb.append("\"empty\":true,\"item\":null,\"count\":0,\"max_count\":0,\"damage\":0,\"max_damage\":0,\"name\":null");
+            return;
+        }
+        sb.append("\"empty\":false,")
+                .append("\"item\":\"").append(escape(getItemId(stack))).append("\",")
+                .append("\"count\":").append(stack.getCount()).append(",")
+                .append("\"max_count\":").append(stack.getMaxCount()).append(",")
+                .append("\"damage\":").append(stack.isDamageable() ? stack.getDamage() : 0).append(",")
+                .append("\"max_damage\":").append(stack.isDamageable() ? stack.getMaxDamage() : 0).append(",")
+                .append("\"name\":\"").append(escape(stack.getName().getString())).append("\"");
+    }
+
+    private static void appendSlotRange(StringBuilder sb, String key, ScreenHandler handler, ClientPlayerEntity player, boolean playerSlots) {
+        int first = -1;
+        int last = -1;
+        if (handler != null) {
+            for (int i = 0; i < handler.slots.size(); i++) {
+                boolean isPlayer = isPlayerSlot(handler.slots.get(i), player);
+                if (isPlayer == playerSlots) {
+                    if (first < 0) first = i;
+                    last = i;
+                }
+            }
+        }
+        sb.append("\"").append(key).append("\":");
+        if (first < 0) {
+            sb.append("null");
+        } else {
+            sb.append("{\"start\":").append(first).append(",\"end\":").append(last).append("}");
+        }
+    }
+
+    private static boolean isPlayerSlot(Slot slot, ClientPlayerEntity player) {
+        return slot != null && player != null && slot.inventory == player.getInventory();
+    }
+
+    private static String slotSection(Slot slot, ClientPlayerEntity player) {
+        if (!isPlayerSlot(slot, player)) {
+            String handler = player != null && player.currentScreenHandler != null
+                    ? player.currentScreenHandler.getClass().getSimpleName().toLowerCase(Locale.ROOT)
+                    : "";
+            int index = slot.getIndex();
+            if (handler.contains("furnace")) {
+                if (index == 2) return "result";
+                if (index == 0 || index == 1) return "input";
+            }
+            if (handler.contains("crafting") || handler.contains("smithing") || handler.contains("anvil")
+                    || handler.contains("grindstone") || handler.contains("stonecutter")
+                    || handler.contains("loom") || handler.contains("cartography")
+                    || handler.contains("brewing") || handler.contains("enchantment")) {
+                if (index == 0) return "result";
+                return "input";
+            }
+            return "container";
+        }
+        int index = slot.getIndex();
+        if (index >= 0 && index <= 8) return "hotbar";
+        if (index >= 9 && index <= 35) return "player_inventory";
+        if (index >= 36 && index <= 39) return "armor";
+        if (index == 40) return "offhand";
+        return "player_inventory";
+    }
+
+    private static void appendTargetedBlock(StringBuilder sb, MinecraftClient client, ClientPlayerEntity player) {
+        sb.append("\"targeted_block\":");
+        if (client.crosshairTarget instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && client.world != null) {
+            BlockPos pos = hit.getBlockPos();
+            BlockState state = client.world.getBlockState(pos);
+            double dist = Math.sqrt(player.squaredDistanceTo(Vec3d.ofCenter(pos)));
+            sb.append("{\"x\":").append(pos.getX())
+                    .append(",\"y\":").append(pos.getY())
+                    .append(",\"z\":").append(pos.getZ())
+                    .append(",\"type\":\"").append(escape(getBlockId(state.getBlock()))).append("\"")
+                    .append(",\"face\":\"").append(escape(hit.getSide().name())).append("\"")
+                    .append(",\"distance\":").append(round(dist))
+                    .append("}");
+        } else {
+            sb.append("null");
+        }
+        sb.append(",");
+    }
+
+    private static void appendTargetedEntity(StringBuilder sb, MinecraftClient client, ClientPlayerEntity player) {
+        sb.append("\"targeted_entity\":");
+        if (client.crosshairTarget instanceof EntityHitResult hit) {
+            Entity entity = hit.getEntity();
+            double dist = Math.sqrt(player.squaredDistanceTo(entity));
+            sb.append("{\"entity_id\":").append(entity.getId())
+                    .append(",\"name\":\"").append(escape(entity.getName().getString())).append("\"")
+                    .append(",\"type\":\"").append(escape(entity.getType().toString())).append("\"")
+                    .append(",\"x\":").append(round(entity.getX()))
+                    .append(",\"y\":").append(round(entity.getY()))
+                    .append(",\"z\":").append(round(entity.getZ()))
+                    .append(",\"distance\":").append(round(dist))
+                    .append("}");
+        } else {
+            sb.append("null");
+        }
+        sb.append(",");
+    }
+
+    private static void appendEnvironment(StringBuilder sb, MinecraftClient client, ClientPlayerEntity player) {
+        sb.append("\"environment\":{");
+        BlockPos feet = player.getBlockPos();
+        BlockState feetState = client.world.getBlockState(feet);
+        BlockState belowState = client.world.getBlockState(feet.down());
+        sb.append("\"on_ground\":").append(player.isOnGround()).append(",");
+        sb.append("\"touching_water\":").append(player.isTouchingWater()).append(",");
+        sb.append("\"in_lava\":").append(player.isInLava()).append(",");
+        sb.append("\"biome\":\"").append(escape(biomeAt(client.world, feet))).append("\",");
+        sb.append("\"light\":").append(client.world.getLightLevel(feet)).append(",");
+        sb.append("\"fluid\":\"").append(escape(fluidAt(feetState))).append("\",");
+        sb.append("\"feet_block\":\"").append(escape(getBlockId(feetState.getBlock()))).append("\",");
+        sb.append("\"below_block\":\"").append(escape(getBlockId(belowState.getBlock()))).append("\"");
+        sb.append("},");
+    }
+
+    private static void appendNearbyBlockEntities(StringBuilder sb, ClientPlayerEntity player, ClientWorld world) {
+        sb.append("\"nearby_block_entities\":[");
+        boolean first = true;
+        int emitted = 0;
+        int limit = nearbyBlockEntityLimit();
+        int radius = nearbyBlockEntityRadius();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (BlockEntity blockEntity : world.getBlockEntities()) {
+            if (emitted >= limit) break;
+            BlockPos pos = blockEntity.getPos();
+            if (player.squaredDistanceTo(Vec3d.ofCenter(pos)) > radius * radius) continue;
+            BlockState state = world.getBlockState(pos);
+            String blockId = getBlockId(state.getBlock());
+            if (!isNearbySummaryBlock(blockId)) continue;
+            if (!first) sb.append(",");
+            first = false;
+            emitted++;
+            seen.add(pos.toShortString());
+            sb.append("{\"x\":").append(pos.getX())
+                    .append(",\"y\":").append(pos.getY())
+                    .append(",\"z\":").append(pos.getZ())
+                    .append(",\"type\":\"").append(escape(blockEntity.getType().toString())).append("\"")
+                    .append(",\"block\":\"").append(escape(getBlockId(state.getBlock()))).append("\"")
+                    .append("}");
+        }
+        BlockPos center = player.getBlockPos();
+        for (int dy = -radius; dy <= radius && emitted < limit; dy++) {
+            for (int dz = -radius; dz <= radius && emitted < limit; dz++) {
+                for (int dx = -radius; dx <= radius && emitted < limit; dx++) {
+                    BlockPos pos = center.add(dx, dy, dz);
+                    if (seen.contains(pos.toShortString())) continue;
+                    if (player.squaredDistanceTo(Vec3d.ofCenter(pos)) > radius * radius) continue;
+                    BlockState state = world.getBlockState(pos);
+                    String blockId = getBlockId(state.getBlock());
+                    if (!isNearbySummaryBlock(blockId)) continue;
+                    if (!first) sb.append(",");
+                    first = false;
+                    emitted++;
+                    seen.add(pos.toShortString());
+                    sb.append("{\"x\":").append(pos.getX())
+                            .append(",\"y\":").append(pos.getY())
+                            .append(",\"z\":").append(pos.getZ())
+                            .append(",\"type\":\"").append(escape(blockId)).append("\"")
+                            .append(",\"block\":\"").append(escape(blockId)).append("\"")
+                            .append("}");
+                }
+            }
+        }
+        sb.append("],");
+    }
+
+    private static String targetSignature(MinecraftClient client, ClientPlayerEntity player) {
+        if (client.crosshairTarget instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && client.world != null) {
+            BlockPos pos = hit.getBlockPos();
+            return "b:" + pos.toShortString() + ":" + getBlockId(client.world.getBlockState(pos).getBlock());
+        }
+        if (client.crosshairTarget instanceof EntityHitResult hit) {
+            Entity entity = hit.getEntity();
+            return "e:" + entity.getId() + ":" + entity.getType();
+        }
+        return "none";
+    }
+
+    private static String environmentSignature(MinecraftClient client, ClientPlayerEntity player) {
+        BlockPos feet = player.getBlockPos();
+        return player.isOnGround() + "|" + player.isTouchingWater() + "|" + player.isInLava() + "|"
+                + biomeAt(client.world, feet) + "|"
+                + client.world.getLightLevel(feet) + "|"
+                + fluidAt(client.world.getBlockState(feet)) + "|"
+                + getBlockId(client.world.getBlockState(feet).getBlock()) + "|"
+                + getBlockId(client.world.getBlockState(feet.down()).getBlock());
+    }
+
+    private static String openScreenSignature(MinecraftClient client, ClientPlayerEntity player) {
+        if (client.currentScreen == null || player.currentScreenHandler == null) return "closed";
+        ScreenHandler handler = player.currentScreenHandler;
+        StringBuilder sig = new StringBuilder();
+        sig.append(handler.syncId).append(':').append(handler.slots.size()).append(':');
+        for (int i = 0; i < handler.slots.size(); i++) {
+            Slot slot = handler.slots.get(i);
+            ItemStack stack = slot.getStack();
+            if (stack.isEmpty()) continue;
+            sig.append(i).append('=').append(getItemId(stack)).append('x').append(stack.getCount()).append(';');
+        }
+        ItemStack cursor = handler.getCursorStack();
+        if (!cursor.isEmpty()) sig.append("cursor=").append(getItemId(cursor)).append('x').append(cursor.getCount());
+        return sig.toString();
+    }
+
+    private static String nearbyBlockEntitiesSignature(ClientPlayerEntity player, ClientWorld world) {
+        StringBuilder sig = new StringBuilder();
+        int emitted = 0;
+        int limit = nearbyBlockEntityLimit();
+        int radius = nearbyBlockEntityRadius();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (BlockEntity blockEntity : world.getBlockEntities()) {
+            if (emitted >= limit) break;
+            BlockPos pos = blockEntity.getPos();
+            if (player.squaredDistanceTo(Vec3d.ofCenter(pos)) > radius * radius) continue;
+            String blockId = getBlockId(world.getBlockState(pos).getBlock());
+            if (!isNearbySummaryBlock(blockId)) continue;
+            emitted++;
+            seen.add(pos.toShortString());
+            sig.append(pos.toShortString()).append(':').append(blockId).append(':').append(blockEntity.getType()).append(';');
+        }
+        BlockPos center = player.getBlockPos();
+        for (int dy = -radius; dy <= radius && emitted < limit; dy++) {
+            for (int dz = -radius; dz <= radius && emitted < limit; dz++) {
+                for (int dx = -radius; dx <= radius && emitted < limit; dx++) {
+                    BlockPos pos = center.add(dx, dy, dz);
+                    if (seen.contains(pos.toShortString())) continue;
+                    if (player.squaredDistanceTo(Vec3d.ofCenter(pos)) > radius * radius) continue;
+                    String blockId = getBlockId(world.getBlockState(pos).getBlock());
+                    if (!isNearbySummaryBlock(blockId)) continue;
+                    emitted++;
+                    seen.add(pos.toShortString());
+                    sig.append(pos.toShortString()).append(':').append(blockId).append(';');
+                }
+            }
+        }
+        return sig.toString();
     }
 
     private static void appendSurfaceMap(StringBuilder sb, ClientPlayerEntity player, ClientWorld world, int radius) {
@@ -845,5 +1171,45 @@ public class StateCollector {
             return s.substring(6, s.length() - 1);
         }
         return s;
+    }
+
+    private static String fluidAt(BlockState state) {
+        if (state == null || state.getFluidState().isEmpty()) return "minecraft:empty";
+        String s = state.getFluidState().getFluid().toString();
+        if (s.startsWith("Fluid{") && s.endsWith("}")) {
+            return s.substring(6, s.length() - 1);
+        }
+        return s;
+    }
+
+    private static String biomeAt(ClientWorld world, BlockPos pos) {
+        try {
+            return world.getBiome(pos).getKey()
+                    .map(key -> key.getValue().toString())
+                    .orElse("unknown");
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    private static int nearbyBlockEntityRadius() {
+        return Math.max(1, Math.min(BridgeConfig.get().nearbyBlockEntityRadius, 32));
+    }
+
+    private static int nearbyBlockEntityLimit() {
+        return Math.max(1, Math.min(BridgeConfig.get().nearbyBlockEntityLimit, 128));
+    }
+
+    private static boolean isNearbySummaryBlock(String blockId) {
+        if (blockId == null) return false;
+        if (NEARBY_BLOCK_SUMMARY_IDS.contains(blockId)) return true;
+        return blockId.endsWith("_bed")
+                || blockId.endsWith("_sign")
+                || blockId.endsWith("_wall_sign")
+                || blockId.endsWith("_hanging_sign")
+                || blockId.endsWith("_wall_hanging_sign")
+                || blockId.endsWith("_button")
+                || blockId.endsWith("_pressure_plate")
+                || blockId.endsWith("_shulker_box");
     }
 }

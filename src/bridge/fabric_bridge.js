@@ -17,6 +17,8 @@
  *   chat: <text>           — Send public chat message
  *   whisper: <player> <msg>— Whisper to a player
  */
+import { buildFabricStateLines } from './state_summary.js';
+
 export class FabricBridge {
     constructor(url = 'http://localhost:8765') {
         this.url = url.replace(/\/$/, '');
@@ -320,65 +322,41 @@ export class FabricBridge {
     }
 
     /**
+     * Capture the current Fabric client framebuffer as a compressed JPEG.
+     * @param {{quality?: number, downscale?: number}} options
+     * @returns {Promise<{buffer: Buffer, mimeType: string, width?: number, height?: number, quality?: number, downscale?: number}|null>}
+     */
+    async getScreenshot(options = {}) {
+        try {
+            const quality = Number.isFinite(options.quality) ? options.quality : 0.8;
+            const downscale = Number.isFinite(options.downscale) ? options.downscale : 2;
+            const query = `quality=${encodeURIComponent(String(quality))}&downscale=${encodeURIComponent(String(downscale))}`;
+            const res = await fetch(`${this.url}/screenshot?${query}`, {
+                signal: AbortSignal.timeout(8000),
+            });
+            if (!res.ok) return null;
+            const arrayBuffer = await res.arrayBuffer();
+            return {
+                buffer: Buffer.from(arrayBuffer),
+                mimeType: res.headers.get('content-type') || 'image/jpeg',
+                width: Number(res.headers.get('x-mindcraft-image-width')) || undefined,
+                height: Number(res.headers.get('x-mindcraft-image-height')) || undefined,
+                quality: Number(res.headers.get('x-mindcraft-image-quality')) || quality,
+                downscale: Number(res.headers.get('x-mindcraft-image-downscale')) || downscale,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Format a FabricState snapshot as a compact, human-readable summary
      * suitable for injection into the LLM's conversation history.
      * @param {FabricState} state
      * @returns {string}
      */
     static formatState(state) {
-        if (!state || !state.connected) return 'Fabric client not connected.';
-
-        const inv = (state.inventory || [])
-            .filter(i => i && i.item)
-            .map(i => `${i.count || 1}x ${i.item.replace('minecraft:', '')}`)
-            .join(', ') || 'empty';
-        const nearby = (state.nearby_players || []).join(', ') || 'none';
-        const nearbyEntities = (state.nearby_entities || [])
-            .slice(0, 5)
-            .map(e => `${e.type}@(${e.x},${e.y},${e.z})`)
-            .join(', ') || 'none';
-        const dim = (state.dimension || 'overworld').replace('minecraft:', '');
-
-        // Phase 1: held items + equipment (defensive)
-        const held = state.held_items?.main_hand?.item
-            ? state.held_items.main_hand.item.replace('minecraft:', '')
-            : 'empty';
-        const armor = state.equipment
-            ? ['head', 'chest', 'legs', 'feet']
-                .map(slot => state.equipment[slot]?.item?.replace('minecraft:', '') || 'empty')
-                .join('/')
-            : 'unknown';
-
-        const lines = [
-            `Position: x=${state.x}, y=${state.y}, z=${state.z}  Dimension: ${dim}`,
-            `Health: ${state.health}/20  Hunger: ${state.hunger}/20  Mode: ${state.gameMode || '?'}`,
-            `Held: ${held}  Armor: ${armor}`,
-            `Inventory: ${inv}`,
-            `Nearby players: ${nearby}`,
-            `Nearby entities: ${nearbyEntities}`,
-        ];
-
-        // Phase 1: status effects (defensive)
-        if (state.effects && state.effects.length > 0) {
-            lines.push(`Effects: ${state.effects.map(e => `${(e.id || '').replace('minecraft:', '')}(${e.amplifier + 1})`).join(', ')}`);
-        }
-
-        // Phase 1: open screen (defensive)
-        if (state.open_screen?.open) {
-            lines.push(`Open screen: ${state.open_screen.handler_class || '?'}`);
-        }
-
-        // Include queue status if non-idle
-        if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {
-            const q = state.queue;
-            let queueLine = `Queue: ${q.status} | Pending: ${q.pending}`;
-            if (q.active) queueLine += ` | Active: ${q.active}`;
-            if (q.paused) queueLine += ` | PAUSED`;
-            if (q.lastFailure) queueLine += ` | Last failure: ${q.lastFailure}`;
-            lines.push(queueLine);
-        }
-
-        return lines.join('\n');
+        return buildFabricStateLines(state).join('\n');
     }
 }
 

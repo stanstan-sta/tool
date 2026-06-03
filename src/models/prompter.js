@@ -12,6 +12,16 @@ import { wiki } from '../utils/MinecraftWiki.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const VISION_UNSUPPORTED_TOKEN = 'vision_model_unsupported';
+
+function isVisionUnsupportedError(error) {
+    const text = String(error?.message || error || '');
+    return /image_url|image input|vision|unsupported image|does not support image/i.test(text);
+}
+
+function isVisionUnsupportedResponse(text) {
+    return /vision_model_unsupported|vision is only supported|does not support image|image input|image_url|unsupported image/i.test(String(text || ''));
+}
 
 export class Prompter {
     constructor(agent, profile) {
@@ -330,6 +340,64 @@ export class Prompter {
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
         return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+    }
+
+    async promptBridgeVisionConvo(messages, imageBuffer) {
+        this.most_recent_msg_time = Date.now();
+        let current_msg_time = this.most_recent_msg_time;
+
+        if (!this.vision_model?.sendVisionRequest) {
+            return VISION_UNSUPPORTED_TOKEN;
+        }
+
+        for (let i = 0; i < 3; i++) {
+            await this.checkCooldown();
+            if (current_msg_time !== this.most_recent_msg_time) {
+                return '';
+            }
+
+            let prompt = this.profile.conversing;
+            prompt = await this.replaceStrings(prompt, messages, this.convo_examples, [], null, false);
+            let generation;
+
+            try {
+                generation = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+                if (typeof generation !== 'string') {
+                    console.error('Error: Generated vision response is not a string', generation);
+                    throw new Error('Generated vision response is not a string');
+                }
+                if (isVisionUnsupportedResponse(generation)) {
+                    return VISION_UNSUPPORTED_TOKEN;
+                }
+                console.log("Generated vision response:", generation);
+                await this._saveLog(prompt, messages, generation, 'bridgeVision');
+            } catch (error) {
+                console.error('Error during vision message generation or file writing:', error);
+                if (isVisionUnsupportedError(error)) {
+                    return VISION_UNSUPPORTED_TOKEN;
+                }
+                continue;
+            }
+
+            if (generation?.includes('(FROM OTHER BOT)')) {
+                console.warn('Vision LLM hallucinated message as another bot. Trying again...');
+                continue;
+            }
+
+            if (current_msg_time !== this.most_recent_msg_time) {
+                console.warn(`${this.agent.name} received new message while generating vision response, discarding old response.`);
+                return '';
+            }
+
+            if (generation?.includes('</think>')) {
+                const [_, afterThink] = generation.split('</think>');
+                generation = afterThink;
+            }
+
+            return generation;
+        }
+
+        return '';
     }
 
     async promptGoalSetting(messages, last_goals) {

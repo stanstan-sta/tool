@@ -2,17 +2,17 @@ package com.mindcraft.bridge;
 
 import net.minecraft.client.MinecraftClient;
 
-final class DimensionDriver {
+public final class DimensionDriver {
     private DimensionDriver() {}
 
-    static String getCurrentDimension() {
+    public static String getCurrentDimension() {
         return ClientThread.call(() -> {
             MinecraftClient c = MinecraftClient.getInstance();
             return c.world == null ? "" : c.world.getRegistryKey().getValue().toString();
         });
     }
 
-    static String normalizeDimension(String dimensionId) {
+    public static String normalizeDimension(String dimensionId) {
         if (dimensionId == null) return "";
         String dim = dimensionId.trim().toLowerCase(java.util.Locale.ROOT);
         if (dim.equals("nether") || dim.equals("the_nether") || dim.equals("minecraft:nether")
@@ -29,11 +29,11 @@ final class DimensionDriver {
         return dim;
     }
 
-    static boolean isCurrentDimension(String dimensionId) {
+    public static boolean isCurrentDimension(String dimensionId) {
         return normalizeDimension(dimensionId).equals(normalizeDimension(getCurrentDimension()));
     }
 
-    static boolean waitForDimension(String dimensionId, long timeoutMs) {
+    public static boolean waitForDimension(String dimensionId, long timeoutMs) {
         String target = normalizeDimension(dimensionId);
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {

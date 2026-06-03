@@ -1,5 +1,6 @@
 package com.mindcraft.bridge;
 
+import com.mindcraft.bridge.workers.ActionRegistry;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -141,6 +142,58 @@ class CommandExecutorJsonTest {
         assertTrue(enchant.ok());
         assertTrue(enchant.genericWorker());
         assertEquals("#enchant", enchant.command());
+    }
+
+    @Test
+    void bridgeStateActionsAreRegisteredAsExternalActions() {
+        var registry = ActionRegistry.get();
+
+        assertTrue(registry.isExternallyRoutable("screen_click_slot"));
+        assertTrue(registry.isExternallyRoutable("container_deposit"));
+        assertTrue(registry.isExternallyRoutable("container_withdraw"));
+        assertTrue(registry.isExternallyRoutable("container_quick_move"));
+        assertTrue(registry.isExternallyRoutable("look"));
+        assertTrue(registry.isExternallyRoutable("look_at"));
+        assertTrue(registry.isExternallyRoutable("press_key"));
+        assertTrue(registry.isExternallyRoutable("swing"));
+        assertTrue(registry.isExternallyRoutable("attack_entity"));
+        assertTrue(registry.isExternallyRoutable("use_item_on_block"));
+        assertTrue(registry.isExternallyRoutable("use_item_on_entity"));
+        assertTrue(registry.isExternallyRoutable("hold_use_item"));
+    }
+
+    @Test
+    void bridgeStateActionsValidateMissingRequiredFieldsBeforeExecution() {
+        CommandExecutor.TranslatedAction click = CommandExecutor.translateTypedJson("{\"type\":\"screen_click_slot\"}");
+        CommandExecutor.TranslatedAction look = CommandExecutor.translateTypedJson("{\"type\":\"look\",\"yaw\":90}");
+        CommandExecutor.TranslatedAction attack = CommandExecutor.translateTypedJson("{\"type\":\"attack_entity\"}");
+        CommandExecutor.TranslatedAction useBlock = CommandExecutor.translateTypedJson("{\"type\":\"use_item_on_block\",\"x\":1,\"z\":3}");
+
+        assertFalse(click.ok());
+        assertEquals("missing_slot", click.failureCode());
+        assertFalse(look.ok());
+        assertEquals("missing_pitch", look.failureCode());
+        assertFalse(attack.ok());
+        assertEquals("missing_entity_id", attack.failureCode());
+        assertFalse(useBlock.ok());
+        assertEquals("missing_coordinates", useBlock.failureCode());
+    }
+
+    @Test
+    void bridgeStateActionsValidateInvalidValuesBeforeExecution() {
+        CommandExecutor.TranslatedAction key = CommandExecutor.translateTypedJson(
+            "{\"type\":\"press_key\",\"key\":\"warp_drive\"}");
+        CommandExecutor.TranslatedAction slotAction = CommandExecutor.translateTypedJson(
+            "{\"type\":\"screen_click_slot\",\"slot\":1,\"action\":\"teleport\"}");
+        CommandExecutor.TranslatedAction hold = CommandExecutor.translateTypedJson(
+            "{\"type\":\"hold_use_item\",\"duration_ms\":9000}");
+
+        assertFalse(key.ok());
+        assertEquals("invalid_key", key.failureCode());
+        assertFalse(slotAction.ok());
+        assertEquals("invalid_action", slotAction.failureCode());
+        assertFalse(hold.ok());
+        assertEquals("invalid_duration_ms", hold.failureCode());
     }
 
     @Test

@@ -1,6 +1,7 @@
 import OpenAIApi from 'openai';
 import { strictFormat } from '../utils/text.js';
 import { toolCallToCommand } from '../agent/commands/index.js';
+const VISION_UNSUPPORTED_TOKEN = 'vision_model_unsupported';
 
 export class LMStudio {
     static prefix = 'lmstudio';
@@ -84,6 +85,9 @@ export class LMStudio {
             if ((err.message === 'Context length exceeded' || err.code === 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
                 return await this.sendRequest(turns.slice(1), systemMessage, tools);
+            } else if (/image_url|image input|vision|unsupported image|does not support image/i.test(String(err.message || err))) {
+                console.log(err);
+                res = VISION_UNSUPPORTED_TOKEN;
             } else {
                 console.log(err);
                 res = 'My brain disconnected, try again.';

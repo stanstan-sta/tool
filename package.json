@@ -48,6 +48,8 @@
         "build:mods:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_mods.ps1 -CleanOld",
         "bridge:probe": "node scripts/bridge_action_probe.mjs",
         "bridge:probe:full": "node scripts/bridge_action_probe.mjs --full",
+        "embedding:check": "python services/local_embedding_worker.py --check-deps",
+        "embedding:smoke": "node scripts/local_embedding_smoke.mjs",
         "generate:recipes": "node scripts/generate_recipes.mjs",
         "reinstall": "npm run clean:modules && npm install",
         "clean:modules": "node -e \"const fs=require('fs');const p=require('path');['node_modules','package-lock.json'].forEach(f=>{if(fs.existsSync(f)){if(fs.lstatSync(f).isDirectory()){fs.rmSync(f,{recursive:true,force:true});}else{fs.unlinkSync(f);}}});\""

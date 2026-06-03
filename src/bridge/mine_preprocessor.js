@@ -111,6 +111,13 @@ function normalizeDimension(dim) {
     return 'overworld';
 }
 
+function fullDimensionName(dim) {
+    const normalized = normalizeDimension(dim);
+    if (normalized === 'nether') return 'minecraft:the_nether';
+    if (normalized === 'end') return 'minecraft:the_end';
+    return 'minecraft:overworld';
+}
+
 /**
  * Given a raw mine target, return the canonical ore name and the full
  * list of block variants that satisfy the request.
@@ -179,6 +186,18 @@ function parseRawMineCommand(command) {
     return { target, count };
 }
 
+function parseRawGotoCoordinates(command) {
+    const text = String(command || '').trim();
+    const parts = text.split(/\s+/).filter(Boolean);
+    if (parts.length < 4 || parts[0].toLowerCase() !== '#goto') return null;
+
+    const x = Number(parts[1]);
+    const y = Number(parts[2]);
+    const z = Number(parts[3]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return { x, y, z };
+}
+
 function getMineActionInfo(action) {
     if (!action || typeof action !== 'object') return null;
     if (action.type === 'mine' && action.target) {
@@ -205,6 +224,47 @@ function getMineActionInfo(action) {
     return null;
 }
 
+function waypointCoordinateSource(action, state) {
+    const explicit = action?.returnWaypoint
+        || action?.savedWaypoint
+        || action?.waypoint
+        || state?.returnWaypoint
+        || state?.savedWaypoint
+        || state?.waypoint;
+    if (explicit && typeof explicit === 'object') return explicit;
+
+    if (action?.type === 'move' || action?.type === 'goto') return action;
+    if (action?.type === 'raw_command') return parseRawGotoCoordinates(action.command);
+    return null;
+}
+
+function makeReturnWaypoint(action, state, dimension) {
+    const source = waypointCoordinateSource(action, state);
+    if (!source) return null;
+
+    const x = Number(source.x);
+    const y = Number(source.y);
+    const z = Number(source.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+
+    const rawPlayerName = source.playerName
+        ?? action?.playerName
+        ?? state?.playerName
+        ?? state?.player_name
+        ?? state?.username
+        ?? state?.name
+        ?? null;
+
+    return {
+        dimension: fullDimensionName(source.dimension || action?.dimension || dimension || 'overworld'),
+        x,
+        y,
+        z,
+        playerName: rawPlayerName === null || rawPlayerName === undefined ? null : String(rawPlayerName),
+        createdAt: source.createdAt || action?.createdAt || state?.createdAt || new Date().toISOString(),
+    };
+}
+
 function isReturnActionForDimension(action, dimension) {
     if (!action || typeof action !== 'object') return false;
     if (dimension === 'overworld' && action.type === 'return_to_overworld') return true;
@@ -214,11 +274,36 @@ function isReturnActionForDimension(action, dimension) {
     return false;
 }
 
-function makeTravelAction(dimension) {
+function makeTravelAction(dimension, waypoint = null) {
     if (dimension === 'overworld') {
-        return { type: 'return_to_overworld', provider: 'baritone_chat' };
+        const action = { type: 'return_to_overworld', provider: 'baritone_chat' };
+        if (waypoint) action.waypoint = waypoint;
+        return action;
     }
     return { type: 'portal_travel', provider: 'baritone_chat', dimension };
+}
+
+function mineActionKey(action) {
+    if (!action || typeof action !== 'object') return '';
+    if (action.type === 'mine') {
+        return [
+            'mine',
+            normalizeBlockName(action.target),
+            Number(action.count || 0),
+            normalizeBlockName(action.secondaryTarget || action.secondary || ''),
+        ].join('|');
+    }
+    if (action.type === 'raw_command') {
+        return `raw|${String(action.command || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
+    }
+    return '';
+}
+
+function pushMineIfNotDuplicate(out, action, lastMineKey) {
+    const key = mineActionKey(action);
+    if (!key || key === lastMineKey) return lastMineKey;
+    out.push(action);
+    return key;
 }
 
 // ── Nearby-block probe ─────────────────────────────────────────────────
@@ -284,13 +369,17 @@ export async function preprocessMineActions(actions, state, bridge) {
     const out = [];
     let virtualDim = currentDim;
     let mustReturnToDim = null;
+    let lastMineKey = '';
 
     for (const action of actions) {
         const mineInfo = getMineActionInfo(action);
 
         if (!mineInfo) {
             if (mustReturnToDim && !isReturnActionForDimension(action, mustReturnToDim)) {
-                out.push(makeTravelAction(mustReturnToDim));
+                const waypoint = mustReturnToDim === 'overworld'
+                    ? makeReturnWaypoint(action, state, mustReturnToDim)
+                    : null;
+                out.push(makeTravelAction(mustReturnToDim, waypoint));
                 virtualDim = mustReturnToDim;
                 mustReturnToDim = null;
             } else if (mustReturnToDim && isReturnActionForDimension(action, mustReturnToDim)) {
@@ -304,6 +393,7 @@ export async function preprocessMineActions(actions, state, bridge) {
                 virtualDim = 'overworld';
             }
             out.push(action);
+            lastMineKey = '';
             continue;
         }
 
@@ -312,7 +402,7 @@ export async function preprocessMineActions(actions, state, bridge) {
 
         if (targetDim === virtualDim) {
             // Same dimension — no portal travel needed.
-            out.push(normalizedAction);
+            lastMineKey = pushMineIfNotDuplicate(out, normalizedAction, lastMineKey);
             continue;
         }
 
@@ -324,7 +414,7 @@ export async function preprocessMineActions(actions, state, bridge) {
 
         if (nearby) {
             // At least one variant exists within 24 blocks — skip portal.
-            out.push(normalizedAction);
+            lastMineKey = pushMineIfNotDuplicate(out, normalizedAction, lastMineKey);
             continue;
         }
 
@@ -337,7 +427,7 @@ export async function preprocessMineActions(actions, state, bridge) {
             mustReturnToDim = currentDim;
         }
             // Target is overworld but player is in nether/end — return first.
-        out.push(normalizedAction);
+        lastMineKey = pushMineIfNotDuplicate(out, normalizedAction, lastMineKey);
     }
 
     if (mustReturnToDim) {

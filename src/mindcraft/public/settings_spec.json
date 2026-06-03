@@ -91,6 +91,30 @@
         "description": "Enable ambient ticks — the bot self-initiates short lines or idle actions every 45–180s when idle. Suppressed if the player is AFK, the queue is busy, or the budget is exhausted. Requires bridge_proactive_enabled.",
         "default": true
     },
+    "bridge_ambient_vision_enabled": {
+        "type": "boolean",
+        "section": "Proactive Behavior",
+        "description": "When allow_vision is enabled, attach occasional compressed screenshots to ambient/improvise LLM turns so the model can choose actions from the current view. Requires bridge_proactive_enabled and bridge_ambient_enabled.",
+        "default": true
+    },
+    "bridge_ambient_vision_min_gap_ms": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "Minimum delay between ambient screenshot captures, in milliseconds. Prevents every ambient tick from sending an image.",
+        "default": 180000
+    },
+    "bridge_vision_quality": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "JPEG quality for screenshots sent to vision models. 0.8 means about 80% quality.",
+        "default": 0.8
+    },
+    "bridge_vision_downscale": {
+        "type": "number",
+        "section": "Proactive Behavior",
+        "description": "Screenshot downscale factor requested from the Fabric client. 1 is full resolution, 2 is half-size, 3 is one-third size.",
+        "default": 2
+    },
     "bridge_events_enabled": {
         "type": "boolean",
         "section": "Proactive Behavior",

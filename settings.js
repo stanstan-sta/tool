@@ -9,6 +9,10 @@ const settings = {
     "bridge_proactive_enabled": false, // master switch: false = pure turn-based (respond only to player chat)
     "bridge_auto_defend": true, // armed+healthy bot auto-attacks hostiles that enter range
     "bridge_ambient_enabled": true, // enable ambient ticks: bot self-initiates speech/actions when idle
+    "bridge_ambient_vision_enabled": true, // when allow_vision is true, send occasional screenshots to ambient/improvise turns
+    "bridge_ambient_vision_min_gap_ms": 180000, // minimum time between ambient screenshots
+    "bridge_vision_quality": 0.8, // JPEG quality for bridge screenshots sent to vision models
+    "bridge_vision_downscale": 2, // client screenshot downscale factor: 1 = full size, 2 = half size
     "bridge_events_enabled": true, // enable reactive events: nightfall, hostiles, weather, etc.
     "bridge_ambient_budget_per_hour": 4, // max spontaneous lines per hour (token-bucket)
     "bridge_ambient_min_gap_ms": 45000,
