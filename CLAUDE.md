@@ -92,3 +92,23 @@ The bridge builds its own context instead of using `$EXAMPLES`/`$CODE_DOCS` plac
 - ESLint enforces semicolons, `require-await`, and `no-floating-promise/no-floating-promise` (every Promise must be awaited or have a `.catch`) — the last one is easy to trip in the async bridge loop.
 - Platform is Windows; mod-build scripts are PowerShell (`scripts/build_mods.ps1`). Use PowerShell syntax for shell work.
 - Agent runtime files write under `bots/<name>/` (memory, `goal.json`, `ambient.log`).
+
+## Reviewing changes (required before calling work done)
+
+Tests passing is not a review. Authors check code against their own assumptions, so self-review misses design flaws. Every question below needs a concrete answer, not "looks fine".
+
+**Checklist — ask of every change:**
+1. **Untrusted text:** Where can player chat, sign text, item names or server messages end up? Is any of it stored and replayed into a prompt (especially a system-role block), a command string, or a file path? Escape/quote it and label it as data.
+2. **Cross-boundary contracts:** For every signal the change relies on (e.g. `baritone_queue` messages, `/state` fields, action specs in `bridge_prompt.js`), open the producer — the Fabric mod or the Baritone fork (`stanstan-sta/baritone`, `TaskPlanProcess`) — and confirm when and how often it is actually emitted. Don't infer from the consumer.
+3. **Timing:** Does the code read state on the same poll as a completion event? The mod settles tasks after Baritone reports (e.g. `mineSettleMs` 3000). Batches run one task at a time; Baritone's "All queued tasks complete" fires per task, not per batch.
+4. **Every exit path:** Trace success, `Task failed:`, explicit cancel/"stop", dispatch failure, `batchResult.stale`, generation change and restart. Is per-task state set, consumed and cleared on each?
+5. **Repetition over time:** What happens on the 2nd and 100th run? Loops that reset their own counters, state that re-derives from inventory the task consumed, chat or LLM calls with no throttle.
+6. **Persistence:** What is written under `bots/<name>/`, how big does it get, is the write atomic, what if it's corrupt or from an older format/embedding model, and does it resume after restart when the feature is now disabled?
+7. **Gates and settings:** Does it respect `bridge_proactive_enabled` and other master switches? Is every new setting defaulted in `settings.js`? Is anything autonomous on by default?
+8. **Data transforms:** When normalising or canonicalising (item ids, actions), check each type's required fields and real-world equivalents (drops vs blocks: `iron_ore` → `raw_iron`, `stone` → `cobblestone`; any log type, not just oak).
+9. **Cost:** Extra LLM or embedding calls per turn, prompt size growth, synchronous I/O on the poll loop.
+10. **Tests:** Could each test pass for the wrong reason (idealised vectors, identical strings, zero-overlap fixtures)? Is there a test for the failure paths in (4)?
+
+**Independent review:** Changes to learning/memory, prompt construction, persistence, or the queue/continuation machinery get a second review by a separate agent before being reported done. Give it the diff, this checklist and pointers to the producer code — not the author's reasoning or conclusions — and ask it to reproduce findings where it can.
+
+**Report scope honestly:** When reporting, state what was read in full, what was only searched, what was reproduced vs inferred, and what was never run against a live game.
