@@ -21,8 +21,8 @@ Fix in this order: Baritone reporting → Node task record → re-enable skill l
 ## Priorities
 
 **P0 — one-line fixes (safe, do first)**
-- B1 `baritone/src/main/java/baritone/utils/ToolSet.java:192`: `/ avoidanceMultiplier(b)` → `* avoidanceMultiplier(b)` (currently makes Baritone prefer breaking chests/furnaces/crafting tables).
-- B18 `baritone/gradle.properties`: remove `org.gradle.java.home=C:/...` (move to `~/.gradle/gradle.properties`).
+- ~~B1~~ DONE (baritone 5c12cf5) `ToolSet.java:192`: `/ avoidanceMultiplier(b)` → `* avoidanceMultiplier(b)` (currently makes Baritone prefer breaking chests/furnaces/crafting tables).
+- ~~B18~~ DONE (baritone 5c12cf5) `gradle.properties`: remove `org.gradle.java.home=C:/...` (move to `~/.gradle/gradle.properties`).
 - ~~Set `bridge_skill_library_enabled: false`~~ — done.
 
 **P1 — Baritone fork failure reporting** (`stanstan-sta/baritone`, fork changes = `git diff c70ce564 HEAD`)
@@ -56,7 +56,7 @@ Goal reached but block face not reachable → infinite loop (TaskPlanProcess:545
 ## Other notes
 - Other companion `server_events` are drained every poll but never read (F16).
 - Next feature after fixes: make System One (Decider-2b) the gate for reflexes/events/ambient speech instead of hard-coded rules; add relationship/persona memory. See `system_one.js`.
-- The session that produced this could not push to `stanstan-sta/baritone`; that repo needs its own changes.
+- Pushes to `stanstan-sta/baritone` work (branch `1.21.11`). P1 items there are not started; B1/B18 are done but were not compiled here — run `npm run build:mods` to confirm.
 
 ## Finding IDs
 N# = author self-review, F# = independent Node review, B# = independent Baritone review. Full reports are summarised above; file:line references are against `develop` @ `7438452` and baritone @ `e7a22d3`.
