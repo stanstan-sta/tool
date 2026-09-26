@@ -58,5 +58,33 @@ Goal reached but block face not reachable → infinite loop (TaskPlanProcess:545
 - Next feature after fixes: make System One (Decider-2b) the gate for reflexes/events/ambient speech instead of hard-coded rules; add relationship/persona memory. See `system_one.js`.
 - Pushes to `stanstan-sta/baritone` work (branch `1.21.11`). P1 items there are not started; B1/B18 are done but were not compiled here — run `npm run build:mods` to confirm.
 
+## Review coverage — what was and wasn't checked
+
+"Absence of a finding" only means something for areas marked **read in full**. Everything else is unreviewed, not clean. **Nothing in either repo has been run against a live game**; all Node tests use mocks; the Baritone fork was not compiled.
+
+**tool — Node (`src/`)**
+| Status | Files |
+|---|---|
+| Read in full (author + independent review) | `bridge/skill_library.js`, `bridge/curriculum.js`, `bridge/server_data.js`, `bridge/outcome_verifier.js`, `bridge/goal_manager.js`, `test/skill_library.test.js` |
+| Read in full (author only) | `bridge/system_one.js`, `bridge/survival_reflex.js`, `bridge/world_memory.js`, `test/system_one.test.js`, `scripts/system_one_demo.mjs` |
+| Partly read | `bridge/bridge_agent.js` (3.4k lines): read ~600–760 (setup), ~925–1010 (prompt block), ~1440–2265 (poll loop, reasoning worker, failure recovery, goal tick, continuation, idle message handler), ~2300–2510 (active-task handler), ~3112 (pre-dispatch pruning). **Not read:** lines 1–600 (parsing/helpers), `_runAmbientTick`, `_handleEvent`, house build/expansion, most of 2510–3461. `bridge_prompt_retriever.js` and `bridge_examples.js` (embedding calls only); `utils/text.js` (`wordOverlapScore` only); `models/local-embedding.js` (`embed` signature only) |
+| Only searched (grep) | `bridge_prompt.js`, `settings.js`, `mindcraft/public/settings_spec.json`, `.gitignore` |
+| Not opened | `models/codex.js` and all other providers, `models/prompter.js`, `bridge/event_detector.js`, `drive_model.js`, `state_summary.js`, `mine_preprocessor.js`, `house_builder.js`, `house_templates.js`, `fabric_bridge.js`, `topography.js`, all of `src/agent/`, `src/mindcraft/`, `src/process/`, `main.js`, `services/`, `tasks/` |
+
+**tool — Java**
+| Status | Files |
+|---|---|
+| Partly read | `fabric-bridge-mod/.../StateCollector.java` (Baritone log routing, failure matchers, inventory + server_* JSON), `TaskQueue.java` (completion policies, settle, `onBaritoneComplete`, command→policy mapping; idle watcher per independent review), `BridgeConfig.java` (settle times), `bridge-protocol/.../PlayerInfo.java` |
+| Not opened | `CommandExecutor.java` (crafting/smelting planner, largest file), `BridgeHttpServer.java`, `CompanionChannel.java`/`CompanionState.java`, screen/GUI drivers, `server-companion-mod/`, `server-companion-paper/` |
+
+**baritone fork**
+| Status | Scope |
+|---|---|
+| Read in full (independent review) | Every file changed since upstream merge-base `c70ce564`: `TaskPlanProcess`, `TaskCommand`, task API/impl, `SleepInBedProcess`, `InteractBlockProcess`, Craft/Interact/Sleep commands, `CommandCoordParser`, `ChatControlHelper`, mixins + `FabricMixinPlugin`, cache changes (`CachedRegion`/`CachedChunk`/`ChunkPacker`/`BlockUtils`), Find/Mine/Farm/ExecutionControl/`ToolSet`/`LookBehavior`/Settings diffs |
+| Read only where fork code calls in | Upstream `PathingControlManager`, `PathingBehavior`, `InventoryPauserProcess`, `MineProcess.searchWorld` |
+| Not reviewed | All other upstream Baritone code (assumed OK: mature and widely used) |
+
+**Known unaddressed:** 6 pre-existing eslint errors in `src/bridge/` (`Buffer` no-undef in `fabric_bridge.js`/`house_builder.js`/`house_templates.js`, one `no-empty`) — not part of this work.
+
 ## Finding IDs
 N# = author self-review, F# = independent Node review, B# = independent Baritone review. Full reports are summarised above; file:line references are against `develop` @ `7438452` and baritone @ `e7a22d3`.
