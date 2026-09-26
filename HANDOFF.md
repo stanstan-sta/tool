@@ -61,7 +61,32 @@ P1–P3 make the existing layer *correct*; it would then only get better at repe
 6. **Forgetting and curation.** No decay, merge or pruning of bad skills; no way for the owner to view/delete them.
 7. **Model improvement.** Decider-2b and the LLM are frozen; `bots/<name>/system_one_shadow.jsonl` is logged but no calibration or fine-tuning pipeline uses it.
 
-An independent design review of this question was run; see "Design review" below if present.
+**Corrections from the independent design review (below):** item 2 should not be "skills as code" — the bridge deliberately doesn't run freeform code and the TaskQueue/craft planner already compose; the viable version is parameterised batch templates + usage attribution. Item 7: fine-tuning isn't realistic at this data volume; calibrate System One thresholds from the shadow log and shadow more gates instead. Item 1: LLM proposals should be the *last* curriculum source, after failed player requests and a novelty set.
+
+### Design review (independent, Fable 5.1; claims marked ✓ were re-verified by grep)
+**Missing after P1–P3 (G#):**
+- G1 Skills are constants: `item`/`count` literal, matched by exact task text + signature, so "8 oak logs" never helps "16 birch logs" and `successes` rarely exceeds 1. → store `{target_item}`/`{target_count}` slots from the verified target; instantiate at retrieval.
+- G2 Open-loop retrieval: nothing records whether a retrieved skill was used or helped, so trust can't move. → task record stores `retrievedSkillIds`; credit/debit by loose match (≥0.8 overlap of `type:item`) on definite outcomes only.
+- G3 No fast path: mastered tasks still cost a full System Two call. → if a skill has ≥3 successes/0 failures and stored preconditions hold, dispatch directly (`bridge_skill_fastpath_enabled`, off by default); one failure disables it for that skill. Fewer LLM calls per repeated task is the measurable definition of improvement.
+- G4 Lessons have no cause and never resolve. Baritone's `Task failed: <label> - <reason>` carries a category that is discarded. → parse into an enum (`not_found|no_path|invalid_args|no_tool|interrupted|timeout|unknown`); skip lessons for interruptions; a later success marks lessons resolved. Optional one-sentence critic call only for `unknown`.
+- G5 Verification is inventory-only. → per-type verifiers returning met/not_met/null: build → `validateHouse` score ≥0.8 (score exists but never reaches reward), move → distance <4, sleep → day phase changes, attack → hostile count/drops. Log `goal_done` claims vs verifier.
+- G6 Curriculum closed. → `bots/<name>/curriculum.json` with `completed` + `practice`: failed player requests first, then a `discovered` novelty set, then a constrained LLM proposal (target must be in `_knownItems`).
+- G7 No player model. → `bots/<name>/player_model.json` (preferences, corrections, ratings) from structured memory extraction, `rate_build`, and `cancel_replace` within 60 s of an autonomous batch; fenced ≤400-char block in inbound/ambient prompts only; TTL 30 days, cap 40.
+- G8 Nothing to recall. → `bots/<name>/episodes.jsonl` at task close + significant events, retrieved for `recall`/"remember when".
+- G9 System One frozen, one gate. → calibration script over the shadow log; run new gates (speak now? react to event? goal done?) in shadow, promote by measured agreement.
+- Forgetting: decay trust after 30 days unused, drop resolved lessons, owner-facing view/delete.
+
+**Wasted signals:** ✓ `system_one_shadow.jsonl` and ✓ `reward.log` are written, never read; ✓ `getTemplatePreference` imported (`bridge_agent.js:38`), never called; ✓ `world_memory.nearestSighting` never called; Baritone failure reasons; build validator score; `cancel_replace` soon after autonomous batches; player praise/corrections; ambient replies (social reward); `goal_done` accuracy; `_buildCraftFallbackActions` firings (planning-failure metric + skill source); queue timing per action type; inventory deltas (novelty).
+
+**Roadmap (value/effort):**
+1. Task record + `bots/<name>/outcomes.jsonl` ledger (origin, target, batches, close reason, failure category, duration, retrievedSkillIds) — also the P2 redesign. Offline-testable.
+2. `scripts/learning_report.js`: success rate per task family + trend, System One agreement/calibrated thresholds, fallback rate, `goal_done` accuracy.
+3. Lesson quality (G4).
+4. Usage attribution + parameterised skills (G1, G2).
+5. Player model + wire ratings (G7).
+6. Fast path (G3) — needs live game.
+7. Curriculum sources (G6) — needs live game end-to-end.
+8. Non-inventory verifiers + social reward (G5) — needs live game.
 
 ## Remaining Baritone medium/low findings (fork)
 Goal reached but block face not reachable → infinite loop (TaskPlanProcess:545-563); `#task smelt X 16` with 8 reports success; tick-thread scans up to 256-chunk radius / ~2M block lookups for beds; new cache magic breaks other Baritone builds sharing `baritone/cache`; tracked-block list split (`BLOCKS_TO_KEEP_TRACK_OF` vs `blocksToKeepTrackOf`) → `#mine trapped_chest` finds nothing; `BlockUtils` variant expansion mines stone bricks/smooth stone, `#mine planks` targets logs; `CachedRegion.getLocationsOf` unsynchronised; repack "retry tier" is a no-op; committed `*.log` files and `fabric/bin/`; `stepIdx` overwrite before `succeedStep`; dead multi-furnace branch; `isNightOrThunder` window wider than vanilla; mixins disabled when another `baritone` mod is present.
