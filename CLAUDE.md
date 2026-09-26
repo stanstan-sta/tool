@@ -55,6 +55,8 @@ Configuration precedence: `settings.js` defaults → env vars (`MINECRAFT_PORT`,
 4. Actions/commands are dispatched as a **batch** to the Fabric mod's `TaskQueue`, which runs them one at a time and emits `baritone_queue` completion/failure events.
 5. `_recordQueueDispatch` sets `_lastHadActions`/`_pendingContinuation`; on queue drain, `_continuePlan` re-prompts with fresh state to carry multi-step plans forward. On `Task failed:`, `_handleFailureRecovery` clears the queue and replans.
 
+**Completion signals (verified against the producers).** Baritone logs `All queued tasks complete` whenever *its own* plan queue empties (`TaskPlanProcess.finishPlan` in the `stanstan-sta/baritone` fork). The mod feeds Baritone one task at a time, so that line appears after **every task, not every batch**. The mod forwards every Baritone log line as a `baritone_queue` event (`StateCollector.installBaritoneLogger`), then settles the task (`BridgeConfig.getSettleForCommand`, e.g. mine 3000 ms) before advancing. A poll that carries a completion event carries **pre-settle** state; only `state.queue.status === 'idle'` on fresh state means the batch drained. Bridge failure matchers are in `StateCollector.routeBaritoneToTaskQueue`; Baritone output that matches neither is completed as success by the TaskQueue idle watcher.
+
 This continuation machinery is load-bearing: most features (including the goal engine) originate **one** batch when idle and let the queue+continuation loop carry the rest. Don't re-implement step execution.
 
 ### Proactive layer (all gated by `bridge_proactive_enabled`)
@@ -95,20 +97,21 @@ The bridge builds its own context instead of using `$EXAMPLES`/`$CODE_DOCS` plac
 
 ## Reviewing changes (required before calling work done)
 
-Tests passing is not a review. Authors check code against their own assumptions, so self-review misses design flaws. Every question below needs a concrete answer, not "looks fine".
+Tests passing is not a review. For each item write one line of evidence — file:line, a command you ran, or "N/A because …".
 
-**Checklist — ask of every change:**
-1. **Untrusted text:** Where can player chat, sign text, item names or server messages end up? Is any of it stored and replayed into a prompt (especially a system-role block), a command string, or a file path? Escape/quote it and label it as data.
-2. **Cross-boundary contracts:** For every signal the change relies on (e.g. `baritone_queue` messages, `/state` fields, action specs in `bridge_prompt.js`), open the producer — the Fabric mod or the Baritone fork (`stanstan-sta/baritone`, `TaskPlanProcess`) — and confirm when and how often it is actually emitted. Don't infer from the consumer.
-3. **Timing:** Does the code read state on the same poll as a completion event? The mod settles tasks after Baritone reports (e.g. `mineSettleMs` 3000). Batches run one task at a time; Baritone's "All queued tasks complete" fires per task, not per batch.
-4. **Every exit path:** Trace success, `Task failed:`, explicit cancel/"stop", dispatch failure, `batchResult.stale`, generation change and restart. Is per-task state set, consumed and cleared on each?
-5. **Repetition over time:** What happens on the 2nd and 100th run? Loops that reset their own counters, state that re-derives from inventory the task consumed, chat or LLM calls with no throttle.
-6. **Persistence:** What is written under `bots/<name>/`, how big does it get, is the write atomic, what if it's corrupt or from an older format/embedding model, and does it resume after restart when the feature is now disabled?
-7. **Gates and settings:** Does it respect `bridge_proactive_enabled` and other master switches? Is every new setting defaulted in `settings.js`? Is anything autonomous on by default?
-8. **Data transforms:** When normalising or canonicalising (item ids, actions), check each type's required fields and real-world equivalents (drops vs blocks: `iron_ore` → `raw_iron`, `stone` → `cobblestone`; any log type, not just oak).
-9. **Cost:** Extra LLM or embedding calls per turn, prompt size growth, synchronous I/O on the poll loop.
-10. **Tests:** Could each test pass for the wrong reason (idealised vectors, identical strings, zero-overlap fixtures)? Is there a test for the failure paths in (4)?
+1. **Untrusted text.** Where can player chat, sign/item names or server messages end up? It never goes into a system-role message, a command string or a path. Stored text is truncated, stripped of newlines, and replayed only inside a clearly labelled data fence in a user/tool-role message. (Quoting alone does nothing.)
+2. **Producers, not consumers.** For every signal the change relies on (queue events, `/state` fields, action specs), open the code that emits it and confirm when and how often it fires. Don't infer from the consumer.
+3. **Timing.** Which snapshot is compared with which? State in the same poll as a completion event is not "after" it, and one completion event is not "batch drained" (see Completion signals).
+4. **Exit paths.** Make a table: rows are each piece of per-task state the change reads or writes; columns are success, `Task failed:`, explicit cancel/"stop", dispatch failure/stale, generation change, restart. Each cell: set / consumed / cleared / left stale.
+5. **Two computations of one fact.** When a check and a target are computed separately (an "already have" predicate vs a goal's target; expected gain vs what was actually mined/dropped), prove they agree on the same inventory. Use shared item/drop maps, not hand-written ids.
+6. **Feedback loops.** If anything derived from a measurement (verifier, reward, similarity) is stored, what happens when the measurement is wrong? Can a false result become permanent belief, and how is it forgotten?
+7. **Which prompts.** List the prompt kinds touched (inbound, active-task, continuation, goal, ambient, event, failure) and confirm the added context is relevant to each. Injected text matches the format `parseBridgeResponse` expects and doesn't change the static prefix (KV cache).
+8. **Models.** The embedding model/LLM may be local, remote, offline or swapped. Stored text is embedded with `intent: 'document'` and queries with `intent: 'query'` (as in `bridge_prompt_retriever.js`); dimension mismatch is handled per entry; a transient failure degrades one call, not the session; thresholds are checked against real score ranges.
+9. **Autonomy gates.** List every path that starts chat, actions or LLM calls without a player message, and the setting that turns each off. New autonomous behaviour: off by default, under `bridge_proactive_enabled`, defaulted in `settings.js`, and not resumed from `bots/<name>/` after restart when disabled.
+10. **Repetition and cost.** On the 100th run: counters that reset themselves, throttles, duplicate entries, file and prompt growth, extra LLM/embedding calls per prompt kind, sync I/O on the poll loop, awaits inside read-modify-write of shared state.
+11. **Persistence.** What is written, how big it gets, atomic write (tmp + rename; works on Windows), a schema/model tag so old data is recognised, and behaviour on a corrupt file.
+12. **Tests.** Fixtures resemble real data (related-but-different strings, realistic cosine ranges). Every exit in (4) has a test. Note anything that throws in a test and is swallowed by a `.catch`.
 
-**Independent review:** Changes to learning/memory, prompt construction, persistence, or the queue/continuation machinery get a second review by a separate agent before being reported done. Give it the diff, this checklist and pointers to the producer code — not the author's reasoning or conclusions — and ask it to reproduce findings where it can.
+**Independent review.** For changes to learning/memory, prompt construction, persistence or queue/continuation: start a fresh agent with no conversation history (a new session, or an Agent call that receives only the text below). Give it the commit SHA or diff, this section, the producer files named under Completion signals, and the test command. Do **not** give it your checklist answers, your summary of what the code does, or the commit message's claims. Ask for findings as file:line + how reproduced + severity, plus at least one adversarial test it wrote and ran. Your report lists every finding as fixed, or rejected with a reason.
 
-**Report scope honestly:** When reporting, state what was read in full, what was only searched, what was reproduced vs inferred, and what was never run against a live game.
+**Report scope honestly.** State what was read in full, what was only searched, what was reproduced vs inferred, what was never run against a live game, and which checklist items were N/A and why.
