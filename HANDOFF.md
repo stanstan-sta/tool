@@ -50,6 +50,19 @@ Replace `_pendingVerification`/`_currentTaskText` with a task record: starts on 
 - F10: `skills.json` reaches ~8 MB (full 1024-d vectors); sync non-atomic write per settle. Use tmp+rename, smaller vectors or a sidecar, don't embed lessons.
 - F11: concurrent `recordOutcome` duplicates skills and ids.
 
+## Design gaps — missing even after P1–P3 (not bugs)
+
+P1–P3 make the existing layer *correct*; it would then only get better at repeating crafting/gathering tasks it has already done. To actually self-improve it also lacks:
+1. **Open-ended curriculum.** Fixed 18-milestone list ending at a diamond pickaxe. Voyager's curriculum is LLM-proposed from explored state and current skills.
+2. **Composable skills.** Skills are flat, unparameterised action lists; Voyager's are code that calls other skills.
+3. **LLM critic / reflection.** Verification only counts inventory, so building, moving, combat, following and sleeping can't be judged; lessons are templated strings, not reflections.
+4. **Learning from the player.** Corrections ("no, not like that"), preferences and praise are ignored (only house `rate_build` exists, unreviewed).
+5. **Measurement.** No per-task success rate or trend over time, so improvement can't be told apart from drift.
+6. **Forgetting and curation.** No decay, merge or pruning of bad skills; no way for the owner to view/delete them.
+7. **Model improvement.** Decider-2b and the LLM are frozen; `bots/<name>/system_one_shadow.jsonl` is logged but no calibration or fine-tuning pipeline uses it.
+
+An independent design review of this question was run; see "Design review" below if present.
+
 ## Remaining Baritone medium/low findings (fork)
 Goal reached but block face not reachable → infinite loop (TaskPlanProcess:545-563); `#task smelt X 16` with 8 reports success; tick-thread scans up to 256-chunk radius / ~2M block lookups for beds; new cache magic breaks other Baritone builds sharing `baritone/cache`; tracked-block list split (`BLOCKS_TO_KEEP_TRACK_OF` vs `blocksToKeepTrackOf`) → `#mine trapped_chest` finds nothing; `BlockUtils` variant expansion mines stone bricks/smooth stone, `#mine planks` targets logs; `CachedRegion.getLocationsOf` unsynchronised; repack "retry tier" is a no-op; committed `*.log` files and `fabric/bin/`; `stepIdx` overwrite before `succeedStep`; dead multi-furnace branch; `isNightOrThunder` window wider than vanilla; mixins disabled when another `baritone` mod is present.
 
