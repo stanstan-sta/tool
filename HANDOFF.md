@@ -124,5 +124,8 @@ Goal reached but block face not reachable → infinite loop (TaskPlanProcess:545
 
 **Known unaddressed:** 6 pre-existing eslint errors in `src/bridge/` (`Buffer` no-undef in `fabric_bridge.js`/`house_builder.js`/`house_templates.js`, one `no-empty`) — not part of this work.
 
+## Bot prompt review — NOT DONE (next priority review)
+An independent review of the bot's own prompts (`bridge_prompt.js`, `bridge_examples.js`, prompt packs, persona `miku.json`, and the prompt-building parts of `bridge_agent.js`) was started but stopped when usage credits ran out; it produced no findings. The only result: assembled prompts measured **~33.6–40.8 KB each (≈8–10k tokens)** for every call type (inbound, active-task, continuation, goal, ambient, event, failure). Even an idle ambient line sends ~8k tokens, mostly the static rulebook. Still to check: contradictions between prompt/action specs/examples and what `parseBridgeResponse` and the mod accept; whether the persona survives the tool-heavy prompt; whether the "stable" prefix really stays byte-identical (KV cache); untrusted text in system-role content and raw_command exposure; size and robustness for 7B local models.
+
 ## Finding IDs
 N# = author self-review, F# = independent Node review, B# = independent Baritone review. Full reports are summarised above; file:line references are against `develop` @ `7438452` and baritone @ `e7a22d3`.
