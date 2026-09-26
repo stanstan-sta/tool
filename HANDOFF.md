@@ -7,7 +7,7 @@ Last updated 2026-09-26. Written for the next agent (any model). Read `CLAUDE.md
 - `develop` contains: `server_data.js` restore (gitignore fix), the Voyager layer (`src/bridge/skill_library.js`, `src/bridge/curriculum.js`, integration in `bridge_agent.js`), tests in `test/skill_library.test.js`, the review checklist in `CLAUDE.md`, and this file.
 - `node --test test/*.test.js` → 141 pass. **The tests are not evidence the layer works** — several pass on idealised fixtures (see F4/test notes).
 - Nothing has been run against a live game.
-- **The skill library is ON by default and should be turned OFF** (`settings.js`: `"bridge_skill_library_enabled": false`) until items P1–P3 below are done: its learning signal is currently mostly noise, and it replays raw player chat into a system prompt (F6). The curriculum is already off by default.
+- The skill library is **OFF by default** (`bridge_skill_library_enabled: false`) until P1–P3 below are done: its learning signal is currently mostly noise, and it replays raw player chat into a system prompt (F6). The curriculum is also off by default.
 
 ## Root cause (read this before fixing individual items)
 
@@ -23,7 +23,7 @@ Fix in this order: Baritone reporting → Node task record → re-enable skill l
 **P0 — one-line fixes (safe, do first)**
 - B1 `baritone/src/main/java/baritone/utils/ToolSet.java:192`: `/ avoidanceMultiplier(b)` → `* avoidanceMultiplier(b)` (currently makes Baritone prefer breaking chests/furnaces/crafting tables).
 - B18 `baritone/gradle.properties`: remove `org.gradle.java.home=C:/...` (move to `~/.gradle/gradle.properties`).
-- Set `bridge_skill_library_enabled: false` in `tool/settings.js`.
+- ~~Set `bridge_skill_library_enabled: false`~~ — done.
 
 **P1 — Baritone fork failure reporting** (`stanstan-sta/baritone`, fork changes = `git diff c70ce564 HEAD`)
 - B6: every early return in `TaskPlanProcess.runInteractPlanByBlockName`/`createInteractPlan`/`runContainerPlanByBlockName`/`runSmeltAllItems`, `TaskCommand` ("Could not find any cached positions"), `CraftCommand` ("Could not find any cached crafting tables"), and CommandException paths must log `Task failed: <label> - not_found|invalid_args`.
