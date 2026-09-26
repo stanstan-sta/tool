@@ -28,6 +28,11 @@ const settings = {
     "bridge_reward_enabled": true,
     "bridge_survival_reflex_enabled": true,
     "bridge_survival_flee_hp": 6,
+    "bridge_skill_library_enabled": true, // Voyager-style: save action batches the outcome verifier confirmed as reusable skills, record failures as lessons, and retrieve both into the prompt
+    "bridge_skill_retrieve_count": 3, // max proven plans retrieved per prompt
+    "bridge_curriculum_enabled": false, // Voyager-style automatic curriculum: when idle with no goal and no recent player chat, set the next survival milestone as an autonomous goal
+    "bridge_curriculum_idle_ms": 120000, // quiet period after the last player chat before the curriculum may start practising
+    "bridge_curriculum_max_failures": 3, // failed attempts (lessons) before a milestone is deferred
     "bridge_system_one_shadow": false, // run Decider-2b (System One) beside the active-task evaluator and log both choices; never acts
     "bridge_system_one_active": true, // System One decides continue/cancel/append for mid-task chat and stops tasks instantly; the LLM still writes replies and actions
     "bridge_system_one_min_confidence": 0.6, // below this, active mode defers to the LLM's decision

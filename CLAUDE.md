@@ -63,6 +63,12 @@ This continuation machinery is load-bearing: most features (including the goal e
 - `_runAmbientTick` — idle self-initiated speech, token-bucket budgeted (`bridge_ambient_budget_per_hour`), suppressed when busy/AFK/recently spoke.
 - `goal_manager.js` + `_runGoalTick` — autonomous goal pursuit; `goal:`/`stop goal` chat commands; persists to `bots/<name>/goal.json`.
 
+### Self-improvement layer (Voyager-style)
+- `outcome_verifier.js` — `_armVerification` snapshots inventory when a batch is dispatched; `_settleVerification` scores it on queue drain (reward +1/0/-1, `bots/<name>/reward.log`).
+- `skill_library.js` — verified batches become skills keyed by the task text (`_currentTaskText`: player request or goal); failed batches become critic lessons. Top matches are retrieved into the dynamic prompt block as `PROVEN PLANS` / `PAST FAILURES`. Persists to `bots/<name>/skills.json`. Gate: `bridge_skill_library_enabled`.
+- `curriculum.js` — survival tech-tree milestones. When `bridge_curriculum_enabled` is true and the bot is idle with no goal and no player chat for `bridge_curriculum_idle_ms`, `_maybeStartCurriculumGoal` sets the next milestone as an ordinary goal (`origin: 'curriculum'`); milestones that keep failing are deferred. Off by default.
+- `system_one.js` — Decider-2b (Jev-style multiple-choice model on llama-server) decides continue/cancel/append for mid-task chat; the LLM (System Two) still writes replies and actions.
+
 ### Prompt construction (semantic, not template placeholders)
 The bridge builds its own context instead of using `$EXAMPLES`/`$CODE_DOCS` placeholders: `bridge_prompt.js` (system prompt) + `bridge_examples.js` (RAG over authored examples) + `bridge_prompt_packs.js`/`bridge_prompt_retriever.js` (compact task-specific guidance retrieved by embedding similarity, e.g. mining/crafting/combat packs). All keyed off the embedding model.
 

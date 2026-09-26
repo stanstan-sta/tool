@@ -18,6 +18,8 @@ import { WorldMemory, parseWaypointCommand, extractNotablePositions } from './wo
 import { expectFromActions, snapshotInventory, verifyOutcome, describeVerification } from './outcome_verifier.js';
 import { SurvivalReflex } from './survival_reflex.js';
 import { SystemOne } from './system_one.js';
+import { SkillLibrary, formatSkillContext } from './skill_library.js';
+import { Curriculum } from './curriculum.js';
 import { buildFabricStateLines, summarizeOpenScreen } from './state_summary.js';
 import { hasServerData, getServerPlayers, findServerPlayer, getServerEvents, getServerFacts } from './server_data.js';
 import {
@@ -714,6 +716,15 @@ export class BridgeAgent {
         this._pendingVerification = null;
         this._rewardLogPath = `./bots/${this.name}/reward.log`;
 
+        // Voyager-style self-improvement: verified plans become reusable skills, failures
+        // become lessons, and an automatic curriculum proposes goals when idle.
+        this._currentTaskText = '';
+        this.skillLibrary = settings.bridge_skill_library_enabled !== false
+            ? new SkillLibrary(`./bots/${this.name}/skills.json`, this.prompter.embedding_model || null)
+            : null;
+        this.skillLibrary?.load();
+        this.curriculum = new Curriculum({ maxFailures: settings.bridge_curriculum_max_failures ?? 3 });
+
         // Survival reflex
         this.survivalReflex = new SurvivalReflex({ fleeHp: settings.bridge_survival_flee_hp ?? 6 });
 
@@ -927,17 +938,32 @@ export class BridgeAgent {
      * Returns '' when there is nothing dynamic to add this turn.
      */
     async _buildBridgeDynamicBlock(memory, history = this.history?.turns || null) {
-        const [examplesText, { text: taskGuidanceText }] = await Promise.all([
+        const [examplesText, { text: taskGuidanceText }, skillsText] = await Promise.all([
             this._retrieveBridgeExamplesForHistory(history),
             this._retrieveBridgeTaskGuidanceForHistory(history),
+            this._retrieveSkillsForTask(),
         ]);
         this._lastBridgeExamplesText = examplesText;
         this._lastBridgeTaskGuidanceText = taskGuidanceText;
+        this._lastSkillsText = skillsText;
         return buildBridgeDynamicBlock(settings, {
             memory,
             taskGuidanceText,
-            examplesText,
+            examplesText: [skillsText, examplesText].filter(Boolean).join('\n\n'),
         });
+    }
+
+    async _retrieveSkillsForTask() {
+        if (!this.skillLibrary || !this._currentTaskText) return '';
+        try {
+            const found = await this.skillLibrary.retrieve(this._currentTaskText, {
+                k: settings.bridge_skill_retrieve_count ?? 3,
+            });
+            return formatSkillContext(found);
+        } catch (err) {
+            console.warn('Skill retrieval failed:', err.message || err);
+            return '';
+        }
     }
 
     /**
@@ -1838,7 +1864,12 @@ export class BridgeAgent {
         if (settings.bridge_reward_enabled === false || !this._lastState) return;
         const expectations = expectFromActions(actions);
         if (expectations.length === 0) { this._pendingVerification = null; return; }
-        this._pendingVerification = { expectations, baseline: snapshotInventory(this._lastState) };
+        this._pendingVerification = {
+            expectations,
+            baseline: snapshotInventory(this._lastState),
+            task: this._currentTaskText,
+            actions,
+        };
     }
 
     _settleVerification() {
@@ -1848,8 +1879,15 @@ export class BridgeAgent {
         const v = verifyOutcome(pv.baseline, this._lastState, pv.expectations);
         const line = `Outcome ${v.met ? 'met' : 'NOT met'} (reward ${v.reward}): ${describeVerification(v)}`;
         this.history.add('system', line);
-        try { appendFileSync(this._rewardLogPath, JSON.stringify({ t: Date.now(), ...v }) + '\n'); } catch {
+        try { appendFileSync(this._rewardLogPath, JSON.stringify({ t: Date.now(), task: pv.task || '', ...v }) + '\n'); } catch {
             // Reward logging is best-effort.
+        }
+        if (this.skillLibrary && pv.task) {
+            this.skillLibrary.recordOutcome(pv.task, pv.actions, v)
+                .then(entry => {
+                    if (entry && v.met && entry.successes === 1) sendOutputToServer(this.name, `Learned skill: ${entry.task}`);
+                })
+                .catch(err => console.warn('Skill library update failed:', err.message || err));
         }
     }
 
@@ -1870,10 +1908,33 @@ export class BridgeAgent {
         return p;
     }
 
+    // Automatic curriculum: only when opted in, fully idle, and no player has talked to
+    // the bot recently, so self-directed practice never competes with a real request.
+    _maybeStartCurriculumGoal(state) {
+        if (settings.bridge_curriculum_enabled !== true || !state) return false;
+        const queue = state.queue || {};
+        if (queue.status === 'executing' || queue.status === 'draining' || queue.paused) return false;
+        if (this._pendingContinuation || this._lastHadActions || this._promptInFlight) return false;
+        const quietMs = settings.bridge_curriculum_idle_ms ?? 120000;
+        if (Date.now() - (this.episodicMemory.lastPlayerChatAnsweredAt || 0) < quietMs) return false;
+        const next = this.curriculum.proposeNext(state, this.skillLibrary);
+        if (!next) return false;
+        this.goalManager.set(next.text, next.target);
+        this.goalManager.goal.origin = 'curriculum';
+        this.goalManager.save();
+        this._nextGoalTickAt = 0;
+        const { done, total } = this.curriculum.progress(state);
+        this._announceGoal(`Practising next skill: ${next.text} (${done}/${total} milestones)`);
+        return true;
+    }
+
     async _runGoalTick(state, generation = this._generation) {
         if (!this._isGenerationCurrent(generation)) return;
         if (settings.bridge_goal_enabled === false) return;
-        if (!this.goalManager.isActive()) return;
+        if (!this.goalManager.isActive()) {
+            this._maybeStartCurriculumGoal(state);
+            return;
+        }
 
         const now = Date.now();
         if (now < this._nextGoalTickAt) return;
@@ -1899,9 +1960,11 @@ export class BridgeAgent {
                 ? `no measurable progress in ${g.noProgressStreak} attempts`
                 : `gave up after ${g.attempts} attempts`;
             this._announceGoal(`Giving up on goal: ${g.text} (${reason}).`);
+            if (g.origin === 'curriculum') this.curriculum.defer(g.text);
             this.goalManager.clear();
             return;
         }
+        this._currentTaskText = this.goalManager.goal.text;
 
         const stateContext = this._buildStateContext(state);
         if (stateContext) this.history.add('system', stateContext);
@@ -2072,6 +2135,7 @@ export class BridgeAgent {
             if (goalCmd.kind === 'clear') { this.goalManager.clear(); this._announceGoal('Goal cleared.'); return; }
             if (goalCmd.kind === 'status') { this._announceGoal(`Goal: ${this.goalManager.describe()}`); return; }
         }
+        if (source !== this.name && source !== 'system') this._currentTaskText = message;
 
         // Waypoint commands take priority after goal commands.
         const wp = parseWaypointCommand(message);
@@ -2434,6 +2498,7 @@ export class BridgeAgent {
             if (dispatchGeneration === null) return;
         }
 
+        if (source !== this.name && source !== 'system') this._currentTaskText = message;
         let actionsCancelled = false;
         if (decision.actions.length > 0) {
             this._armVerification(decision.actions);
