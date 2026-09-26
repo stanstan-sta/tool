@@ -7,3 +7,7 @@ pluginManagement {
 }
 
 rootProject.name = 'mindcraft-bridge'
+
+// bridge-protocol is a sibling directory (tool/bridge-protocol), not a child of this mod.
+include 'bridge-protocol'
+project(':bridge-protocol').projectDir = file('../bridge-protocol')

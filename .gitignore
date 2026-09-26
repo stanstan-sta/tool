@@ -7,6 +7,7 @@ scratch.js
 bots/**/action-code/**
 bots/**/
 keys.json
+settings_local.json
 services/viaproxy/jars/**
 services/viaproxy/logs/**
 services/viaproxy/plugins/**
@@ -28,3 +29,7 @@ tasks/construction_tasks/train/**
 server_data*
 **/.DS_Store
 src/mindcraft-py/__pycache__/
+**/build/
+**/.gradle/
+*.log.gz
+test-results/

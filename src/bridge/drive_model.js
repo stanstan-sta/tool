@@ -15,8 +15,12 @@ export class DriveModel {
     }
 
     tick(dtMs) {
+        // Decay rates are expressed per second; dtMs arrives in milliseconds.
+        // Multiplying by raw ms over-scaled by ~1000x and saturated every
+        // drive to 1.0 on the first tick, collapsing all textual hints.
+        const dtSec = Math.max(0, Number(dtMs) || 0) / 1000;
         for (const key of Object.keys(this.drives)) {
-            this.drives[key].level = Math.min(1.0, this.drives[key].level + this.drives[key].decay * dtMs);
+            this.drives[key].level = Math.min(1.0, this.drives[key].level + this.drives[key].decay * dtSec);
         }
         this.lastTickMs = Date.now();
     }

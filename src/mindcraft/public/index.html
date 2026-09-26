@@ -3,1818 +3,923 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mindcraft</title>
+    <title>Bridge Dashboard</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
         :root {
-            --bg: #0f0f11;
-            --bg-elevated: #16161a;
-            --bg-card: #1a1a1f;
-            --bg-hover: #22222a;
-            --border: #2a2a32;
-            --border-subtle: #1e1e24;
-            --text: #e2e2e8;
-            --text-secondary: #8b8b9a;
-            --text-muted: #5a5a6a;
-            --accent: #6366f1;
-            --accent-hover: #818cf8;
-            --success: #22c55e;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-            --radius: 10px;
-            --radius-sm: 6px;
-            --shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --bg: #0f0f11; --bg-elevated: #16161a; --bg-card: #1a1a1f; --bg-hover: #22222a;
+            --border: #2a2a32; --border-subtle: #1e1e24;
+            --text: #e2e2e8; --text-secondary: #8b8b9a; --text-muted: #5a5a6a;
+            --accent: #6366f1; --accent-hover: #818cf8;
+            --success: #22c55e; --danger: #ef4444; --warning: #f59e0b;
+            --radius: 8px; --radius-sm: 5px;
             --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
             --font-mono: 'SF Mono', 'Fira Code', 'Courier New', monospace;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.5; font-size: 14px; }
 
-        body {
-            font-family: var(--font);
-            background: var(--bg);
-            color: var(--text);
-            line-height: 1.5;
-            min-height: 100vh;
-            padding: 24px 24px 100px;
+        /* ── Header bar ─────────────────────────────────────────── */
+        .header {
+            display: flex; align-items: center; gap: 12px; padding: 10px 20px;
+            background: var(--bg-elevated); border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 100;
         }
+        .header .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .dot.on { background: var(--success); } .dot.off { background: var(--danger); }
+        .header .spacer { flex: 1; }
+        .header .debug { font-size: 11px; color: var(--text-muted); }
 
-        /* ── Header ─────────────────────────────────────────────── */
-        .app-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border-subtle);
-        }
-        .app-header h1 {
-            font-size: 1.5rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            color: var(--text);
-        }
-        .status-pill {
-            font-size: 0.7rem;
-            font-weight: 600;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: var(--bg-elevated);
-            color: var(--text-muted);
-            border: 1px solid var(--border);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .status-pill.online {
-            background: rgba(34,197,94,0.1);
-            color: var(--success);
-            border-color: rgba(34,197,94,0.2);
-        }
-        .status-pill.offline {
-            background: rgba(239,68,68,0.1);
-            color: var(--danger);
-            border-color: rgba(239,68,68,0.2);
-        }
-
-        /* ── Agent Cards ────────────────────────────────────────── */
-        #agents {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .agent-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
-            transition: border-color 0.2s, box-shadow 0.2s;
-        }
-        .agent-card:hover {
-            border-color: #33333d;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
-        }
-
-        .agent-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 14px 18px;
-            background: rgba(255,255,255,0.015);
-            border-bottom: 1px solid var(--border-subtle);
-        }
-        .agent-status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .agent-status-dot.online { background: var(--success); box-shadow: 0 0 8px rgba(34,197,94,0.35); }
-        .agent-status-dot.offline { background: var(--danger); }
-        .agent-name {
-            font-weight: 600;
-            font-size: 0.95rem;
-            color: var(--text);
-        }
-        .agent-joining {
-            font-size: 0.75rem;
-            color: var(--warning);
-            margin-left: 4px;
-        }
-        .agent-action {
-            margin-left: auto;
-            font-size: 0.78rem;
-            color: var(--text-secondary);
-            font-family: var(--font-mono);
-            background: var(--bg-elevated);
-            padding: 3px 10px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border);
-        }
-
-        /* ── Stats Row ──────────────────────────────────────────── */
-        .agent-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 1px;
-            background: var(--border-subtle);
-        }
-        .agent-stats .stat {
-            background: var(--bg-card);
-            padding: 10px 14px;
-            font-size: 0.78rem;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-        .agent-stats .stat-label {
-            color: var(--text-muted);
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-        .agent-stats .stat-value {
-            color: var(--text-secondary);
-            font-family: var(--font-mono);
-            font-size: 0.82rem;
-        }
-
-        /* ── Message Row ────────────────────────────────────────── */
-        .agent-message-row {
-            padding: 10px 18px;
-            border-bottom: 1px solid var(--border-subtle);
-            font-size: 0.82rem;
-            color: var(--text-secondary);
-            font-style: italic;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .agent-message-row strong {
-            color: var(--text-muted);
-            font-style: normal;
-            font-weight: 500;
-        }
-
-        /* ── Controls Row ───────────────────────────────────────── */
-        .agent-controls {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 18px;
-            background: rgba(255,255,255,0.01);
-        }
-        .agent-controls input[type="text"] {
-            flex: 1;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            color: var(--text);
-            border-radius: var(--radius-sm);
-            padding: 7px 12px;
-            font-size: 0.85rem;
-            outline: none;
-            transition: border-color 0.2s;
-            min-width: 0;
-        }
-        .agent-controls input[type="text"]:focus {
-            border-color: var(--accent);
-        }
-        .agent-controls input[type="text"]:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
+        /* ── Buttons ────────────────────────────────────────────── */
         .btn {
-            font-family: inherit;
-            font-size: 0.8rem;
-            font-weight: 500;
-            padding: 7px 14px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border);
-            background: var(--bg-elevated);
-            color: var(--text-secondary);
-            cursor: pointer;
-            transition: all 0.15s;
-            white-space: nowrap;
+            background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+            padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer;
+            font-size: 13px; transition: all 0.12s; white-space: nowrap;
         }
-        .btn:hover {
-            background: var(--bg-hover);
-            color: var(--text);
-            border-color: #3a3a48;
-        }
-        .btn:disabled {
-            opacity: 0.35;
-            cursor: not-allowed;
-        }
-        .btn-primary {
-            background: var(--accent);
-            color: #fff;
-            border-color: var(--accent);
-        }
-        .btn-primary:hover {
-            background: var(--accent-hover);
-            border-color: var(--accent-hover);
-        }
-        .btn-danger {
-            color: var(--danger);
-            border-color: rgba(239,68,68,0.25);
-        }
-        .btn-danger:hover {
-            background: rgba(239,68,68,0.1);
-            border-color: rgba(239,68,68,0.4);
-        }
-        .btn-icon {
-            padding: 7px 10px;
-            font-size: 0.9rem;
-            line-height: 1;
-        }
-        .btn-group {
-            display: flex;
-            gap: 4px;
-        }
+        .btn:hover { background: var(--bg-hover); }
+        .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; }
 
-        /* ── Inventory ──────────────────────────────────────────── */
-        .agent-inventory {
-            padding: 14px 18px;
-            border-top: 1px solid var(--border-subtle);
-            background: rgba(255,255,255,0.01);
-        }
-        .agent-inventory h3 {
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-muted);
-            margin-bottom: 10px;
-        }
-        .inv-armor {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 10px;
-            font-family: var(--font-mono);
-        }
-        .inventory-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-            gap: 6px;
-        }
-        .inv-item {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            padding: 6px 10px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            font-family: var(--font-mono);
-        }
+        /* ── Layout ─────────────────────────────────────────────── */
+        .container { max-width: 1200px; margin: 0 auto; padding: 16px 20px; }
 
-        /* ── Empty State ────────────────────────────────────────── */
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-muted);
-            font-size: 0.9rem;
+        /* ── Collapsible sections ───────────────────────────────── */
+        .section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; }
+        .section-header {
+            display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+            cursor: pointer; user-select: none; border-bottom: 1px solid transparent;
+            transition: border-color 0.1s;
         }
+        .section-header:hover { background: var(--bg-hover); }
+        .section.open .section-header { border-bottom-color: var(--border); }
+        .section-header h2 { font-size: 14px; font-weight: 600; flex: 1; }
+        .section-header .count { font-size: 11px; color: var(--text-muted); }
+        .section-header .chevron { color: var(--text-muted); font-size: 11px; transition: transform 0.15s; }
+        .section.open .section-header .chevron { transform: rotate(90deg); }
+        .section-body { display: none; padding: 14px; }
+        .section.open .section-body { display: block; }
+        .section-actions { display: flex; gap: 6px; }
 
-        /* ── Live Console ───────────────────────────────────────── */
-        #consoleSection {
-            margin-top: 24px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
+        /* ── Agent cards ────────────────────────────────────────── */
+        .agent-card {
+            background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm); margin-bottom: 8px; overflow: hidden;
         }
-        #consoleHeader {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 18px;
-            background: rgba(255,255,255,0.015);
-            border-bottom: 1px solid var(--border-subtle);
-            user-select: none;
-            cursor: pointer;
-        }
-        #consoleHeader h2 {
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-muted);
-            margin: 0;
-            flex: 1;
-        }
-        .console-badge {
-            font-size: 0.7rem;
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: var(--bg-elevated);
-            color: var(--text-muted);
-            border: 1px solid var(--border);
-        }
-        #consoleControls {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        #consoleControls label {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-        }
-        #consoleLog {
-            height: 240px;
-            overflow-y: auto;
-            padding: 10px 16px;
-            font-family: var(--font-mono);
-            font-size: 0.75rem;
-            color: #a3e6a3;
-            background: #13131a;
-            line-height: 1.6;
-            word-break: break-all;
-        }
-        #consoleLog .log-line { margin: 0; padding: 1px 0; }
-        #consoleLog .log-ts { color: #555; margin-right: 6px; }
-        #consoleLog .log-agent { color: #7dd3fc; margin-right: 6px; font-weight: 600; }
+        .agent-top { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; }
+        .agent-top:hover { background: var(--bg-hover); }
+        .agent-name { font-weight: 600; font-size: 14px; }
+        .agent-status-text { font-size: 12px; color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .agent-detail { display: none; padding: 10px 14px; border-top: 1px solid var(--border-subtle); }
+        .agent-card.expanded .agent-detail { display: block; }
+        .agent-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; margin-bottom: 10px; }
+        .stat { font-size: 12px; }
+        .stat-label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+        .stat-value { font-weight: 600; }
+        .agent-controls { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 8px; }
+        .agent-controls input[type="text"] { flex: 1; min-width: 100px; padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 13px; }
+        .agent-inventory { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+        .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 3px; margin-top: 4px; }
+        .inv-item { font-size: 11px; padding: 3px 5px; background: var(--bg); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-        /* ── Footer ─────────────────────────────────────────────── */
-        .page-footer {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(15,15,17,0.92);
-            backdrop-filter: blur(12px);
-            border-top: 1px solid var(--border);
-            padding: 14px 24px;
-            display: flex;
-            gap: 12px;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 100;
+        /* ── Inline settings ────────────────────────────────────── */
+        .inline-settings { margin-top: 10px; padding: 10px; background: var(--bg); border-radius: var(--radius-sm); }
+        .inline-settings h4 { font-size: 12px; margin-bottom: 8px; color: var(--text-secondary); }
+        .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .settings-grid .full { grid-column: 1 / -1; }
+        .setting-row { display: flex; flex-direction: column; gap: 3px; }
+        .setting-row label { font-size: 11px; color: var(--text-muted); }
+        .setting-row input, .setting-row select, .setting-row textarea {
+            padding: 5px 8px; background: var(--bg-elevated); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); color: var(--text); font-size: 12px; font-family: var(--font);
         }
+        .setting-row textarea { min-height: 60px; resize: vertical; font-family: var(--font-mono); }
+        .settings-desc { font-size: 11px; color: var(--text-muted); }
 
-        /* ── Debug Panel ────────────────────────────────────────── */
-        #debugPanel {
-            position: fixed;
-            top: 16px;
-            right: 16px;
-            background: rgba(15,15,17,0.95);
-            backdrop-filter: blur(12px);
-            color: var(--text-secondary);
-            padding: 14px 18px;
-            border-radius: var(--radius);
-            font-family: var(--font-mono);
-            font-size: 0.72rem;
-            z-index: 9999;
-            min-width: 220px;
-            max-width: 360px;
-            border: 1px solid var(--border);
-            line-height: 1.7;
-            overflow-wrap: break-word;
-            box-shadow: var(--shadow);
-        }
-        #debugPanel .debug-title {
-            font-weight: 700;
-            color: var(--success);
-            margin-bottom: 6px;
-            font-size: 0.65rem;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-        #debugPanel .debug-row { margin: 3px 0; }
-        #debugPanel .debug-label { color: var(--text-muted); }
+        /* ── Profiles panel ─────────────────────────────────────── */
+        .profiles-layout { display: grid; grid-template-columns: 240px 1fr; gap: 12px; }
+        .profile-list { max-height: 350px; overflow-y: auto; }
+        .profile-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; cursor: pointer; border-radius: var(--radius-sm); }
+        .profile-item:hover { background: var(--bg-hover); }
+        .profile-item.active { background: var(--accent); color: #fff; }
+        .profile-item.active .profile-model { color: rgba(255,255,255,0.6); }
+        .profile-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .profile-model { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .profile-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--success); color: #fff; }
+        .profile-editor textarea { width: 100%; min-height: 280px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; resize: vertical; }
+        .profile-editor-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 
-        /* ── Modals ─────────────────────────────────────────────── */
-        .modal-backdrop {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.6);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            backdrop-filter: blur(4px);
-        }
-        .modal {
-            background: var(--bg-card);
-            border-radius: var(--radius);
-            width: 80vw;
-            height: 80vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-            border: 1px solid var(--border);
-        }
-        .modal-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border-subtle);
-        }
-        .modal-header h2 {
-            font-size: 1rem;
-            font-weight: 600;
-            margin: 0;
-        }
-        .modal-close-btn {
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            padding: 6px 12px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            transition: all 0.15s;
-        }
-        .modal-close-btn:hover {
-            background: var(--bg-hover);
-            color: var(--text);
-        }
-        .modal-body {
-            flex: 1 1 auto;
-            overflow: auto;
-            padding: 16px 20px;
-        }
-        .modal-footer {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 20px;
-            border-top: 1px solid var(--border-subtle);
-            background: rgba(255,255,255,0.01);
-        }
-        .footer-left { color: var(--text-muted); font-style: italic; font-size: 0.8rem; }
+        /* ── Startup profiles ───────────────────────────────────── */
+        .startup-list { display: flex; flex-direction: column; gap: 4px; }
+        .startup-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-elevated); border-radius: var(--radius-sm); }
+        .startup-item .path { font-size: 12px; font-family: var(--font-mono); flex: 1; }
+        .startup-item .info { font-size: 11px; color: var(--text-muted); }
+        .toggle { position: relative; width: 36px; height: 20px; background: var(--bg-hover); border-radius: 10px; cursor: pointer; flex-shrink: 0; transition: background 0.15s; }
+        .toggle.on { background: var(--success); }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform 0.15s; }
+        .toggle.on::after { transform: translateX(16px); }
 
-        /* ── Settings Form ──────────────────────────────────────── */
-        #settingsForm, #agentSettingsForm {
-            display: flex;
-            flex-direction: column;
-            gap: 18px;
-        }
-        .setting-section {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius);
-            overflow: hidden;
-        }
-        .setting-section-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 16px;
-            background: rgba(255,255,255,0.02);
-            border-bottom: 1px solid var(--border-subtle);
-            cursor: pointer;
-            user-select: none;
-        }
-        .setting-section-header h3 {
-            font-size: 0.78rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--text);
-            margin: 0;
-        }
-        .setting-section-header .section-sub {
-            font-size: 0.72rem;
-            color: var(--text-muted);
-            margin-left: 10px;
-            flex: 1;
-            font-weight: 400;
-            text-transform: none;
-            letter-spacing: 0;
-        }
-        .setting-section-header .section-toggle {
-            color: var(--text-muted);
-            font-size: 0.7rem;
-            margin-left: 8px;
-        }
-        .setting-section-body {
-            padding: 12px 16px;
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-            gap: 10px;
-        }
-        .setting-section-body.collapsed { display: none; }
-        .setting-row {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            background: var(--bg);
-            padding: 10px 12px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border-subtle);
-        }
-        .setting-row .setting-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-        }
-        .setting-row label {
-            font-size: 0.82rem;
-            color: var(--text);
-            font-weight: 500;
-            flex: 1 1 auto;
-            min-width: 0;
-            overflow-wrap: anywhere;
-            word-break: normal;
-            font-family: var(--font-mono);
-        }
-        .setting-row .setting-desc {
-            font-size: 0.72rem;
-            color: var(--text-muted);
-            line-height: 1.4;
-        }
-        .setting-row input[type="text"],
-        .setting-row input[type="number"],
-        .setting-row select {
-            flex: 0 0 auto;
-            min-width: 140px;
-            max-width: 60%;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            color: var(--text);
-            border-radius: var(--radius-sm);
-            padding: 5px 10px;
-            font-size: 0.82rem;
-            outline: none;
-            font-family: var(--font-mono);
-        }
-        .setting-row input:focus, .setting-row select:focus {
-            border-color: var(--accent);
-        }
-        .setting-row input[type="checkbox"] {
-            transform: scale(1.15);
-            accent-color: var(--accent);
-            flex: 0 0 auto;
-        }
-        /* Long text/array inputs span the full row below the label */
-        .setting-row.setting-row-wide .setting-top {
-            flex-wrap: wrap;
-        }
-        .setting-row.setting-row-wide label {
-            flex: 1 1 100%;
-        }
-        .setting-row.setting-row-wide input[type="text"] {
-            max-width: none;
-            width: 100%;
-            margin-top: 2px;
-        }
-        .setting-section-empty {
-            padding: 14px 16px;
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            font-style: italic;
-        }
-        /* Legacy wrapper class kept as a fallback for any leftover renderers */
-        .setting-wrapper {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: var(--bg-elevated);
-            padding: 8px 12px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border-subtle);
-        }
-        .setting-wrapper label {
-            flex: 0 0 50%;
-            font-size: 0.85em;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            color: var(--text-secondary);
-        }
-        .setting-wrapper input[type="text"],
-        .setting-wrapper input[type="number"],
-        .setting-wrapper select {
-            flex: 1 1 0;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            border-radius: var(--radius-sm);
-            padding: 5px 8px;
-            font-size: 0.85em;
-            outline: none;
-            min-width: 0;
-        }
-        .setting-wrapper input:focus, .setting-wrapper select:focus {
-            border-color: var(--accent);
-        }
-        .setting-wrapper input[type="checkbox"] {
-            transform: scale(1.2);
-            accent-color: var(--accent);
-        }
+        /* ── API keys ───────────────────────────────────────────── */
+        .key-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+        .key-label { font-size: 13px; min-width: 140px; }
+        .key-row input { flex: 1; padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 13px; }
+        .key-status { font-size: 11px; white-space: nowrap; }
 
-        /* ── Profile Section ────────────────────────────────────── */
-        .profile-section {
-            margin-top: 16px;
-            border-top: 1px solid var(--border-subtle);
-            padding-top: 12px;
-        }
-        .profile-section-header {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            user-select: none;
-            margin-bottom: 10px;
-            padding: 4px 0;
-        }
-        .profile-section-header h3 {
-            margin: 0;
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: var(--text);
-        }
-        .profile-section-header .section-toggle {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-        }
-        .profile-fields { display: block; }
-        .profile-fields.collapsed { display: none; }
-        .profile-field-row {
-            margin-bottom: 12px;
-        }
-        .profile-field-row label {
-            display: block;
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-            font-weight: 500;
-        }
-        .profile-field-row input[type="text"],
-        .profile-field-row textarea,
-        .profile-field-row select {
-            width: 100%;
-            box-sizing: border-box;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            border-radius: var(--radius-sm);
-            padding: 8px 10px;
-            font-size: 0.85rem;
-            font-family: var(--font-mono);
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        .profile-field-row input:focus,
-        .profile-field-row textarea:focus,
-        .profile-field-row select:focus {
-            border-color: var(--accent);
-        }
-        .profile-field-row textarea {
-            min-height: 80px;
-            resize: vertical;
-            font-family: var(--font);
-        }
-        .profile-field-row .field-hint {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }
+        /* ── Console ────────────────────────────────────────────── */
+        .console-log { max-height: 250px; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+        .log-line { display: flex; gap: 3px; }
+        .log-ts { color: var(--text-muted); flex-shrink: 0; }
+        .log-agent { color: var(--accent-hover); flex-shrink: 0; }
 
-        /* ── API Keys Modal ─────────────────────────────────────── */
-        #apiKeysList .key-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
-            padding: 8px 12px;
-            background: var(--bg-elevated);
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border-subtle);
-        }
-        #apiKeysList .key-label {
-            flex: 0 0 200px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            font-family: var(--font-mono);
-        }
-        #apiKeysList input[type="password"] {
-            flex: 1;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            border-radius: var(--radius-sm);
-            padding: 6px 10px;
-            font-size: 0.8rem;
-            outline: none;
-        }
-        #apiKeysList input[type="password"]:focus {
-            border-color: var(--accent);
-        }
-        #apiKeysList .key-status {
-            flex: 0 0 160px;
-            font-size: 0.75rem;
-        }
+        /* ── Modal ──────────────────────────────────────────────── */
+        .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 200; }
+        .modal-bg.active { display: flex; }
+        .modal { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; }
+        .modal-head { display: flex; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+        .modal-head h2 { font-size: 15px; flex: 1; }
+        .modal-body { padding: 18px; }
+        .modal-foot { display: flex; align-items: center; gap: 6px; padding: 10px 18px; border-top: 1px solid var(--border); }
+        .modal-foot .spacer { flex: 1; }
+        .modal-close { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+
+        /* ── Toast ──────────────────────────────────────────────── */
+        .toasts { position: fixed; bottom: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 6px; }
+        .toast { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); animation: slideIn 0.15s ease; max-width: 350px; }
+        .toast.ok { background: var(--success); color: #fff; }
+        .toast.err { background: var(--danger); color: #fff; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); } }
+
+        .muted { color: var(--text-muted); }
+        .empty { text-align: center; padding: 24px; color: var(--text-muted); font-size: 13px; }
+        .error-text { color: var(--danger); font-size: 12px; }
     </style>
 </head>
 <body>
-    <!-- Debug Panel -->
-    <div id="debugPanel">
-        <div class="debug-title">Debug Stats</div>
-        <div class="debug-row"><span class="debug-label">Models:</span> <span id="debugModels">Loading...</span></div>
-        <div class="debug-row"><span class="debug-label">VRAM/RAM:</span> <span id="debugRam">Loading...</span></div>
-    </div>
 
-    <div class="app-header">
-        <div style="display:flex;align-items:center;gap:12px;">
-            <h1>Mindcraft</h1>
-            <span id="msStatus" class="status-pill offline">mindserver offline</span>
+<div class="header">
+    <div class="status">
+        <span class="dot off" id="connDot"></span>
+        <span id="connText">Connecting...</span>
+    </div>
+    <div class="spacer"></div>
+    <span class="debug" id="debugInfo"></span>
+    <button class="btn btn-sm" onclick="socket.emit('stop-all-agents')">Stop All</button>
+    <button class="btn btn-sm btn-danger" onclick="if(confirm('Shutdown?')) socket.emit('shutdown')">Shutdown</button>
+</div>
+
+<div class="container">
+
+<!-- ═══ Agents ═══ -->
+<div class="section open" id="sec-agents">
+    <div class="section-header" onclick="toggleSec('sec-agents')">
+        <span class="chevron">▶</span>
+        <h2>Agents</h2>
+        <span class="count" id="agentCount"></span>
+        <div class="section-actions" onclick="event.stopPropagation()">
+            <button class="btn btn-sm btn-primary" onclick="openCreateModal()">+ New</button>
         </div>
     </div>
-
-    <div id="agents"></div>
-
-    <!-- Live Console -->
-    <div id="consoleSection">
-        <div id="consoleHeader" onclick="toggleConsole()">
-            <h2>Live Console</h2>
-            <span class="console-badge" id="consoleMsgCount">0 lines</span>
-            <div id="consoleControls" onclick="event.stopPropagation()">
-                <label title="Automatically scroll to the newest log line">
-                    <input type="checkbox" id="autoScrollChk" checked>
-                    Auto-scroll
-                </label>
-                <button class="btn btn-danger" style="padding:4px 10px;font-size:0.75rem;" onclick="clearConsole()">Clear</button>
-            </div>
-            <span id="consoleToggleIcon" style="color:var(--text-muted);font-size:0.8rem;">▼</span>
-        </div>
-        <div id="consoleLog"></div>
+    <div class="section-body">
+        <div id="agentList"></div>
     </div>
+</div>
 
-    <div class="page-footer">
-        <div style="display:flex;gap:8px;">
-            <button id="openCreateAgentBtn" class="btn btn-primary">New Bridge Agent</button>
-            <button id="openApiKeysBtn" class="btn">API Keys</button>
-        </div>
-        <div style="display:flex;gap:8px;">
-            <button class="btn" onclick="disconnectAllAgents()">Disconnect Bridge Agents</button>
-            <button class="btn btn-danger" onclick="confirmShutdown()">Full Shutdown</button>
+<!-- ═══ Profiles ═══ -->
+<div class="section" id="sec-profiles">
+    <div class="section-header" onclick="toggleSec('sec-profiles')">
+        <span class="chevron">▶</span>
+        <h2>Profiles</h2>
+        <span class="count" id="profileCount"></span>
+        <div class="section-actions" onclick="event.stopPropagation()">
+            <button class="btn btn-sm" onclick="newProfile()">+ New</button>
+            <button class="btn btn-sm" onclick="loadProfiles()">Refresh</button>
         </div>
     </div>
-
-    <!-- Create Agent Modal -->
-    <div id="createAgentModal" class="modal-backdrop">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>Create Bridge Agent</h2>
-                <button id="closeCreateAgentBtn" class="modal-close-btn">Close</button>
-            </div>
-            <div class="modal-body">
-                <div id="createAgentSection">
-                    <div id="profileStatus" style="margin:6px 0;color:var(--text-secondary);font-size:0.85rem;">Profile: Not uploaded</div>
-                    <div id="settingsForm"></div>
-                    <div id="createError" style="color:var(--danger);margin-top:12px;font-size:0.85rem;"></div>
-                    <input type="file" id="profileFileInput" accept=".json,application/json" style="display:none">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <div class="footer-left" id="footerStatus">Configure bridge settings, then upload a profile and create the agent.</div>
-                <div class="footer-actions" style="display:flex;gap:8px;">
-                    <button id="uploadProfileBtn" class="btn btn-primary">Upload Profile</button>
-                    <button id="submitCreateAgentBtn" class="btn btn-primary" disabled>Create Bridge Agent</button>
-                </div>
+    <div class="section-body">
+        <div class="profiles-layout">
+            <div class="profile-list" id="profileList"></div>
+            <div class="profile-editor" id="profileEditor">
+                <div class="empty">Select a profile to edit</div>
             </div>
         </div>
     </div>
+</div>
 
-    <!-- Agent Settings Modal -->
-    <div id="agentSettingsModal" class="modal-backdrop">
-        <div class="modal">
-            <div class="modal-header">
-                <h2 id="agentSettingsTitle">Agent Settings</h2>
-                <button id="closeAgentSettingsBtn" class="modal-close-btn">Close</button>
-            </div>
-            <div class="modal-body">
-                <div id="agentSettingsSection">
-                    <div id="agentSettingsForm"></div>
-                    <div class="profile-section">
-                        <div class="profile-section-header" onclick="toggleProfileSection()">
-                            <h3>Profile Settings</h3>
-                            <span class="section-toggle" id="profileSectionToggle">▼ expand</span>
-                        </div>
-                        <div class="profile-fields collapsed" id="profileFields">
-                            <div class="profile-field-row">
-                                <label for="profileApiProvider">API Provider</label>
-                                <select id="profileApiProvider" onchange="onProfileApiChanged()">
-                                    <option value="">(auto-detect from model)</option>
-                                </select>
-                                <div class="field-hint">Select an API provider. Leaving it as "auto-detect" will allow the system to infer the API from the model name.</div>
-                            </div>
-                            <div class="profile-field-row">
-                                <label for="profileModel">Model</label>
-                                <input type="text" id="profileModel" placeholder='e.g. gpt-4o or claude-3-5-sonnet-20241022' oninput="onProfileModelChanged()">
-                                <div class="field-hint" id="profileModelHint">Enter the model name. It will be prefixed with the selected API (e.g. <code>openrouter/gpt-4o</code>).</div>
-                            </div>
-                            <div class="profile-field-row">
-                                <label for="profilePersonality">Personality / Character Description</label>
-                                <textarea id="profilePersonality" rows="3" placeholder="Describe your agent's personality and character here. Injected via $PERSONALITY in the system prompt." oninput="onAgentSettingsChanged()"></textarea>
-                                <div class="field-hint">Add <code>$PERSONALITY</code> to the system prompt below to use this field.</div>
-                            </div>
-                            <div class="profile-field-row">
-                                <label for="profileConversing">System Prompt (conversing template)</label>
-                                <textarea id="profileConversing" rows="8" placeholder="Leave blank to use the default system prompt." oninput="onAgentSettingsChanged()"></textarea>
-                                <div class="field-hint">Available placeholders: <code>$NAME $PERSONALITY $MEMORY $STATS $INVENTORY $COMMAND_DOCS $EXAMPLES $SELF_PROMPT</code></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="agentSettingsError" style="color:var(--danger);margin-top:10px;font-size:0.85rem;"></div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <div class="footer-left" id="agentSettingsFooter">Modify settings then apply to restart the agent.</div>
-                <div class="footer-actions" style="display:flex;gap:8px;">
-                    <button id="discardAgentSettingsBtn" class="btn">Discard Changes</button>
-                    <button id="applyAgentSettingsBtn" class="btn btn-primary" disabled>Apply & Restart</button>
-                </div>
-            </div>
+<!-- ═══ Startup Profiles ═══ -->
+<div class="section" id="sec-startup">
+    <div class="section-header" onclick="toggleSec('sec-startup')">
+        <span class="chevron">▶</span>
+        <h2>Startup Profiles</h2>
+        <span class="count muted">toggle which load at boot</span>
+    </div>
+    <div class="section-body">
+        <div class="startup-list" id="startupList"></div>
+    </div>
+</div>
+
+<!-- ═══ API Keys ═══ -->
+<div class="section" id="sec-keys">
+    <div class="section-header" onclick="toggleSec('sec-keys')">
+        <span class="chevron">▶</span>
+        <h2>API Keys</h2>
+        <div class="section-actions" onclick="event.stopPropagation()">
+            <button class="btn btn-sm" onclick="loadApiKeys()">Refresh</button>
         </div>
     </div>
-
-    <!-- Important Memory Modal -->
-    <div id="importantMemoryModal" class="modal-backdrop" style="display:none;">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>Edit Pinned Facts</h2>
-                <button id="closeImportantMemoryBtn" class="modal-close-btn">Close</button>
-            </div>
-            <div class="modal-body">
-                <div class="profile-field-row">
-                    <label for="importantMemoryTextarea">Pinned facts / important memory</label>
-                    <textarea id="importantMemoryTextarea" rows="10" style="width:100%;font-family:var(--font-mono);white-space:pre-wrap;"></textarea>
-                </div>
-                <div style="margin-top:10px; font-size:0.9rem; color:var(--text-secondary);">
-                    Select any lines or text and click Delete Selected to remove them. Then click Save to update the agent's pinned facts.
-                </div>
-            </div>
-            <div class="modal-footer">
-                <div class="footer-left">Edit the pinned facts and save the updated memory for this agent.</div>
-                <div class="footer-actions" style="display:flex;gap:8px;">
-                    <button id="deleteSelectedMemoryBtn" class="btn btn-danger">Delete Selected</button>
-                    <button id="clearImportantMemoryBtn" class="btn">Clear All</button>
-                    <button id="saveImportantMemoryBtn" class="btn btn-primary">Save</button>
-                </div>
-            </div>
+    <div class="section-body">
+        <div id="keyList"></div>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-primary btn-sm" onclick="saveApiKeys()">Save Keys</button>
+            <span id="keyStatus" class="muted" style="font-size:12px;"></span>
         </div>
     </div>
+</div>
 
-    <!-- API Keys Modal -->
-    <div id="apiKeysModal" class="modal-backdrop" style="display:none;">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>API Keys</h2>
-                <button id="closeApiKeysBtn" class="modal-close-btn">Close</button>
-            </div>
-            <div class="modal-body">
-                <p style="color:var(--text-muted);font-size:0.8rem;margin-top:0;">Keys are stored in <code>keys.json</code> (gitignored). Only masked values are shown — keys are never returned in plain text.</p>
-                <div id="apiKeysList" style="margin-top:14px;"></div>
-                <div id="apiKeysStatus" style="margin-top:10px;font-size:0.8rem;"></div>
-            </div>
-            <div class="modal-footer">
-                <div class="footer-left">Set your API keys for the providers you use.</div>
-                <div class="footer-actions" style="display:flex;gap:8px;">
-                    <button id="saveApiKeysBtn" class="btn btn-primary">Save Keys</button>
-                </div>
-            </div>
+<!-- ═══ Console ═══ -->
+<div class="section" id="sec-console">
+    <div class="section-header" onclick="toggleSec('sec-console')">
+        <span class="chevron">▶</span>
+        <h2>Console</h2>
+        <span class="count" id="consoleCount">0 lines</span>
+        <div class="section-actions" onclick="event.stopPropagation()">
+            <label style="font-size:11px;display:flex;align-items:center;gap:3px;">
+                <input type="checkbox" id="autoScroll" checked> auto
+            </label>
+            <button class="btn btn-sm" onclick="clearConsole()">Clear</button>
         </div>
     </div>
+    <div class="section-body">
+        <div id="consoleLog" class="console-log"></div>
+    </div>
+</div>
 
-    <a href="/test-ui.html" style="position:fixed;right:16px;bottom:16px;z-index:1000;display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid rgba(99,102,241,0.45);border-radius:999px;background:rgba(15,23,42,0.92);color:#dbeafe;text-decoration:none;font-size:12px;font-weight:600;box-shadow:0 10px 28px rgba(0,0,0,0.35);">Test UI</a>
+</div><!-- /container -->
 
-    <script>
-        const socket = io({ path: window.location.pathname + 'socket.io' })
-        const agentsDiv = document.getElementById('agents');
-        let settingsSpec = {};
-        let profileData = null;
-        const agentSettings = {};
-        const agentLastMessage = {};
-        const inventoryOpen = {};
-        let currentAgents = [];
+<!-- ═══ Create Agent Modal ═══ -->
+<div class="modal-bg" id="createModal">
+    <div class="modal">
+        <div class="modal-head">
+            <h2>New Agent</h2>
+            <button class="modal-close" onclick="closeCreateModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+                <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()">Upload JSON</button>
+                <button class="btn btn-sm" onclick="showProfilePicker()">From Library</button>
+                <span id="profileStatus" class="muted" style="font-size:12px;">No profile selected</span>
+                <input type="file" id="fileInput" accept=".json" style="display:none;">
+            </div>
+            <div id="profilePicker" style="display:none;margin-bottom:12px;">
+                <select id="profilePickerSelect" style="width:100%;padding:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;">
+                    <option value="">Select...</option>
+                </select>
+            </div>
+            <div id="createForm"></div>
+            <div id="createError" class="error-text" style="margin-top:8px;"></div>
+        </div>
+        <div class="modal-foot">
+            <span class="spacer muted" style="font-size:11px;">Profile saves to profiles/ on disk</span>
+            <button class="btn btn-sm" onclick="closeCreateModal()">Cancel</button>
+            <button class="btn btn-sm btn-primary" id="createBtn" disabled onclick="submitCreate()">Create</button>
+        </div>
+    </div>
+</div>
 
-        const statusEl = document.getElementById('msStatus');
-        function updateStatus(connected) {
-            if (!statusEl) return;
-            if (connected) {
-                statusEl.textContent = 'MindServer online';
-                statusEl.classList.remove('offline');
-                statusEl.classList.add('online');
+<!-- ═══ Memory Modal ═══ -->
+<div class="modal-bg" id="memModal">
+    <div class="modal">
+        <div class="modal-head">
+            <h2>Pinned Facts</h2>
+            <button class="modal-close" onclick="document.getElementById('memModal').classList.remove('active')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <textarea id="memText" style="width:100%;min-height:180px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-mono);font-size:12px;resize:vertical;"></textarea>
+        </div>
+        <div class="modal-foot">
+            <span class="spacer"></span>
+            <button class="btn btn-sm" onclick="document.getElementById('memText').value=''">Clear</button>
+            <button class="btn btn-sm btn-primary" onclick="saveMemory()">Save</button>
+        </div>
+    </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+// ═══ Utilities ═══
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+function toast(msg, type='ok') {
+    const t = document.createElement('div');
+    t.className = `toast ${type}`;
+    t.textContent = msg;
+    document.getElementById('toasts').appendChild(t);
+    setTimeout(() => t.remove(), 3500);
+}
+function toggleSec(id) { document.getElementById(id).classList.toggle('open'); }
+
+// ═══ State ═══
+const socket = io({ path: '/socket.io' });
+let settingsSpec = {};
+let profileData = null;
+let agents = [];
+let agentSettings = {};
+let agentLastMsg = {};
+let currentAgentName = null;
+let allProfiles = [];
+let startupProfiles = [];
+let selectedProfile = null;
+
+// ═══ Socket ═══
+function setConn(connected) {
+    document.getElementById('connDot').className = 'dot ' + (connected ? 'on' : 'off');
+    document.getElementById('connText').textContent = connected ? 'Connected' : 'Offline';
+}
+socket.on('connect', () => { setConn(true); socket.emit('listen-to-agents'); Object.keys(agentSettings).forEach(k => delete agentSettings[k]); });
+socket.on('disconnect', () => setConn(false));
+socket.on('connect_error', () => setConn(false));
+
+fetch('/settings_spec.json').then(r => { if (!r.ok) throw new Error(); return r.json(); })
+    .then(s => { settingsSpec = s; buildCreateForm(); })
+    .catch(() => toast('Failed to load settings schema', 'err'));
+
+// ═══ Section descriptions ═══
+const sectionDesc = {
+    'General': 'Core', 'Bridge': 'Bridge', 'Proactive Behavior': 'Proactive',
+    'Conversation': 'Conversation', 'Topography': 'Topography',
+    'Chat Filters': 'Chat Filters', 'Advanced': 'Advanced'
+};
+
+// ═══ Settings form builder ═══
+function renderSettings(container, idPrefix, values, onChange) {
+    container.innerHTML = '';
+    const groups = {};
+    const order = [];
+    Object.keys(settingsSpec).forEach(key => {
+        if (key === 'profile') return;
+        const cfg = settingsSpec[key];
+        const sec = cfg.section || 'General';
+        if (!groups[sec]) { groups[sec] = []; order.push(sec); }
+        groups[sec].push(key);
+    });
+    const prefOrder = ['General','Bridge','Proactive Behavior','Conversation','Topography','Chat Filters','Advanced'];
+    const secOrder = [...prefOrder.filter(s => groups[s]), ...order.filter(s => !prefOrder.includes(s))];
+    secOrder.forEach(secName => {
+        const wrap = document.createElement('div');
+        wrap.style.marginBottom = '10px';
+        const h = document.createElement('div');
+        h.style.fontSize = '12px'; h.style.fontWeight = '600'; h.style.color = 'var(--text-secondary)';
+        h.style.marginBottom = '6px'; h.textContent = secName;
+        wrap.appendChild(h);
+        const grid = document.createElement('div');
+        grid.className = 'settings-grid';
+        groups[secName].forEach(key => grid.appendChild(buildRow(key, idPrefix, values, onChange)));
+        wrap.appendChild(grid);
+        container.appendChild(wrap);
+    });
+}
+
+function buildRow(key, idPrefix, values, onChange) {
+    const cfg = settingsSpec[key];
+    const row = document.createElement('div');
+    row.className = 'setting-row';
+    if (cfg.type === 'array' || cfg.type === 'object' || (typeof values?.[key] === 'string' && values[key].length > 30)) row.classList.add('full');
+    const label = document.createElement('label');
+    label.textContent = key;
+    const currentVal = values && Object.prototype.hasOwnProperty.call(values, key) ? values[key] : cfg.default;
+    let input;
+    switch (cfg.type) {
+        case 'boolean': input = document.createElement('input'); input.type = 'checkbox'; input.checked = Boolean(currentVal); break;
+        case 'number': input = document.createElement('input'); input.type = 'number'; input.value = currentVal ?? 0; break;
+        default:
+            if (Array.isArray(cfg.options) && cfg.options.length) {
+                input = document.createElement('select');
+                cfg.options.forEach(o => { const opt = document.createElement('option'); opt.value = String(o); opt.textContent = String(o); input.appendChild(opt); });
+                input.value = String(currentVal ?? '');
             } else {
-                statusEl.textContent = 'MindServer offline';
-                statusEl.classList.remove('online');
-                statusEl.classList.add('offline');
+                input = document.createElement('input'); input.type = 'text';
+                input.value = typeof currentVal === 'object' ? JSON.stringify(currentVal) : (currentVal ?? '');
             }
-        }
-        function subscribeToState() {
-            socket.emit('listen-to-agents');
-        }
-        updateStatus(false);
-        socket.on('connect', () => {
-            updateStatus(true);
-            subscribeToState();
-            Object.keys(agentSettings).forEach(name => delete agentSettings[name]);
-        });
-        socket.on('disconnect', () => { updateStatus(false); });
-        socket.on('connect_error', () => { updateStatus(false); });
+    }
+    input.id = `${idPrefix}-${key}`;
+    input.title = cfg.description || '';
+    if (onChange) { input.addEventListener('input', onChange); if (input.type === 'checkbox') input.addEventListener('change', onChange); }
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+}
 
-        fetch('/settings_spec.json')
-            .then(r => r.json())
-            .then(spec => { settingsSpec = spec; buildSettingsForm(); });
+function buildCreateForm() {
+    const f = document.getElementById('createForm');
+    if (f) renderSettings(f, 'setting', {}, null);
+}
 
-        /**
-         * Shared settings renderer used by both the create-agent and
-         * per-agent-settings modals. Groups settings by their `section`
-         * metadata (falling back to "General"). Returns nothing — writes
-         * directly into the target container.
-         *
-         * @param {HTMLElement} container    target DOM node
-         * @param {string} idPrefix          "setting" | "agent-setting"
-         * @param {object} values            initial values per setting key
-         * @param {function} onChange        optional change callback
-         */
-        function renderSettingsSections(container, idPrefix, values, onChange) {
+// ═══ Create agent ═══
+function openCreateModal() {
+    document.getElementById('createModal').classList.add('active');
+    document.getElementById('createError').textContent = '';
+    document.getElementById('profileStatus').textContent = 'No profile selected';
+    document.getElementById('createBtn').disabled = true;
+    document.getElementById('profilePicker').style.display = 'none';
+    profileData = null;
+}
+function closeCreateModal() { document.getElementById('createModal').classList.remove('active'); }
+
+document.getElementById('fileInput').addEventListener('change', e => {
+    const file = e.target.files[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = ev => {
+        try {
+            profileData = JSON.parse(ev.target.result);
+            document.getElementById('createBtn').disabled = false;
+            document.getElementById('profileStatus').textContent = `Profile: ${profileData.name || 'uploaded'}`;
+            document.getElementById('createError').textContent = '';
+        } catch (err) {
+            document.getElementById('createError').textContent = 'Invalid JSON: ' + err.message;
+            profileData = null; document.getElementById('createBtn').disabled = true;
+        }
+    };
+    r.readAsText(file); e.target.value = '';
+});
+
+async function showProfilePicker() {
+    const div = document.getElementById('profilePicker');
+    const sel = document.getElementById('profilePickerSelect');
+    div.style.display = '';
+    sel.innerHTML = '<option value="">Select...</option>';
+    try {
+        const res = await fetch('/api/profiles');
+        const list = await res.json();
+        list.forEach(p => { const o = document.createElement('option'); o.value = p.path; o.textContent = `${p.name} (${p.model})`; sel.appendChild(o); });
+    } catch (e) { toast('Failed to load profiles', 'err'); }
+}
+
+document.getElementById('profilePickerSelect').addEventListener('change', async e => {
+    const p = e.target.value; if (!p) { profileData = null; document.getElementById('createBtn').disabled = true; return; }
+    try {
+        const name = p.replace('./profiles/', '').replace('.json', '').replace('./', '');
+        const res = await fetch(`/api/profiles/${name}`);
+        if (!res.ok) throw new Error('not found');
+        profileData = await res.json();
+        document.getElementById('createBtn').disabled = false;
+        document.getElementById('profileStatus').textContent = `Profile: ${profileData.name || name}`;
+        document.getElementById('createError').textContent = '';
+    } catch (err) {
+        document.getElementById('createError').textContent = 'Load failed: ' + err.message;
+        profileData = null; document.getElementById('createBtn').disabled = true;
+    }
+});
+
+function submitCreate() {
+    if (!profileData) return;
+    const s = { profile: profileData };
+    Object.keys(settingsSpec).forEach(key => {
+        if (key === 'profile') return;
+        const input = document.getElementById(`setting-${key}`); if (!input) return;
+        const t = settingsSpec[key].type;
+        if (t === 'boolean') s[key] = input.checked;
+        else if (t === 'number') s[key] = Number(input.value);
+        else if (t === 'array' || t === 'object') { try { s[key] = JSON.parse(input.value); } catch { s[key] = input.value; } }
+        else s[key] = input.value;
+    });
+    socket.emit('create-agent', s, r => {
+        if (r && r.success) { closeCreateModal(); toast(`Agent '${s.profile.name}' created & saved to disk`); }
+        else document.getElementById('createError').textContent = r ? r.error : 'Unknown error';
+    });
+}
+
+// ═══ Agent cards ═══
+function renderAgentCard(agent) {
+    const name = esc(agent.name);
+    const last = esc(agentLastMsg[agent.name] || '');
+    const expanded = agent._expanded ? 'expanded' : '';
+    return `<div class="agent-card ${expanded}" id="agent-${name}">
+        <div class="agent-top" onclick="toggleAgent('${name}')">
+            <span class="dot ${agent.in_game ? 'on' : 'off'}"></span>
+            <span class="agent-name">${name}</span>
+            <span class="agent-status-text">${esc(agentLastMsg[agent.name] || (agent.socket_connected && !agent.in_game ? 'joining...' : ''))}</span>
+        </div>
+        <div class="agent-detail">
+            <div class="agent-stats">
+                <div class="stat"><div class="stat-label">Health</div><div class="stat-value" id="hp-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Hunger</div><div class="stat-value" id="hg-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Position</div><div class="stat-value" id="pos-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Biome</div><div class="stat-value" id="bio-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Mode</div><div class="stat-value" id="gm-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Items</div><div class="stat-value" id="inv-${name}">-</div></div>
+            </div>
+            <div class="agent-controls">
+                <input type="text" id="msg-${name}" placeholder="Message..." oninput="document.getElementById('send-${name}').disabled=!this.value.trim()" onkeydown="if(event.key==='Enter')sendMsg('${name}')" ${!agent.in_game?'disabled':''}>
+                <button class="btn btn-sm btn-primary" id="send-${name}" disabled onclick="sendMsg('${name}')">Send</button>
+                <button class="btn btn-sm" onclick="socket.emit('send-message','${name}',{from:'ADMIN',message:'!stop'})" ${!agent.in_game?'disabled':''}>Stop</button>
+                <button class="btn btn-sm" onclick="socket.emit('restart-agent','${name}')" ${!agent.in_game?'disabled':''}>Restart</button>
+                <button class="btn btn-sm" onclick="socket.emit('clear-agent-memory','${name}',false)" ${!agent.in_game?'disabled':''}>Clear</button>
+                <button class="btn btn-sm" onclick="socket.emit('compact-agent-memory','${name}','manual')" ${!agent.in_game?'disabled':''}>Compact</button>
+                <button class="btn btn-sm" onclick="editMemory('${name}')" ${!agent.in_game?'disabled':''}>Pins</button>
+                <button class="btn btn-sm" onclick="socket.emit('stop-agent','${name}')" ${!agent.in_game?'disabled':''}>${agent.in_game?'Disconnect':'Connect'}</button>
+                <button class="btn btn-sm btn-danger" onclick="socket.emit('destroy-agent','${name}')">Remove</button>
+            </div>
+            <div class="agent-inventory" id="invGrid-${name}"></div>
+            <div class="inline-settings" id="settings-${name}"></div>
+        </div>
+    </div>`;
+}
+
+function toggleAgent(name) {
+    const agent = agents.find(a => a.name === name); if (!agent) return;
+    agent._expanded = !agent._expanded;
+    const card = document.getElementById(`agent-${esc(name)}`);
+    if (card) card.classList.toggle('expanded');
+    if (agent._expanded) loadAgentSettings(name);
+}
+
+socket.on('agents-status', async (list) => {
+    const prev = agents.reduce((a, x) => ({ ...a, [x.name]: x }), {});
+    agents = list.map(a => ({ ...a, _expanded: prev[a.name]?._expanded || false }));
+    document.getElementById('agentCount').textContent = agents.length ? `(${agents.length})` : '';
+    const container = document.getElementById('agentList');
+    if (!agents.length) { container.innerHTML = '<div class="empty">No agents. Click "+ New" to create one.</div>'; return; }
+    container.innerHTML = agents.map(renderAgentCard).join('');
+});
+
+socket.on('state-update', (states) => {
+    Object.entries(states).forEach(([name, st]) => {
+        if (!st || st.error) return;
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        const g = st.gameplay || st; // bridge agents nest vitals under `gameplay`
+        set(`hp-${name}`, g.health != null ? `${g.health}/20` : '-');
+        set(`hg-${name}`, g.hunger != null ? `${g.hunger}/20` : '-');
+        set(`pos-${name}`, g.position ? `${Math.round(g.position.x)},${Math.round(g.position.y)},${Math.round(g.position.z)}` : '-');
+        set(`bio-${name}`, g.biome || '-');
+        set(`gm-${name}`, g.gameMode || g.gamemode || '-');
+        set(`inv-${name}`, st.inventory ? `${st.inventory.stacksUsed||0}/36` : '-');
+        const inv = document.getElementById(`invGrid-${name}`);
+        if (inv && st.inventory?.counts) {
+            inv.innerHTML = Object.keys(st.inventory.counts).length ?
+                Object.entries(st.inventory.counts).map(([k,v]) => `<div class="inv-item">${esc(k)}:${esc(v)}</div>`).join('') : '';
+        }
+    });
+});
+
+socket.on('bot-output', (agentName, msg) => {
+    appendLog(agentName, msg);
+    if (agentName && agents.find(a => a.name === agentName)) {
+        agentLastMsg[agentName] = msg;
+        const card = document.getElementById(`agent-${esc(agentName)}`);
+        if (card) { const st = card.querySelector('.agent-status-text'); if (st) st.textContent = esc(msg); }
+    }
+});
+
+// ═══ Agent controls ═══
+function sendMsg(name) {
+    const input = document.getElementById(`msg-${esc(name)}`); if (!input || !input.value.trim()) return;
+    socket.emit('send-message', name, { from: 'ADMIN', message: input.value });
+    input.value = '';
+    document.getElementById(`send-${esc(name)}`).disabled = true;
+}
+function editMemory(name) {
+    currentAgentName = name;
+    const modal = document.getElementById('memModal');
+    const ta = document.getElementById('memText');
+    modal.classList.add('active'); ta.value = 'Loading...';
+    socket.emit('get-agent-memory', name, r => { ta.value = (r && r.success) ? (r.memory || '') : ''; });
+}
+function saveMemory() {
+    if (!currentAgentName) return;
+    socket.emit('set-important-memory', currentAgentName, document.getElementById('memText').value);
+    document.getElementById('memModal').classList.remove('active');
+    toast('Pinned facts saved');
+}
+
+// ═══ Inline agent settings ═══
+async function loadAgentSettings(name) {
+    const container = document.getElementById(`settings-${esc(name)}`);
+    if (!container) return;
+    container.innerHTML = 'Loading...';
+    return new Promise(resolve => {
+        socket.emit('get-settings', name, async (res) => {
+            if (!res || !res.settings) { container.innerHTML = '<span class="muted">No settings</span>'; resolve(); return; }
+            const settings = res.settings;
+            agentSettings[name] = settings;
             container.innerHTML = '';
+            // Profile fields
+            const prof = settings.profile || {};
+            const profDiv = document.createElement('div');
+            profDiv.innerHTML = `<h4>Profile</h4>`;
+            const grid = document.createElement('div');
+            grid.className = 'settings-grid';
+            // API provider
+            const apiRow = document.createElement('div');
+            apiRow.className = 'setting-row';
+            apiRow.innerHTML = '<label>API Provider</label>';
+            const apiSel = document.createElement('select');
+            apiSel.id = `api-${esc(name)}`;
+            apiSel.innerHTML = '<option value="">(none)</option>';
+            try { const r = await fetch('/api/model_prefixes'); if (r.ok) { const ps = await r.json(); ps.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; apiSel.appendChild(o); }); } } catch {}
+            const modelStr = typeof prof.model === 'object' ? JSON.stringify(prof.model) : (prof.model || '');
+            const slash = modelStr.indexOf('/');
+            if (slash > 0) { const prefix = modelStr.substring(0, slash); if (Array.from(apiSel.options).some(o => o.value === prefix)) { apiSel.value = prefix; } }
+            apiSel.onchange = () => updateHint(name);
+            apiRow.appendChild(apiSel);
+            grid.appendChild(apiRow);
+            // Model
+            const modelRow = document.createElement('div');
+            modelRow.className = 'setting-row';
+            const modelLabel = document.createElement('label'); modelLabel.textContent = 'Model';
+            const modelInput = document.createElement('input'); modelInput.type = 'text';
+            modelInput.id = `model-${esc(name)}`;
+            modelInput.value = slash > 0 && apiSel.value ? modelStr.substring(slash + 1) : modelStr;
+            modelInput.oninput = () => updateHint(name);
+            modelRow.appendChild(modelLabel); modelRow.appendChild(modelInput);
+            grid.appendChild(modelRow);
+            // Personality
+            const persRow = document.createElement('div'); persRow.className = 'setting-row full';
+            persRow.innerHTML = '<label>Personality</label>';
+            const persTa = document.createElement('textarea'); persTa.id = `pers-${esc(name)}`; persTa.value = prof.personality || '';
+            persRow.appendChild(persTa);
+            grid.appendChild(persRow);
+            // Conversing
+            const convRow = document.createElement('div'); convRow.className = 'setting-row full';
+            convRow.innerHTML = '<label>Conversing</label>';
+            const convTa = document.createElement('textarea'); convTa.id = `conv-${esc(name)}`; convTa.value = prof.conversing || '';
+            convRow.appendChild(convTa);
+            grid.appendChild(convRow);
+            profDiv.appendChild(grid);
+            container.appendChild(profDiv);
+            // Hint
+            const hint = document.createElement('div'); hint.id = `hint-${esc(name)}`; hint.className = 'settings-desc'; hint.style.marginBottom = '8px';
+            profDiv.appendChild(hint);
+            updateHint(name);
+            // Other settings
+            const otherDiv = document.createElement('div');
+            otherDiv.id = `other-settings-${esc(name)}`;
+            renderSettings(otherDiv, `as-${esc(name)}`, settings, null);
+            container.appendChild(otherDiv);
+            // Save button
+            const btnRow = document.createElement('div');
+            btnRow.style.marginTop = '8px';
+            btnRow.style.display = 'flex';
+            btnRow.style.gap = '6px';
+            btnRow.style.alignItems = 'center';
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-sm btn-primary'; saveBtn.textContent = 'Save to Disk & Restart';
+            saveBtn.onclick = () => saveAgentSettings(name);
+            const status = document.createElement('span'); status.id = `saveStatus-${esc(name)}`; status.className = 'muted'; status.style.fontSize = '12px';
+            btnRow.appendChild(saveBtn); btnRow.appendChild(status);
+            container.appendChild(btnRow);
+            resolve();
+        });
+    });
+}
 
-            // Group spec entries by section (preserving original key order)
-            const defaultSection = 'General';
-            const groups = {};
-            const order = [];
-            Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return;
-                const cfg = settingsSpec[key];
-                const section = cfg.section || defaultSection;
-                if (!groups[section]) {
-                    groups[section] = [];
-                    order.push(section);
-                }
-                groups[section].push(key);
-            });
+function updateHint(name) {
+    const api = document.getElementById(`api-${esc(name)}`)?.value || '';
+    const model = document.getElementById(`model-${esc(name)}`)?.value || '';
+    const hint = document.getElementById(`hint-${esc(name)}`);
+    if (hint) hint.textContent = api ? `→ ${api}/${model || '<model>'}` : '';
+}
 
-            // Sensible section ordering: put Bridge-related stuff up top, then
-            // behavior toggles, then misc, then advanced. Anything we don't
-            // know about appends at the end in spec order.
-            const preferredOrder = [
-                'General', 'Bridge', 'Proactive Behavior', 'Conversation',
-                'Topography', 'Chat Filters', 'Advanced'
-            ];
-            const sectionOrder = [
-                ...preferredOrder.filter(s => groups[s]),
-                ...order.filter(s => !preferredOrder.includes(s))
-            ];
+function saveAgentSettings(name) {
+    const settings = agentSettings[name] || {};
+    const prof = settings.profile || {};
+    const api = document.getElementById(`api-${esc(name)}`)?.value || '';
+    const modelRaw = document.getElementById(`model-${esc(name)}`)?.value || '';
+    const effective = api ? `${api}/${modelRaw}` : modelRaw;
+    try { prof.model = JSON.parse(effective); } catch { prof.model = effective || prof.model; }
+    prof.personality = document.getElementById(`pers-${esc(name)}`)?.value;
+    const conv = document.getElementById(`conv-${esc(name)}`)?.value;
+    prof.conversing = conv || undefined;
+    const newSettings = { profile: prof };
+    Object.keys(settingsSpec).forEach(key => {
+        if (key === 'profile') return;
+        const input = document.getElementById(`as-${esc(name)}-${key}`); if (!input) return;
+        const t = settingsSpec[key].type;
+        if (t === 'boolean') newSettings[key] = input.checked;
+        else if (t === 'number') newSettings[key] = Number(input.value);
+        else if (t === 'array' || t === 'object') { try { newSettings[key] = JSON.parse(input.value); } catch { newSettings[key] = input.value; } }
+        else newSettings[key] = input.value;
+    });
+    const status = document.getElementById(`saveStatus-${esc(name)}`);
+    status.textContent = 'Saving...'; status.style.color = 'var(--text-muted)';
+    socket.emit('set-agent-settings', name, newSettings, (r) => {
+        if (r && r.success) { status.textContent = 'Saved & restarting'; status.style.color = 'var(--success)'; toast(`Settings saved for '${name}'`); setTimeout(() => status.textContent = '', 3000); }
+        else { status.textContent = r ? r.error : 'Failed'; status.style.color = 'var(--danger)'; toast(r?.error || 'Save failed', 'err'); }
+    });
+}
 
-            sectionOrder.forEach(sectionName => {
-                const section = document.createElement('div');
-                section.className = 'setting-section';
+// ═══ Console ═══
+let logCount = 0;
+function appendLog(agentName, msg) {
+    const log = document.getElementById('consoleLog');
+    const ts = new Date().toTimeString().slice(0, 8);
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    line.innerHTML = `<span class="log-ts">[${ts}]</span>${agentName ? `<span class="log-agent">[${esc(agentName)}]</span>` : ''}`;
+    line.appendChild(document.createTextNode(msg));
+    log.appendChild(line);
+    if (++logCount > 500) { log.removeChild(log.firstChild); logCount--; }
+    document.getElementById('consoleCount').textContent = `${logCount} lines`;
+    if (document.getElementById('autoScroll').checked) log.scrollTop = log.scrollHeight;
+}
+function clearConsole() { document.getElementById('consoleLog').innerHTML = ''; logCount = 0; document.getElementById('consoleCount').textContent = '0 lines'; }
 
-                const header = document.createElement('div');
-                header.className = 'setting-section-header';
-                const title = document.createElement('h3');
-                title.textContent = sectionName;
-                header.appendChild(title);
+// ═══ Profiles ═══
+async function loadProfiles() {
+    try {
+        const res = await fetch('/api/profiles'); if (!res.ok) throw new Error();
+        allProfiles = await res.json();
+        document.getElementById('profileCount').textContent = `(${allProfiles.length})`;
+        renderProfileList();
+        loadStartupProfiles();
+    } catch (e) { toast('Failed to load profiles', 'err'); }
+}
 
-                const sub = document.createElement('span');
-                sub.className = 'section-sub';
-                sub.textContent = sectionDescriptions[sectionName] || '';
-                header.appendChild(sub);
+function renderProfileList() {
+    const list = document.getElementById('profileList');
+    if (!allProfiles.length) { list.innerHTML = '<div class="empty">No profiles</div>'; return; }
+    list.innerHTML = allProfiles.map(p => `
+        <div class="profile-item ${selectedProfile === p.name ? 'active' : ''}" onclick="selectProfile('${esc(p.name)}')">
+            <div style="flex:1;min-width:0">
+                <div class="profile-name">${esc(p.name)}</div>
+                <div class="profile-model">${esc(p.model)}</div>
+            </div>
+            ${startupProfiles.includes(p.path) ? '<span class="profile-badge">boot</span>' : ''}
+        </div>`).join('');
+}
 
-                const toggle = document.createElement('span');
-                toggle.className = 'section-toggle';
-                toggle.textContent = '▼';
-                header.appendChild(toggle);
+async function selectProfile(name) {
+    selectedProfile = name;
+    renderProfileList();
+    try {
+        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const data = await res.json();
+        const running = agents.some(a => a.name === data.name);
+        document.getElementById('profileEditor').innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <strong style="flex:1;font-size:14px">${esc(name)}</strong>
+                <button class="btn btn-sm" onclick="cloneProfile('${esc(name)}')">Clone</button>
+                <button class="btn btn-sm" onclick="launchProfile('${esc(name)}')" ${running?'disabled':''}>Launch</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteProfile('${esc(name)}')" ${running?'disabled':''}>Delete</button>
+            </div>
+            <textarea id="profJson">${esc(JSON.stringify(data, null, 2))}</textarea>
+            <div class="profile-editor-actions">
+                <button class="btn btn-sm btn-primary" onclick="saveProfile('${esc(name)}')">Save to Disk</button>
+                <span id="profSaveStatus" class="muted" style="font-size:12px;"></span>
+            </div>`;
+    } catch (e) { toast('Load failed', 'err'); }
+}
 
-                const body = document.createElement('div');
-                body.className = 'setting-section-body';
+async function saveProfile(name) {
+    const ta = document.getElementById('profJson'); if (!ta) return;
+    const status = document.getElementById('profSaveStatus');
+    let parsed;
+    try { parsed = JSON.parse(ta.value); } catch (e) { status.textContent = 'Invalid JSON: ' + e.message; status.style.color = 'var(--danger)'; return; }
+    try {
+        const res = await fetch(`/api/profiles/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+        const r = await res.json();
+        if (res.ok && r.success) { status.textContent = 'Saved'; status.style.color = 'var(--success)'; toast(`Profile '${name}' saved`); loadProfiles(); }
+        else { status.textContent = r.error || 'Failed'; status.style.color = 'var(--danger)'; toast(r?.error || 'Save failed', 'err'); }
+    } catch (e) { status.textContent = e.message; status.style.color = 'var(--danger)'; }
+}
 
-                header.addEventListener('click', () => {
-                    body.classList.toggle('collapsed');
-                    toggle.textContent = body.classList.contains('collapsed') ? '▶' : '▼';
-                });
+function newProfile() {
+    selectedProfile = null; renderProfileList();
+    const tmpl = { name: 'new_profile', model: 'lmstudio/model-name', personality: 'You are a helpful assistant.' };
+    document.getElementById('profileEditor').innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <strong style="flex:1;font-size:14px">New Profile</strong>
+            <button class="btn btn-sm btn-primary" onclick="createProfile()">Create</button>
+        </div>
+        <textarea id="profJson">${esc(JSON.stringify(tmpl, null, 2))}</textarea>
+        <span id="profSaveStatus" class="muted" style="font-size:12px;"></span>`;
+}
 
-                groups[sectionName].forEach(key => {
-                    body.appendChild(buildSettingRow(key, idPrefix, values, onChange));
-                });
+async function createProfile() {
+    const ta = document.getElementById('profJson'); if (!ta) return;
+    const status = document.getElementById('profSaveStatus');
+    let parsed;
+    try { parsed = JSON.parse(ta.value); } catch (e) { status.textContent = 'Invalid JSON: ' + e.message; status.style.color = 'var(--danger)'; return; }
+    try {
+        const res = await fetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+        const r = await res.json();
+        if (res.ok && r.success) { toast(`Profile '${parsed.name}' created`); loadProfiles(); selectProfile(parsed.name); }
+        else { status.textContent = r.error || 'Failed'; status.style.color = 'var(--danger)'; toast(r?.error || 'Failed', 'err'); }
+    } catch (e) { status.textContent = e.message; status.style.color = 'var(--danger)'; }
+}
 
-                section.appendChild(header);
-                section.appendChild(body);
-                container.appendChild(section);
-            });
-        }
+async function cloneProfile(name) {
+    try {
+        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const data = await res.json(); data.name = name + '_copy';
+        document.getElementById('profileEditor').innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <strong style="flex:1;font-size:14px">Clone → ${esc(data.name)}</strong>
+                <button class="btn btn-sm btn-primary" onclick="createProfile()">Save Clone</button>
+            </div>
+            <textarea id="profJson">${esc(JSON.stringify(data, null, 2))}</textarea>
+            <span id="profSaveStatus" class="muted" style="font-size:12px;"></span>`;
+    } catch (e) { toast('Clone failed', 'err'); }
+}
 
-        const sectionDescriptions = {
-            'General': 'Core agent identity and memory.',
-            'Bridge': 'Fabric bridge connection and command pipeline.',
-            'Proactive Behavior': 'Self-initiated chatter and world-event reactions.',
-            'Conversation': 'Persona, prompts, examples, and chat behavior.',
-            'Topography': 'Surface-map injection for navigation-aware prompting.',
-            'Chat Filters': 'Whitelist / blacklist for incoming game chat.',
-            'Advanced': 'Rarely touched tuning knobs.'
-        };
+async function deleteProfile(name) {
+    if (!confirm(`Delete '${name}'?`)) return;
+    try {
+        const res = await fetch(`/api/profiles/${name}`, { method: 'DELETE' });
+        const r = await res.json();
+        if (res.ok && r.success) { toast(`Deleted '${name}'`); selectedProfile = null; document.getElementById('profileEditor').innerHTML = '<div class="empty">Select a profile to edit</div>'; loadProfiles(); }
+        else toast(r?.error || 'Delete failed', 'err');
+    } catch (e) { toast('Delete failed', 'err'); }
+}
 
-        function buildSettingRow(key, idPrefix, values, onChange) {
-            const cfg = settingsSpec[key];
+async function launchProfile(name) {
+    try {
+        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const prof = await res.json();
+        socket.emit('create-agent', { profile: prof, launch_mode: 'fabric_ui' }, (r) => {
+            if (r && r.success) { toast(`Agent '${prof.name}' launched`); toggleSec('sec-agents'); document.getElementById('sec-agents').classList.add('open'); }
+            else toast(r?.error || 'Launch failed', 'err');
+        });
+    } catch (e) { toast('Launch failed', 'err'); }
+}
+
+// ═══ Startup profiles ═══
+async function loadStartupProfiles() {
+    try {
+        const res = await fetch('/api/startup-profiles'); if (!res.ok) return;
+        startupProfiles = await res.json();
+        renderStartupList(); renderProfileList();
+    } catch (e) {}
+}
+
+function renderStartupList() {
+    const container = document.getElementById('startupList');
+    if (!allProfiles.length) { container.innerHTML = '<div class="empty">Open Profiles section first to load the list</div>'; return; }
+    container.innerHTML = allProfiles.map(p => {
+        const on = startupProfiles.includes(p.path);
+        return `<div class="startup-item">
+            <span class="path">${esc(p.path)}</span>
+            <span class="info">${esc(p.name)}</span>
+            <div class="toggle ${on?'on':''}" onclick="toggleStartup('${esc(p.path)}')"></div>
+        </div>`;
+    }).join('');
+}
+
+async function toggleStartup(path) {
+    const updated = startupProfiles.includes(path) ? startupProfiles.filter(p => p !== path) : [...startupProfiles, path];
+    try {
+        const res = await fetch('/api/startup-profiles', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+        const r = await res.json();
+        if (res.ok && r.success) { startupProfiles = updated; renderStartupList(); renderProfileList(); toast('Startup profiles updated — restart to apply'); }
+        else toast(r?.error || 'Failed', 'err');
+    } catch (e) { toast('Failed', 'err'); }
+}
+
+// ═══ API Keys ═══
+async function loadApiKeys() {
+    const list = document.getElementById('keyList');
+    list.innerHTML = '<span class="muted">Loading...</span>';
+    try {
+        const res = await fetch('/api/keys'); if (!res.ok) throw new Error();
+        const data = await res.json();
+        list.innerHTML = '';
+        Object.keys(data).sort().forEach(k => {
+            const info = data[k];
             const row = document.createElement('div');
-            row.className = 'setting-row';
-
-            const top = document.createElement('div');
-            top.className = 'setting-top';
-
-            const label = document.createElement('label');
-            label.textContent = key;
-            label.htmlFor = `${idPrefix}-${key}`;
-            top.appendChild(label);
-
-            let input;
-            const currentVal = values && Object.prototype.hasOwnProperty.call(values, key)
-                ? values[key]
-                : cfg.default;
-
-            switch (cfg.type) {
-                case 'boolean':
-                    input = document.createElement('input');
-                    input.type = 'checkbox';
-                    input.checked = Boolean(currentVal);
-                    break;
-                case 'number':
-                    input = document.createElement('input');
-                    input.type = 'number';
-                    input.value = currentVal ?? 0;
-                    break;
-                default:
-                    if (Array.isArray(cfg.options) && cfg.options.length > 0) {
-                        input = document.createElement('select');
-                        cfg.options.forEach(opt => {
-                            const optionEl = document.createElement('option');
-                            optionEl.value = String(opt);
-                            optionEl.textContent = String(opt);
-                            input.appendChild(optionEl);
-                        });
-                        input.value = String(currentVal ?? '');
-                    } else {
-                        input = document.createElement('input');
-                        input.type = 'text';
-                        input.value = typeof currentVal === 'object'
-                            ? JSON.stringify(currentVal)
-                            : (currentVal ?? '');
-                        // Array/object inputs and long text fields get the full row
-                        if (cfg.type === 'array' || cfg.type === 'object') {
-                            row.classList.add('setting-row-wide');
-                        } else if (typeof currentVal === 'string' && currentVal.length > 30) {
-                            row.classList.add('setting-row-wide');
-                        }
-                    }
-            }
-
-            input.id = `${idPrefix}-${key}`;
-            input.title = cfg.description || '';
-            if (onChange) {
-                input.addEventListener('input', onChange);
-                if (input.type === 'checkbox') input.addEventListener('change', onChange);
-            }
-            top.appendChild(input);
-            row.appendChild(top);
-
-            if (cfg.description) {
-                const desc = document.createElement('div');
-                desc.className = 'setting-desc';
-                desc.textContent = cfg.description;
-                row.appendChild(desc);
-            }
-
-            return row;
-        }
-
-        function buildSettingsForm() {
-            const form = document.getElementById('settingsForm');
-            renderSettingsSections(form, 'setting', {}, null);
-        }
-
-        document.getElementById('uploadProfileBtn').addEventListener('click', () => {
-            document.getElementById('profileFileInput').click();
+            row.className = 'key-row';
+            row.innerHTML = `<span class="key-label">${esc(k)}</span><input type="password" id="key-${esc(k)}" placeholder="${info.set?'(unchanged)':'Enter...'}"><span class="key-status" style="color:${info.set?'var(--success)':'var(--danger)'}">${info.set?`set (${info.mask})`:'not set'}</span>`;
+            list.appendChild(row);
         });
+    } catch (e) { list.innerHTML = '<span class="error-text">Failed to load</span>'; }
+}
 
-        document.getElementById('profileFileInput').addEventListener('change', e => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = ev => {
-                try {
-                    profileData = JSON.parse(ev.target.result);
-                    document.getElementById('submitCreateAgentBtn').disabled = false;
-                    document.getElementById('profileStatus').textContent = `Profile: ${profileData.name || 'Uploaded'}`;
-                    document.getElementById('createError').textContent = '';
-                } catch (err) {
-                    document.getElementById('createError').textContent = 'Invalid profile JSON: ' + err.message;
-                    profileData = null;
-                    document.getElementById('submitCreateAgentBtn').disabled = true;
-                    document.getElementById('profileStatus').textContent = 'Profile: Not uploaded';
-                }
-            };
-            reader.readAsText(file);
-            e.target.value = '';
-        });
+async function saveApiKeys() {
+    const updates = {};
+    document.querySelectorAll('#keyList input[type="password"]').forEach(i => { const k = i.id.replace('key-', ''); if (i.value.trim()) updates[k] = i.value.trim(); });
+    const status = document.getElementById('keyStatus');
+    if (!Object.keys(updates).length) { status.textContent = 'No changes'; return; }
+    status.textContent = 'Saving...';
+    try {
+        const res = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+        if (!res.ok) throw new Error();
+        status.textContent = 'Saved!'; toast('API keys saved');
+        document.querySelectorAll('#keyList input').forEach(i => i.value = '');
+        setTimeout(loadApiKeys, 600);
+    } catch (e) { status.textContent = 'Failed'; toast('Save failed', 'err'); }
+}
 
-        document.getElementById('submitCreateAgentBtn').addEventListener('click', () => {
-            if (!profileData) return;
-            const settings = { profile: profileData };
-            Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return;
-                const input = document.getElementById(`setting-${key}`);
-                if (!input) return;
-                const type = settingsSpec[key].type;
-                let val;
-                if (type === 'boolean') val = input.checked;
-                else if (type === 'number') val = Number(input.value);
-                else if (type === 'array' || type === 'object') {
-                    try { val = JSON.parse(input.value); }
-                    catch { val = input.value; }
-                } else val = input.value;
-                settings[key] = val;
-            });
-            socket.emit('create-agent', settings, res => {
-                if (!res.success) {
-                    document.getElementById('createError').textContent = res.error || 'Unknown error';
-                } else {
-                    profileData = null;
-                    document.getElementById('submitCreateAgentBtn').disabled = true;
-                    document.getElementById('profileStatus').textContent = 'Profile: Not uploaded';
-                    document.getElementById('createError').textContent = '';
-                    hideCreateAgentModal();
-                }
-            });
-        });
-
-        const modalBackdrop = document.getElementById('createAgentModal');
-        document.getElementById('openCreateAgentBtn').addEventListener('click', () => {
-            buildSettingsForm();
-            modalBackdrop.style.display = 'flex';
-        });
-        function hideCreateAgentModal() { modalBackdrop.style.display = 'none'; }
-        document.getElementById('closeCreateAgentBtn').addEventListener('click', hideCreateAgentModal);
-
-        socket.on('bot-output', (agentName, message) => {
-            agentLastMessage[agentName] = message;
-            const messageDiv = document.getElementById(`lastMessage-${agentName}`);
-            if (messageDiv) { messageDiv.textContent = message; }
-            appendConsoleLine(agentName, message);
-        });
-
-        function clearAgentMemory(agentName) {
-            const preserveImportant = confirm('Preserve important facts and places when clearing memory? Click OK to preserve, Cancel to clear fully.');
-            socket.emit('clear-agent-memory', agentName, preserveImportant);
-        }
-
-        function compactAgentMemory(agentName) {
-            const reason = prompt('Reason for compaction (optional):', 'manual');
-            socket.emit('compact-agent-memory', agentName, reason || 'manual');
-        }
-
-        const importantMemoryModal = document.getElementById('importantMemoryModal');
-        const importantMemoryTextarea = document.getElementById('importantMemoryTextarea');
-        let currentImportantMemoryAgent = null;
-
-        function setImportantMemory(agentName, memoryText) {
-            socket.emit('set-important-memory', agentName, memoryText);
-        }
-
-        function editImportantMemory(agentName) {
-            currentImportantMemoryAgent = agentName;
-            socket.emit('get-agent-memory', agentName, (response) => {
-                if (response?.success) {
-                    importantMemoryTextarea.value = response.memory || '';
-                } else {
-                    importantMemoryTextarea.value = '';
-                    if (response?.error) alert(`Failed to load pinned facts: ${response.error}`);
-                }
-                importantMemoryModal.style.display = 'flex';
-                importantMemoryTextarea.focus();
-            });
-        }
-
-        function saveImportantMemory() {
-            if (!currentImportantMemoryAgent) return;
-            setImportantMemory(currentImportantMemoryAgent, importantMemoryTextarea.value);
-            hideImportantMemoryModal();
-        }
-
-        function deleteSelectedImportantMemory() {
-            const textarea = importantMemoryTextarea;
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            if (start === end) return;
-            textarea.value = textarea.value.slice(0, start) + textarea.value.slice(end);
-            textarea.selectionStart = textarea.selectionEnd = start;
-            textarea.focus();
-        }
-
-        function clearImportantMemoryText() {
-            importantMemoryTextarea.value = '';
-            importantMemoryTextarea.focus();
-        }
-
-        function hideImportantMemoryModal() {
-            importantMemoryModal.style.display = 'none';
-            currentImportantMemoryAgent = null;
-        }
-
-        document.getElementById('closeImportantMemoryBtn').addEventListener('click', hideImportantMemoryModal);
-        document.getElementById('saveImportantMemoryBtn').addEventListener('click', saveImportantMemory);
-        document.getElementById('deleteSelectedMemoryBtn').addEventListener('click', deleteSelectedImportantMemory);
-        document.getElementById('clearImportantMemoryBtn').addEventListener('click', clearImportantMemoryText);
-
-        socket.on('state-update', (states) => {
-            window.lastStates = states;
-            Object.keys(states || {}).forEach(name => {
-                const st = states[name];
-                const healthEl = document.getElementById(`health-${name}`);
-                if (st && !st.error) {
-                    const gp = st.gameplay || {};
-                    if (healthEl && typeof gp.health === 'number') {
-                        const hMax = typeof gp.healthMax === 'number' ? gp.healthMax : 20;
-                        healthEl.textContent = `${gp.health}/${hMax}`;
-                    }
-                    const posEl = document.getElementById(`pos-${name}`);
-                    const hunEl = document.getElementById(`hunger-${name}`);
-                    const bioEl = document.getElementById(`biome-${name}`);
-                    const modeEl = document.getElementById(`mode-${name}`);
-                    const itemsEl = document.getElementById(`items-${name}`);
-                    const equippedEl = document.getElementById(`equipped-${name}`);
-                    const invGrid = document.getElementById(`inventory-${name}`);
-                    const actionEl = document.getElementById(`action-${name}`);
-                    if (posEl && gp.position) {
-                        const p = gp.position;
-                        posEl.textContent = `x ${p.x}, y ${p.y}, z ${p.z}`;
-                    }
-                    if (hunEl && typeof gp.hunger === 'number') {
-                        const fMax = typeof gp.hungerMax === 'number' ? gp.hungerMax : 20;
-                        hunEl.textContent = `${gp.hunger}/${fMax}`;
-                    }
-                    if (bioEl && gp.biome) bioEl.textContent = gp.biome;
-                    if (modeEl && gp.gamemode) modeEl.textContent = gp.gamemode;
-                    if (itemsEl && st.inventory) {
-                        const used = st.inventory.stacksUsed ?? 0;
-                        const total = st.inventory.totalSlots ?? 0;
-                        itemsEl.textContent = `${used}/${total}`;
-                    }
-                    if (equippedEl && st.inventory?.equipment) {
-                        const e = st.inventory.equipment;
-                        equippedEl.textContent = e.mainHand || 'none';
-                    }
-                    const armorEl = document.getElementById(`armor-${name}`);
-                    if (armorEl && st.inventory?.equipment) {
-                        const e = st.inventory.equipment;
-                        const armor = [];
-                        if (e.helmet) armor.push(`head: ${e.helmet}`);
-                        if (e.chestplate) armor.push(`chest: ${e.chestplate}`);
-                        if (e.leggings) armor.push(`legs: ${e.leggings}`);
-                        if (e.boots) armor.push(`feet: ${e.boots}`);
-                        armorEl.textContent = armor.length ? armor.join(', ') : 'none';
-                    }
-                    if (actionEl && st.action) {
-                        actionEl.textContent = `${st.action.current || 'Idle'}`;
-                    }
-                    if (invGrid && st.inventory?.counts) {
-                        const counts = st.inventory.counts;
-                        invGrid.innerHTML = Object.keys(counts).length ?
-                            Object.entries(counts).map(([k, v]) => `<div class="inv-item">${k}: ${v}</div>`).join('') :
-                            '<div class="inv-item">(empty)</div>';
-                    }
-                }
-            });
-        });
-
-        function fetchAgentSettings(name) {
-            return new Promise((resolve) => {
-                if (agentSettings[name]) { resolve(agentSettings[name]); return; }
-                socket.emit('get-settings', name, res => {
-                    if (res.settings) {
-                        agentSettings[name] = res.settings;
-                        resolve(res.settings);
-                    } else resolve(null);
-                });
-            });
-        }
-
-        const agentSettingsModal = document.getElementById('agentSettingsModal');
-        const agentSettingsForm = document.getElementById('agentSettingsForm');
-        const applyBtn = document.getElementById('applyAgentSettingsBtn');
-        const discardBtn = document.getElementById('discardAgentSettingsBtn');
-        const closeAgentSettingsBtn = document.getElementById('closeAgentSettingsBtn');
-        const agentSettingsTitle = document.getElementById('agentSettingsTitle');
-        let currentAgentName = null;
-        let originalAgentSettings = null;
-
-        function buildAgentSettingsForm(settings) {
-            renderSettingsSections(agentSettingsForm, 'agent-setting', settings || {}, onAgentSettingsChanged);
-
-            const profile = settings.profile || {};
-            const modelInput = document.getElementById('profileModel');
-            const personalityInput = document.getElementById('profilePersonality');
-            const conversingInput = document.getElementById('profileConversing');
-            const apiSelect = document.getElementById('profileApiProvider');
-
-            populateApiDropdown().then(() => {
-                if (modelInput) {
-                    const modelVal = profile.model;
-                    const modelStr = typeof modelVal === 'object' ? JSON.stringify(modelVal) : (modelVal || '');
-                    if (modelStr && apiSelect) {
-                        const slashIdx = modelStr.indexOf('/');
-                        if (slashIdx > 0) {
-                            const prefix = modelStr.substring(0, slashIdx);
-                            const found = Array.from(apiSelect.options).some(opt => opt.value === prefix);
-                            if (found) {
-                                apiSelect.value = prefix;
-                                modelInput.value = modelStr.substring(slashIdx + 1);
-                            } else {
-                                modelInput.value = modelStr;
-                            }
-                        } else {
-                            modelInput.value = modelStr;
-                        }
-                    }
-                    updateModelHint();
-                }
-            });
-
-            if (personalityInput) personalityInput.value = profile.personality || '';
-            if (conversingInput) conversingInput.value = profile.conversing || '';
-
-            onAgentSettingsChanged();
-        }
-
-        function openAgentSettings(name) {
-            currentAgentName = name;
-            agentSettingsTitle.textContent = `${name} Settings`;
-            fetchAgentSettings(name).then(settings => {
-                originalAgentSettings = JSON.parse(JSON.stringify(settings || {}));
-                buildAgentSettingsForm(settings || {});
-                agentSettingsModal.style.display = 'flex';
-            });
-        }
-        window.openAgentSettings = openAgentSettings;
-
-        function getEditedAgentSettings() {
-            const baseProfile = (originalAgentSettings && originalAgentSettings.profile) || {};
-            const newSettings = { profile: { ...baseProfile } };
-            Object.keys(settingsSpec).forEach(key => {
-                if (key === 'profile') return;
-                const cfg = settingsSpec[key];
-                const input = document.getElementById(`agent-setting-${key}`);
-                if (!input) return;
-                let val;
-                if (cfg.type === 'boolean') val = input.checked;
-                else if (cfg.type === 'number') val = Number(input.value);
-                else if (cfg.type === 'array' || cfg.type === 'object') {
-                    try { val = JSON.parse(input.value); }
-                    catch { val = input.value; }
-                } else val = input.value;
-                newSettings[key] = val;
-            });
-            const api = getSelectedApiPrefix();
-            const modelRaw = (document.getElementById('profileModel') || {}).value || '';
-            const effectiveModel = api ? `${api}/${modelRaw}` : modelRaw;
-            try { newSettings.profile.model = JSON.parse(effectiveModel); }
-            catch { newSettings.profile.model = effectiveModel || baseProfile.model; }
-            const personality = (document.getElementById('profilePersonality') || {}).value;
-            if (personality !== undefined) newSettings.profile.personality = personality;
-            const conversing = (document.getElementById('profileConversing') || {}).value;
-            if (conversing !== undefined) newSettings.profile.conversing = conversing || undefined;
-            return newSettings;
-        }
-
-        function shallowEqual(a, b) {
-            if (!a || !b) return false;
-            const keys = Object.keys(settingsSpec).filter(k => k !== 'profile');
-            for (const k of keys) {
-                const va = a[k]; const vb = b[k];
-                if (typeof va === 'object' || typeof vb === 'object') {
-                    if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
-                } else if (va !== vb) return false;
-            }
-            const ap = a.profile || {}; const bp = b.profile || {};
-            const modelA = typeof ap.model === 'object' ? JSON.stringify(ap.model) : (ap.model || '');
-            const modelB = typeof bp.model === 'object' ? JSON.stringify(bp.model) : (bp.model || '');
-            if (modelA !== modelB) return false;
-            if ((ap.personality || '') !== (bp.personality || '')) return false;
-            if ((ap.conversing || '') !== (bp.conversing || '')) return false;
-            const apiA = getSelectedApiPrefix();
-            const origModelB = bp.model || '';
-            let origApiB = '';
-            const origSlash = typeof origModelB === 'string' ? origModelB.indexOf('/') : -1;
-            if (origSlash > 0) origApiB = origModelB.substring(0, origSlash);
-            if (apiA !== origApiB) return false;
-            return true;
-        }
-
-        function toggleProfileSection() {
-            const fields = document.getElementById('profileFields');
-            const toggle = document.getElementById('profileSectionToggle');
-            if (!fields || !toggle) return;
-            const collapsed = fields.classList.toggle('collapsed');
-            toggle.textContent = collapsed ? '▼ expand' : '▲ collapse';
-        }
-        window.toggleProfileSection = toggleProfileSection;
-
-        async function populateApiDropdown() {
-            const select = document.getElementById('profileApiProvider');
-            if (!select || select.options.length > 1) return;
-            try {
-                const res = await fetch('/api/model_prefixes');
-                if (!res.ok) return;
-                const prefixes = await res.json();
-                prefixes.forEach(api => {
-                    const opt = document.createElement('option');
-                    opt.value = api;
-                    opt.textContent = api;
-                    select.appendChild(opt);
-                });
-            } catch (e) { console.warn('Failed to load API prefixes:', e); }
-        }
-
-        function getSelectedApiPrefix() {
-            const select = document.getElementById('profileApiProvider');
-            return (select && select.value) ? select.value : '';
-        }
-
-        function updateModelHint() {
-            const hint = document.getElementById('profileModelHint');
-            if (!hint) return;
-            const api = getSelectedApiPrefix();
-            const modelEl = document.getElementById('profileModel');
-            const modelName = modelEl ? modelEl.value.trim() : '';
-            if (api) {
-                const full = modelName ? `${api}/${modelName}` : `${api}/<model>`;
-                hint.innerHTML = `Will be sent as <code>${full}</code>.`;
-            } else {
-                hint.innerHTML = 'Enter the model name. For prefixed APIs, select a provider above (e.g. <code>openrouter/gpt-4o</code>).';
-            }
-        }
-
-        function onProfileApiChanged() { updateModelHint(); onAgentSettingsChanged(); }
-        function onProfileModelChanged() { updateModelHint(); onAgentSettingsChanged(); }
-
-        function onAgentSettingsChanged() {
-            if (!originalAgentSettings) { applyBtn.disabled = true; return; }
-            const edited = getEditedAgentSettings();
-            applyBtn.disabled = shallowEqual(edited, originalAgentSettings);
-        }
-
-        function closeAgentSettings() {
-            agentSettingsModal.style.display = 'none';
-            currentAgentName = null;
-            originalAgentSettings = null;
-        }
-
-        discardBtn.addEventListener('click', () => {
-            if (!currentAgentName || !originalAgentSettings) return;
-            buildAgentSettingsForm(originalAgentSettings);
-        });
-
-        applyBtn.addEventListener('click', () => {
-            if (!currentAgentName) return;
-            const edited = getEditedAgentSettings();
-            socket.emit('set-agent-settings', currentAgentName, edited);
-            agentSettings[currentAgentName] = { ...edited, fetched: true };
-            closeAgentSettings();
-        });
-
-        closeAgentSettingsBtn.addEventListener('click', closeAgentSettings);
-
-        function renderAgentCard(agent) {
-            const lastMessage = agentLastMessage[agent.name] || '';
-            const invOpen = inventoryOpen[agent.name] === true;
-            const invStyle = invOpen ? '' : 'display:none;';
-            const statusClass = agent.in_game ? 'online' : 'offline';
-            const actionText = agentLastMessage[agent.name] ? '' : 'action: -';
-            return `
-                <div class="agent-card" id="agent-${agent.name}">
-                    <div class="agent-header">
-                        <div class="agent-status-dot ${statusClass}"></div>
-                        <span class="agent-name">${agent.name}</span>
-                        ${agent.socket_connected && !agent.in_game ? '<span class="agent-joining">joining...</span>' : ''}
-                        <div class="agent-action" id="action-${agent.name}">${actionText}</div>
-                        <div class="btn-group" style="margin-left:auto;">
-                            <button class="btn btn-icon" title="Settings" onclick="openAgentSettings('${agent.name}')">&#9881;</button>
-                            <button class="btn btn-icon" title="Inventory" onclick="toggleDetails('${agent.name}')">&#128230;</button>
-                        </div>
-                    </div>
-                    <div class="agent-stats">
-                        <div class="stat"><span class="stat-label">Gamemode</span><span class="stat-value" id="mode-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Health</span><span class="stat-value" id="health-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Hunger</span><span class="stat-value" id="hunger-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Position</span><span class="stat-value" id="pos-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Biome</span><span class="stat-value" id="biome-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Inventory</span><span class="stat-value" id="items-${agent.name}">-</span></div>
-                        <div class="stat"><span class="stat-label">Equipped</span><span class="stat-value" id="equipped-${agent.name}">-</span></div>
-                    </div>
-                    <div class="agent-message-row" id="lastMessage-${agent.name}"><strong>Last Message:</strong> ${lastMessage}</div>
-                    <div class="agent-controls">
-                        <button class="btn btn-primary" id="sendBtn-${agent.name}" disabled onclick="sendMessage('${agent.name}', document.getElementById('messageInput-${agent.name}').value)">Send</button>
-                        <input type="text" id="messageInput-${agent.name}" placeholder="Enter message..." 
-                            oninput="onMsgInputChange('${agent.name}')"
-                            onkeydown="if(event.key === 'Enter') document.getElementById('sendBtn-${agent.name}').click()"
-                            ${!agent.in_game ? 'disabled' : ''}>
-                        <button class="btn" onclick="sendMessage('${agent.name}', '!stop')" ${!agent.in_game ? 'disabled' : ''}>Stop</button>
-                        <button class="btn" onclick="sendMessage('${agent.name}', '!stay(-1)')" ${!agent.in_game ? 'disabled' : ''}>Stay</button>
-                        <button class="btn" onclick="clearAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Clear Mem</button>
-                        <button class="btn" onclick="compactAgentMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Compact</button>
-                        <button class="btn" onclick="editImportantMemory('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Pins</button>
-                        <button class="btn" onclick="restartAgent('${agent.name}')" ${!agent.in_game ? 'disabled' : ''}>Restart</button>
-                        <button class="btn" ${agent.in_game ? `onclick="disconnectAgent('${agent.name}')"` : (agent.socket_connected ? 'disabled' : `onclick="startAgent('${agent.name}')"`)}>${agent.in_game ? 'Disconnect' : (agent.socket_connected ? 'Connecting...' : 'Connect')}</button>
-                        <button class="btn btn-danger" onclick="destroyAgent('${agent.name}')">Remove</button>
-                    </div>
-                    <div class="agent-inventory" id="inventorySection-${agent.name}" style="${invStyle}">
-                        <h3>Inventory</h3>
-                        <div class="inv-armor" id="armor-${agent.name}">armor: -</div>
-                        <div class="inventory-grid" id="inventory-${agent.name}"></div>
-                    </div>
-                </div>`;
-        }
-
-        async function renderAgents(agents) {
-            if (!agents.length) {
-                agentsDiv.innerHTML = '<div class="empty-state">No bridge agents connected</div>';
-                return;
-            }
-            if (!agentsDiv.children.length) {
-                agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
-                return;
-            }
-            const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
-            const changedAgents = agents.filter(a => {
-                const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
-            });
-            changedAgents.forEach(agent => {
-                const el = document.getElementById(`agent-${agent.name}`);
-                if (el) el.outerHTML = renderAgentCard(agent);
-                else agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-            });
-            Array.from(agentsDiv.children).forEach(el => {
-                const name = el.id.replace('agent-', '');
-                if (!agents.find(a => a.name === name)) {
-                    el.remove();
-                    delete inventoryOpen[name];
-                }
-            });
-        }
-
-        socket.on('agents-status', async (agents) => {
-            const needSettings = agents.filter(a => !agentSettings[a.name]);
-            if (needSettings.length > 0) {
-                await Promise.all(needSettings.map(async (a) => {
-                    const settings = await fetchAgentSettings(a.name);
-                    if (settings) agentSettings[a.name] = settings;
-                }));
-            }
-            const prevAgents = currentAgents.reduce((acc, a) => ({ ...acc, [a.name]: a }), {});
-            const changedAgents = agents.filter(a => {
-                const prev = prevAgents[a.name];
-                return !prev || prev.in_game !== a.in_game || prev.socket_connected !== a.socket_connected;
-            });
-            currentAgents = agents;
-            if (!agentsDiv.children.length) {
-                agentsDiv.innerHTML = agents.map(agent => renderAgentCard(agent)).join('');
-                return;
-            }
-            changedAgents.forEach(agent => {
-                const el = document.getElementById(`agent-${agent.name}`);
-                if (el) el.outerHTML = renderAgentCard(agent);
-                else agentsDiv.insertAdjacentHTML('beforeend', renderAgentCard(agent));
-            });
-            Array.from(agentsDiv.children).forEach(el => {
-                const name = el.id.replace('agent-', '');
-                if (!agents.find(a => a.name === name)) {
-                    el.remove();
-                    delete inventoryOpen[name];
-                }
-            });
-        });
-
-        function restartAgent(n) { socket.emit('restart-agent', n); }
-        function disconnectAgent(n) { socket.emit('stop-agent', n); }
-        function startAgent(n) {
-            const btn = document.querySelector(`button[onclick="startAgent('${n}')"]`);
-            if (btn) {
-                btn.textContent = 'Connecting...';
-                btn.disabled = true;
-                setTimeout(() => {
-                    const retryBtn = document.querySelector(`button[onclick=\\"startAgent('${n}')\\"]`);
-                    const agentState = (window.currentAgents || []).find(a => a.name === n);
-                    const stillWaiting = agentState ? (!agentState.in_game && !agentState.socket_connected) : true;
-                    if (retryBtn && stillWaiting) {
-                        retryBtn.disabled = false;
-                        retryBtn.textContent = 'Connect';
-                    }
-                }, 10000);
-            }
-            socket.emit('start-agent', n);
-        }
-        function stopAgent(n) { socket.emit('stop-agent', n); }
-        function destroyAgent(n) { socket.emit('destroy-agent', n); }
-        function disconnectAllAgents() { socket.emit('stop-all-agents'); }
-        function confirmShutdown() {
-            if (confirm('Are you sure you want to perform a full shutdown?\nThis will stop all agents and close the server.')) {
-                socket.emit('shutdown');
-            }
-        }
-        function sendMessage(n, m) {
-            if (!m || !m.trim()) return;
-            socket.emit('send-message', n, { from: 'ADMIN', message: m });
-            const input = document.getElementById(`messageInput-${n}`);
-            const btn = document.getElementById(`sendBtn-${n}`);
-            if (input) input.value = '';
-            if (btn) btn.disabled = true;
-        }
-        function onMsgInputChange(name) {
-            const input = document.getElementById(`messageInput-${name}`);
-            const btn = document.getElementById(`sendBtn-${name}`);
-            if (btn && input) btn.disabled = !(input.value && input.value.trim().length > 0);
-        }
-
-        function toggleDetails(name) {
-            const invSection = document.getElementById(`inventorySection-${name}`);
-            if (!invSection) return;
-            const visible = invSection.style.display !== 'none';
-            const newVisible = !visible;
-            invSection.style.display = newVisible ? '' : 'none';
-            inventoryOpen[name] = newVisible;
-        }
-        window.toggleDetails = toggleDetails;
-
-        const MAX_CONSOLE_LINES = 500;
-        let consoleMsgCount = 0;
-        let consoleCollapsed = false;
-
-        function toggleConsole() {
-            consoleCollapsed = !consoleCollapsed;
-            document.getElementById('consoleLog').style.display = consoleCollapsed ? 'none' : '';
-            document.getElementById('consoleToggleIcon').textContent = consoleCollapsed ? '▶' : '▼';
-        }
-
-        function clearConsole() {
-            document.getElementById('consoleLog').innerHTML = '';
-            consoleMsgCount = 0;
-            document.getElementById('consoleMsgCount').textContent = '0 lines';
-        }
-
-        function appendConsoleLine(agentName, message) {
-            const log = document.getElementById('consoleLog');
-            const now = new Date();
-            const ts = now.toTimeString().slice(0, 8);
-            const line = document.createElement('div');
-            line.className = 'log-line';
-            const tsSpan = document.createElement('span');
-            tsSpan.className = 'log-ts';
-            tsSpan.textContent = `[${ts}] `;
-            line.appendChild(tsSpan);
-            if (agentName) {
-                const agentSpan = document.createElement('span');
-                agentSpan.className = 'log-agent';
-                agentSpan.textContent = `[${agentName}] `;
-                line.appendChild(agentSpan);
-            }
-            line.appendChild(document.createTextNode(message));
-            log.appendChild(line);
-            consoleMsgCount++;
-            const excess = log.children.length - MAX_CONSOLE_LINES;
-            if (excess > 0) {
-                const fragment = document.createRange();
-                fragment.setStartBefore(log.children[0]);
-                fragment.setEndBefore(log.children[excess]);
-                fragment.deleteContents();
-                consoleMsgCount -= excess;
-            }
-            document.getElementById('consoleMsgCount').textContent =
-                `${consoleMsgCount} line${consoleMsgCount !== 1 ? 's' : ''}`;
-            if (document.getElementById('autoScrollChk').checked) {
-                log.scrollTop = log.scrollHeight;
-            }
-        }
-
-        async function fetchDebugStats() {
-            try {
-                const res = await fetch('/api/debug_stats');
-                const data = await res.json();
-                const modelsText = data.models && data.models.length
-                    ? data.models.map(m => `${m.name} (${m.model})`).join(', ')
-                    : 'None';
-                document.getElementById('debugModels').textContent = modelsText;
-                document.getElementById('debugRam').textContent = data.memory || 'Unknown';
-            } catch (e) {
-                document.getElementById('debugModels').textContent = 'Disconnected';
-                document.getElementById('debugRam').textContent = '-';
-            }
-        }
-        fetchDebugStats();
-        setInterval(fetchDebugStats, 5000);
-
-        const apiKeysModal = document.getElementById('apiKeysModal');
-        const apiKeysList = document.getElementById('apiKeysList');
-        const apiKeysStatus = document.getElementById('apiKeysStatus');
-
-        document.getElementById('openApiKeysBtn').addEventListener('click', () => {
-            loadApiKeys();
-            apiKeysModal.style.display = 'flex';
-        });
-
-        document.getElementById('closeApiKeysBtn').addEventListener('click', () => {
-            apiKeysModal.style.display = 'none';
-        });
-
-        async function loadApiKeys() {
-            apiKeysList.innerHTML = 'Loading...';
-            apiKeysStatus.textContent = '';
-            try {
-                const res = await fetch('/api/keys');
-                if (!res.ok) throw new Error('Failed to load keys');
-                const data = await res.json();
-                apiKeysList.innerHTML = '';
-                const sorted = Object.keys(data).sort();
-                sorted.forEach(keyName => {
-                    const info = data[keyName];
-                    const row = document.createElement('div');
-                    row.className = 'key-row';
-                    const label = document.createElement('span');
-                    label.className = 'key-label';
-                    label.textContent = keyName;
-                    const input = document.createElement('input');
-                    input.type = 'password';
-                    input.id = `apikey-input-${keyName}`;
-                    input.placeholder = info.set ? '(unchanged)' : 'Enter key...';
-                    const status = document.createElement('span');
-                    status.className = 'key-status';
-                    if (info.set) {
-                        status.textContent = `set (${info.mask})`;
-                        status.style.color = 'var(--success)';
-                    } else {
-                        status.textContent = 'not set';
-                        status.style.color = 'var(--danger)';
-                    }
-                    row.appendChild(label);
-                    row.appendChild(input);
-                    row.appendChild(status);
-                    apiKeysList.appendChild(row);
-                });
-            } catch (e) {
-                apiKeysList.innerHTML = '<span style="color:var(--danger);">Failed to load keys</span>';
-            }
-        }
-
-        document.getElementById('saveApiKeysBtn').addEventListener('click', async () => {
-            const updates = {};
-            const inputs = apiKeysList.querySelectorAll('input[type="password"]');
-            inputs.forEach(input => {
-                const keyName = input.id.replace('apikey-input-', '');
-                const val = input.value.trim();
-                if (val) updates[keyName] = val;
-            });
-            if (Object.keys(updates).length === 0) {
-                apiKeysStatus.textContent = 'No changes to save.';
-                apiKeysStatus.style.color = 'var(--text-muted)';
-                return;
-            }
-            apiKeysStatus.textContent = 'Saving...';
-            apiKeysStatus.style.color = 'var(--text-muted)';
-            try {
-                const res = await fetch('/api/keys', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(updates)
-                });
-                if (!res.ok) throw new Error('Save failed');
-                apiKeysStatus.textContent = 'Keys saved successfully!';
-                apiKeysStatus.style.color = 'var(--success)';
-                inputs.forEach(i => { i.value = ''; });
-                setTimeout(loadApiKeys, 800);
-            } catch (e) {
-                apiKeysStatus.textContent = 'Failed to save keys.';
-                apiKeysStatus.style.color = 'var(--danger)';
-            }
-        });
-    </script>
+// ═══ Debug stats ═══
+async function fetchDebug() {
+    try {
+        const res = await fetch('/api/debug_stats');
+        const data = await res.json();
+        const models = data.models?.length ? data.models.map(m => `${m.name}(${m.model})`).join(', ') : 'none';
+        document.getElementById('debugInfo').textContent = `Models: ${models} | VRAM: ${data.memory || '?'}`;
+    } catch { document.getElementById('debugInfo').textContent = ''; }
+}
+fetchDebug(); setInterval(fetchDebug, 5000);
+loadProfiles(); loadApiKeys();
+</script>
 </body>
 </html>

@@ -64,12 +64,14 @@ export class FabricBridge {
      * @param {object} action
      * @returns {Promise<{success: boolean, output?: string, error?: string}>}
      */
-    async sendAction(action) {
+    async sendAction(action, generation = null) {
         try {
+            const body = { action };
+            if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/action`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action }),
+                body: JSON.stringify(body),
                 signal: AbortSignal.timeout(8000),
             });
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
@@ -86,12 +88,14 @@ export class FabricBridge {
      * @param {object[]} actions
      * @returns {Promise<{success: boolean, queued?: number, error?: string}>}
      */
-    async sendBatch(actions) {
+    async sendBatch(actions, generation = null) {
         try {
+            const body = { actions };
+            if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/batch`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ actions }),
+                body: JSON.stringify(body),
                 signal: AbortSignal.timeout(25000),
             });
             if (!res.ok) {
@@ -128,12 +132,14 @@ export class FabricBridge {
      * @param {string[]} commands
      * @returns {Promise<{success: boolean, queued?: number, error?: string}>}
      */
-    async sendBatchCommands(commands) {
+    async sendBatchCommands(commands, generation = null) {
         try {
+            const body = { commands };
+            if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/batch`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ commands }),
+                body: JSON.stringify(body),
                 signal: AbortSignal.timeout(8000),
             });
             if (!res.ok) {
@@ -218,12 +224,17 @@ export class FabricBridge {
      * Cancel all queued and active tasks.
      * @returns {Promise<{success: boolean, error?: string}>}
      */
-    async cancelQueue() {
+    async cancelQueue(generation = null) {
         try {
-            const res = await fetch(`${this.url}/queue/cancel`, {
+            const options = {
                 method: 'POST',
                 signal: AbortSignal.timeout(3000),
-            });
+            };
+            if (Number.isSafeInteger(generation)) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify({ generation });
+            }
+            const res = await fetch(`${this.url}/queue/cancel`, options);
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -267,7 +278,7 @@ export class FabricBridge {
     /**
      * Get the current player state snapshot from the Fabric client.
      * The `chat` array is automatically cleared by the mod after each /state call
-     * so callers always receive only new messages.
+     * so callers always receive only new messages, unless options.drainChat is false.
      *
      * @returns {Promise<FabricState|null>}
      *
@@ -291,6 +302,7 @@ export class FabricBridge {
             if (sinceSeq != null) query.push(`since=${encodeURIComponent(String(sinceSeq))}`);
             if (options.includeSurfaceMap === true) query.push('surface=true');
             if (Number.isFinite(options.surfaceRadius)) query.push(`surface_radius=${encodeURIComponent(String(options.surfaceRadius))}`);
+            if (options.drainChat === false) query.push('peek=true');
             const suffix = query.length ? `?${query.join('&')}` : '';
             const res = await fetch(`${this.url}/state${suffix}`, {
                 signal: AbortSignal.timeout(3000),

@@ -1,0 +1,13 @@
+pluginManagement {
+    repositories {
+        maven { url 'https://maven.fabricmc.net/' }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'mindcraft-server-companion'
+
+// bridge-protocol is a sibling directory (tool/bridge-protocol), not a child of this mod.
+include 'bridge-protocol'
+project(':bridge-protocol').projectDir = file('../bridge-protocol')

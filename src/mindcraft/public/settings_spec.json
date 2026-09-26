@@ -79,6 +79,30 @@
         "description": "When true in fabric runtime, requests structured JSON responses ({reply, actions[]}) so actions are executed from parsed data and command text is not leaked into chat output.",
         "default": true
     },
+    "bridge_prompt_packs_enabled": {
+        "type": "boolean",
+        "section": "Bridge",
+        "description": "Retrieve task-specific bridge guidance using the configured embedding model, with lexical fallback when embeddings are unavailable.",
+        "default": true
+    },
+    "bridge_prompt_pack_count": {
+        "type": "number",
+        "section": "Bridge",
+        "description": "Number of bridge guidance packs to retrieve for each LLM turn.",
+        "default": 4
+    },
+    "bridge_prompt_pack_max_chars": {
+        "type": "number",
+        "section": "Bridge",
+        "description": "Maximum characters of retrieved bridge task guidance inserted into the system prompt.",
+        "default": 2400
+    },
+    "bridge_prompt_packs_compact_core": {
+        "type": "boolean",
+        "section": "Bridge",
+        "description": "When retrieved guidance is available, shrink the static bridge prompt to core invariants so relevant task guidance gets more context budget.",
+        "default": true
+    },
     "bridge_proactive_enabled": {
         "type": "boolean",
         "section": "Proactive Behavior",

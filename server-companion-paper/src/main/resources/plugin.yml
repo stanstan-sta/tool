@@ -1,0 +1,7 @@
+name: MindcraftServerCompanion
+version: 1.0.0
+main: com.mindcraft.companion.paper.CompanionPaperPlugin
+api-version: '1.21'
+author: Mindcraft
+description: Streams server-authoritative roster/events/facts to the Mindcraft Fabric client.
+folia-supported: false

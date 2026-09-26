@@ -57,6 +57,52 @@ test('FabricBridge.getScreenshot returns jpeg buffer and forwards compression pa
     }
 });
 
+test('FabricBridge.getState requests a non-draining snapshot when drainChat is false', async () => {
+    let requestedUrl = '';
+    const server = http.createServer((req, res) => {
+        requestedUrl = req.url || '';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"connected":true}');
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+        const { port } = server.address();
+        const bridge = new FabricBridge(`http://127.0.0.1:${port}`);
+        await bridge.getState(null, { drainChat: false });
+
+        assert.equal(requestedUrl, '/state?peek=true');
+    } finally {
+        await new Promise(resolve => server.close(resolve));
+    }
+});
+
+test('FabricBridge.sendBatch stamps the dispatch generation', async () => {
+    let requestBody = null;
+    const server = http.createServer((req, res) => {
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            requestBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end('{"success":true,"queued":1}');
+        });
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+        const { port } = server.address();
+        const bridge = new FabricBridge(`http://127.0.0.1:${port}`);
+        await bridge.sendBatch([{ type: 'move', x: 1, y: 64, z: 2 }], 42);
+
+        assert.equal(requestBody.generation, 42);
+        assert.deepEqual(requestBody.actions, [{ type: 'move', x: 1, y: 64, z: 2 }]);
+    } finally {
+        await new Promise(resolve => server.close(resolve));
+    }
+});
+
 test('ambient vision capture is gated to ambient mode and configured quality', async () => {
     await withSettings({
         allow_vision: true,

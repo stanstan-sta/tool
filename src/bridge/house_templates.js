@@ -124,7 +124,8 @@ export function cabinTemplate(opts = {}) {
         const midZ = Math.floor(l / 2);
         const wy = Math.max(1, topWallY - 1);
         const winBlock = palette.glass;
-        s.set(midX, wy, 0, winBlock);
+        const southWinX = (wy === 1 || wy === 2) ? (midX > 1 ? midX - 1 : midX + 1) : midX;
+        s.set(southWinX, wy, 0, winBlock);
         s.set(midX, wy, l - 1, winBlock);
         s.set(0, wy, midZ, winBlock);
         s.set(w - 1, wy, midZ, winBlock);
@@ -223,7 +224,8 @@ export function towerTemplate(opts = {}) {
         }
         // Slit windows centered on each wall, middle row of the floor
         const wy = yBase + 1;
-        s.set(2, wy, 0, palette.glass);
+        const southWinX = (wy === 1 || wy === 2) ? 1 : 2;
+        s.set(southWinX, wy, 0, palette.glass);
         s.set(2, wy, l - 1, palette.glass);
         s.set(0, wy, 2, palette.glass);
         s.set(w - 1, wy, 2, palette.glass);
@@ -249,9 +251,9 @@ export function towerTemplate(opts = {}) {
 
     // Second floor (if present) — furnace + chest
     if (floors >= 2) {
-        s.set(1, 4, 1, palette.furnace);
-        s.set(w - 2, 4, 1, palette.chest);
-        s.set(2, 4, 2, palette.torch);
+        s.set(1, 5, 1, palette.furnace);
+        s.set(w - 2, 5, 1, palette.chest);
+        s.set(2, 5, 2, palette.torch);
     }
 
     return {

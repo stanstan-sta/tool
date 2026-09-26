@@ -63,6 +63,13 @@ class MindServerProxy {
 		
         this.socket.on('send-message', (data) => {
             try {
+                if (typeof this.agent?.respondFunc !== 'function') {
+                    // Agent is registered but still initializing (respondFunc is
+                    // set partway through agent.start(), after async yields). Drop
+                    // the message rather than crashing on an early arrival.
+                    console.warn('Received send-message before agent was ready; ignoring.');
+                    return;
+                }
                 this.agent.respondFunc(data.from, data.message);
             } catch (error) {
                 console.error('Error: ', JSON.stringify(error, Object.getOwnPropertyNames(error)));

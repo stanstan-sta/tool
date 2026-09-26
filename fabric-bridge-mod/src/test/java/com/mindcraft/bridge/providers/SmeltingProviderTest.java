@@ -36,8 +36,12 @@ class SmeltingProviderTest {
             assertTrue(provider.canProvide("minecraft:glass", emptyCtx));
             assertTrue(provider.canProvide("minecraft:stone", emptyCtx));
             assertTrue(provider.canProvide("minecraft:cooked_beef", emptyCtx));
-            assertTrue(provider.canProvide("minecraft:diamond", emptyCtx));
-            assertTrue(provider.canProvide("minecraft:emerald", emptyCtx));
+            // Ores that drop their item when mined (diamond, emerald, …) are
+            // intentionally deferred to MiningProvider. SmeltingProvider declines
+            // them (canProvide==false) so we never attempt to smelt an ore block
+            // we can't obtain. See SmeltingProvider.canProvide gather-first guard.
+            assertFalse(provider.canProvide("minecraft:diamond", emptyCtx));
+            assertFalse(provider.canProvide("minecraft:emerald", emptyCtx));
             assertTrue(provider.canProvide("minecraft:charcoal", emptyCtx));
             assertTrue(provider.canProvide("minecraft:smooth_stone", emptyCtx));
             assertTrue(provider.canProvide("minecraft:brick", emptyCtx));
@@ -126,8 +130,8 @@ class SmeltingProviderTest {
         }
 
         @Test
-        @DisplayName("includes furnace crafting if no furnace in inventory")
-        void includesFurnaceCrafting() {
+        @DisplayName("does not craft a furnace item when none in inventory")
+        void doesNotCraftFurnaceItem() {
             Map<String, Integer> inventory = new HashMap<>();
             inventory.put("minecraft:cobblestone", 10);
             inventory.put("minecraft:coal_block", 1);
@@ -136,10 +140,15 @@ class SmeltingProviderTest {
             ProviderPlan plan = provider.plan("minecraft:stone", 1, ctx);
 
             assertTrue(plan.ok());
+            // A crafted furnace ITEM is never auto-placed, and the smelt executor
+            // (#task smelt) operates on furnace BLOCKS already in the world. So the
+            // planner must NOT waste cobblestone crafting a furnace; the executor
+            // reports "no usable furnace blocks nearby" at runtime when needed.
             boolean hasCraftFurnace = plan.steps().stream()
                 .anyMatch(s -> s.actionType().equals("craft")
                     && s.payloadJson().contains("furnace"));
-            assertTrue(hasCraftFurnace, "Should craft furnace if none in inventory");
+            assertFalse(hasCraftFurnace,
+                "Furnace items are never auto-placed; executor uses placed furnace blocks");
         }
 
         @Test

@@ -76,6 +76,7 @@ public class BridgeHttpServer {
         String query = ex.getRequestURI().getRawQuery();
         Long since = extractQueryLong(query, "since");
         boolean includeSurface = extractQueryBoolean(query, "surface");
+        boolean drainEvents = !extractQueryBoolean(query, "peek");
 
         int maxRadius = BridgeConfig.get().maxSurfaceRadius;
         Integer rawRadius = extractQueryInt(query, "surface_radius");
@@ -89,7 +90,7 @@ public class BridgeHttpServer {
             return;
         }
 
-        String json = StateCollector.collect(since, includeSurface, surfaceRadius);
+        String json = StateCollector.collect(since, includeSurface, surfaceRadius, drainEvents);
         respond(ex, 200, json);
     }
 
@@ -157,6 +158,7 @@ public class BridgeHttpServer {
         }
         try {
             String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
+            if (rejectStaleGeneration(ex, body)) return;
             String actionJson = extractJsonObject(body, "action");
             if (actionJson == null) {
                 actionJson = body != null ? body.trim() : null;
@@ -277,6 +279,7 @@ public class BridgeHttpServer {
         }
         try {
             String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
+            if (rejectStaleGeneration(ex, body)) return;
 
             int totalQueued = 0;
             boolean hadActionsArray = false;
@@ -834,6 +837,24 @@ public class BridgeHttpServer {
     // Queue management handlers
     // ──────────────────────────────────────────────────────────────────────────
 
+    private boolean rejectStaleGeneration(HttpExchange ex, String body) throws IOException {
+        if (body == null || body.isBlank()) return false;
+        String rawGeneration = extractJsonPrimitive(body, "generation");
+        if (rawGeneration == null) return false;
+
+        Long requestedGeneration;
+        try {
+            requestedGeneration = Long.parseLong(rawGeneration);
+        } catch (NumberFormatException ignored) {
+            respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"invalid_generation\",\"queued\":0}");
+            return true;
+        }
+
+        if (TaskQueue.getInstance().acceptClientGeneration(requestedGeneration)) return false;
+        respond(ex, 409, "{\"success\":false,\"accepted\":false,\"error\":\"stale_generation\",\"queued\":0}");
+        return true;
+    }
+
     private void handleQueueSkip(HttpExchange ex) throws IOException {
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
@@ -857,6 +878,8 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
+        String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
+        if (rejectStaleGeneration(ex, body)) return;
         TaskQueue.getInstance().cancelAll();
         respond(ex, 200, "{\"success\":true,\"action\":\"cancelled\"}");
     }

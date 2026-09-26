@@ -10,6 +10,7 @@ import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.ScreenHandler;
+import net.minecraft.text.Text;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.util.hit.BlockHitResult;
@@ -24,6 +25,7 @@ import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Collects the current player state into a JSON string.
@@ -108,28 +110,54 @@ public class StateCollector {
                 || lower.contains("path calculation failed");
     }
 
+    // Only the local Baritone logger may supply task-control events. Neither
+    // player CHAT nor server GAME messages establish that provenance.
+    static boolean shouldRouteBaritoneStatus(boolean trustedLocalLogger, String content) {
+        return trustedLocalLogger && content != null && stripChatFormatting(content).contains("[Baritone]");
+    }
+
+    static Consumer<Object> wrapBaritoneLogger(Consumer<Object> original, Consumer<String> statusSink) {
+        return message -> {
+            original.accept(message);
+            if (message instanceof Text text && shouldRouteBaritoneStatus(true, text.getString())) {
+                statusSink.accept(stripChatFormatting(text.getString()));
+            }
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void installBaritoneLogger() {
+        try {
+            Object settings = Class.forName("baritone.api.BaritoneAPI").getMethod("getSettings").invoke(null);
+            Object loggerSetting = settings.getClass().getField("logger").get(settings);
+            java.lang.reflect.Field value = loggerSetting.getClass().getField("value");
+            Object original = value.get(loggerSetting);
+            if (!(original instanceof Consumer<?>)) return;
+            value.set(loggerSetting, wrapBaritoneLogger((Consumer<Object>) original, content -> {
+                routeBaritoneToTaskQueue(content);
+                while (chatQueue.size() >= MAX_CHAT_QUEUE) chatQueue.poll();
+                chatQueue.add(new ChatEvent("baritone_queue", content, null));
+            }));
+        } catch (ClassNotFoundException ignored) {
+            // Baritone is optional; the bridge can still expose other actions.
+        } catch (ReflectiveOperationException e) {
+            MindcraftBridgeMod.LOGGER.warn("Could not subscribe to local Baritone status", e);
+        }
+    }
+
     /**
      * Register the Fabric chat-receive event listener.
      * Called once from {@link MindcraftBridgeMod#onInitializeClient()}.
      */
     public static void registerEvents() {
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STARTED.register(
+                client -> installBaritoneLogger());
         // Listen for incoming chat messages and queue them for the Node.js agent.
         // CHAT covers normal player chat, GAME covers overlay/system messages.
         net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
             while (chatQueue.size() >= MAX_CHAT_QUEUE) {
                 chatQueue.poll();
             }
-            String content = message.getString();
-
-            // Route Baritone status messages even when they come through the CHAT channel
-            // (some Baritone builds emit them as player chat rather than system overlay).
-            String cleanContent = stripChatFormatting(content);
-            if (cleanContent != null && cleanContent.contains("[Baritone]")) {
-                routeBaritoneToTaskQueue(cleanContent);
-                chatQueue.add(new ChatEvent("baritone_queue", cleanContent, null));
-                return;
-            }
-
             String senderName = null;
             if (sender != null) {
                 try {
@@ -166,34 +194,26 @@ public class StateCollector {
             if (content != null && recentSentChats.contains(content)) {
                 return;
             }
-            // Detect Baritone task-queue status messages and route to TaskQueue.
-            // The contract: Baritone logs "[Baritone] All queued tasks complete"
-            // on success and "[Baritone] Task failed: <label> - <outcome>" on failure.
-            String cleanContent = stripChatFormatting(content);
-            if (cleanContent != null && cleanContent.contains("[Baritone]")) {
-                routeBaritoneToTaskQueue(cleanContent);
-                chatQueue.add(new ChatEvent("baritone_queue", cleanContent, null));
-                return;
-            }
+            // Server-supplied GAME text is not a trusted task-control channel.
             String type = overlay ? "system" : "player";
             chatQueue.add(new ChatEvent(type, content, null));
         });
     }
 
     /** Build and return the complete state as a JSON string. */
-    public static String collect(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius) {
+    public static String collect(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius, boolean drainEvents) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.isOnThread()) {
-            return collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius);
+            return collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius, drainEvents);
         }
         try {
-            return ClientThread.call(() -> collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius));
+            return ClientThread.call(() -> collectOnClientThread(sinceSeq, includeSurfaceMap, surfaceRadius, drainEvents));
         } catch (Exception e) {
             return "{\"connected\":false,\"error\":\"STATE_COLLECT_FAILED\"}";
         }
     }
 
-    private static String collectOnClientThread(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius) {
+    private static String collectOnClientThread(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius, boolean drainEvents) {
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity player = client.player;
 
@@ -298,6 +318,22 @@ public class StateCollector {
             firstPlayer = false;
             playersSig.append(e.getName().getString()).append(';');
             sb.append("\"").append(escape(e.getName().getString())).append("\"");
+        }
+        sb.append("],");
+
+        // Server companion data (from server-companion-mod via custom channel)
+        CompanionState companion = CompanionState.get();
+        CompanionState.Snapshot snap = companion.snapshot();
+        sb.append("\"server_companion\":").append(snap.helloJson != null ? snap.helloJson : "null").append(",");
+        sb.append("\"server_players\":").append(snap.rosterJson != null ? snap.rosterJson : "null").append(",");
+        sb.append("\"server_facts\":").append(snap.factsJson != null ? snap.factsJson : "null").append(",");
+        sb.append("\"server_events\":[");
+        java.util.List<String> serverEvents = companion.drainEvents();
+        boolean firstServerEvent = true;
+        for (String event : serverEvents) {
+            if (!firstServerEvent) sb.append(",");
+            firstServerEvent = false;
+            sb.append(event);
         }
         sb.append("],");
 
@@ -497,15 +533,21 @@ public class StateCollector {
             return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[],\"recent_events\":[]}";
         }
 
-        // Chat messages received since last poll — drain the queue into both legacy and structured arrays.
+        // Chat messages received since last poll; peek reads copy without draining.
         StringBuilder chatArray = new StringBuilder();
         StringBuilder eventArray = new StringBuilder();
         chatArray.append("[");
         eventArray.append("[");
         boolean firstChat = true;
         boolean firstEvent = true;
-        ChatEvent event;
-        while ((event = chatQueue.poll()) != null) {
+        List<ChatEvent> chatEvents = new java.util.ArrayList<>();
+        if (drainEvents) {
+            ChatEvent event;
+            while ((event = chatQueue.poll()) != null) chatEvents.add(event);
+        } else {
+            chatEvents.addAll(chatQueue);
+        }
+        for (ChatEvent event : chatEvents) {
             if (!firstChat) chatArray.append(",");
             firstChat = false;
             chatArray.append("\"").append(escape(event.message)).append("\"");
@@ -524,8 +566,14 @@ public class StateCollector {
         StringBuilder worldEventArray = new StringBuilder();
         worldEventArray.append("[");
         boolean firstWorldEvent = true;
-        WorldEvent we;
-        while ((we = worldEventQueue.poll()) != null) {
+        List<WorldEvent> worldEvents = new java.util.ArrayList<>();
+        if (drainEvents) {
+            WorldEvent event;
+            while ((event = worldEventQueue.poll()) != null) worldEvents.add(event);
+        } else {
+            worldEvents.addAll(worldEventQueue);
+        }
+        for (WorldEvent we : worldEvents) {
             if (!firstWorldEvent) worldEventArray.append(",");
             firstWorldEvent = false;
             worldEventArray.append(we.toJson());

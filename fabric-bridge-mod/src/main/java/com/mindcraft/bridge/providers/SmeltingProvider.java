@@ -14,6 +14,11 @@ public class SmeltingProvider implements ItemProvider {
     @Override
     public boolean canProvide(String itemId, PlanContext ctx) {
         String id = ItemIds.normalize(itemId);
+        // Prefer direct gathering: ores that drop their item when mined
+        // (coal, diamond, redstone, emerald, lapis, quartz) should be mined,
+        // not smelted. Let MiningProvider claim those so we don't waste a
+        // smelt-plan pass that can never resolve the ore-block input.
+        if (CommandExecutor.GATHER_PROVIDERS.containsKey(id)) return false;
         for (CommandExecutor.SmeltRecipe recipe : CommandExecutor.SMELT_RECIPES.values()) {
             if (id.equals(recipe.output())) return true;
         }
@@ -51,13 +56,13 @@ public class SmeltingProvider implements ItemProvider {
                     String input = recipe.input();
                     List<PlanStep> steps = new ArrayList<>();
 
-                    // Furnace detection: ensure a furnace is available
-                    int hasFurnace = child.available("minecraft:furnace");
-                    if (hasFurnace <= 0) {
-                        // Craft a furnace (8 cobblestone)
-                        steps.add(new PlanStep("craft", "{\"item\":\"minecraft:furnace\",\"count\":1}"));
-                        child.produce("minecraft:furnace", 1);
-                    }
+                    // NOTE: the smelt executor (#task smelt) operates on furnace
+                    // BLOCKS already placed in the world (scanSmeltFurnaces); a
+                    // crafted furnace ITEM is never auto-placed. Blindly crafting
+                    // one here just wasted 8 cobblestone and gave a false sense
+                    // the no-furnace case was handled, while still failing at
+                    // execution. The executor reports "no usable furnace blocks
+                    // nearby" clearly when none is reachable.
 
                     // Acquire input material
                     int missingInput = child.consume(input, missingOutput);

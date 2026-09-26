@@ -2,7 +2,26 @@ import * as Mindcraft from './src/mindcraft/mindcraft.js';
 import settings from './settings.js';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Persisted overrides written by the web UI (top-level settings only; profile
+// fields live in each profile JSON). Merged over the settings.js defaults so UI
+// changes survive a full app restart without editing settings.js. Env vars and
+// CLI args below still take precedence over these.
+const SETTINGS_LOCAL_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'settings_local.json');
+if (existsSync(SETTINGS_LOCAL_PATH)) {
+    try {
+        const local = JSON.parse(readFileSync(SETTINGS_LOCAL_PATH, 'utf8'));
+        if (local && typeof local === 'object') {
+            Object.assign(settings, local);
+            console.log(`Loaded ${Object.keys(local).length} persisted setting(s) from settings_local.json`);
+        }
+    } catch (err) {
+        console.error('Failed to read settings_local.json (ignoring):', err.message);
+    }
+}
 
 // Keep the MindServer alive through handler bugs. Socket.IO does not catch
 // throws inside listeners — an uncaught exception in any socket.on() callback

@@ -446,7 +446,7 @@ public class CommandExecutor {
         return ClientThread.call(() -> {
             MinecraftClient client = MinecraftClient.getInstance();
             ClientPlayerEntity player = client.player;
-            if (player == null || client.world == null) return "flee: not connected";
+            if (player == null || client.world == null) return null;
 
             String distStr = extractJsonPrimitive(actionJson, "distance");
             double distance = 24.0;
@@ -482,7 +482,7 @@ public class CommandExecutor {
             int tx = (int) Math.floor(dest.x);
             int ty = (int) Math.floor(dest.y);
             int tz = (int) Math.floor(dest.z);
-            return "flee: #goto " + tx + " " + ty + " " + tz;
+            return "#goto " + tx + " " + ty + " " + tz;
         });
     }
 
@@ -2254,7 +2254,9 @@ public class CommandExecutor {
                     return false;
                 }
             }
-            ensureStation(plan, "crafting_table");
+            if (recipeNeedsCraftingTable(recipe)) {
+                ensureStation(plan, "crafting_table");
+            }
             plan.steps.add(new MakeStep(MakeStepKind.CRAFT, itemKey, missing, null));
             plan.addVirtual(normalized, batches * outputCount);
             plan.consumeItem(normalized, missing);
@@ -2801,11 +2803,20 @@ public class CommandExecutor {
                 if (!moveItemsIntoSlot(player, im, screen, 0, recipe.input(), inputCount)) return false;
                 ItemStack fuelStack = screen.getSlot(1).getStack();
                 String existingFuelId = fuelStack.isEmpty() ? null : ItemIds.fromStack(fuelStack);
-                int fuelItems = fuelItemsNeeded(player, inputCount, recipe.input());
-                if (fuelItems <= 0 && existingFuelId == null) return false;
-                if (existingFuelId != null && InventoryDriver.countItem(player, existingFuelId) <= 0) return true;
                 String fuelId = existingFuelId != null ? existingFuelId : bestFuelItem(player, recipe.input());
-                return fuelId != null && moveItemsIntoSlot(player, im, screen, 1, fuelId, fuelItems);
+                if (fuelId == null) return false;
+                int available = InventoryDriver.countItem(player, fuelId);
+                // The furnace already holds fuel and we have none left to top up:
+                // run with what is already loaded.
+                if (existingFuelId != null && available <= 0) return true;
+                // Size the fuel count by the capacity of the fuel actually being
+                // loaded (not the best fuel), and never request more than we own
+                // — requesting more makes moveItemsIntoSlot fail outright even
+                // when usable fuel is on hand.
+                int perItem = Math.max(1, fuelCapacityItems(fuelId));
+                int fuelItems = Math.min(available, Math.max(1, (int) Math.ceil(inputCount / (double) perItem)));
+                if (fuelItems <= 0) return false;
+                return moveItemsIntoSlot(player, im, screen, 1, fuelId, fuelItems);
             }));
         } finally {
             ScreenDriver.closeScreen();
@@ -3320,6 +3331,19 @@ public class CommandExecutor {
      * Narrow, render-thread-only scan for a nearby station (crafting_table / furnace).
      * XZ range 16, Y range ±6 — ~4.5k getBlockState calls, typically <30 ms.
      */
+    // A recipe only needs a crafting table when it uses a slot outside the 2x2
+    // player grid. Grid indices are 1-based across a 3x3 grid; the 2x2 player
+    // grid is the top-left {1,2,4,5}, so a table is needed only for the 3rd
+    // column {3,6,9} or 3rd row {7,8,9}. 1x1/2x2 recipes (planks, sticks,
+    // torches, crafting_table itself, colored wool) craft with no table.
+    private static boolean recipeNeedsCraftingTable(RecipeData recipe) {
+        if (recipe == null || recipe.slots == null) return false;
+        for (GridSlot slot : recipe.slots) {
+            if (slot.gridIndex == 3 || slot.gridIndex >= 6) return true;
+        }
+        return false;
+    }
+
     private static void ensureStation(MakePlan plan, String station) {
         if (plan.stations.contains(station)) return;
         if (plan.hasItem(station)) { plan.stations.add(station); return; }

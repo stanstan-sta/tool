@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "mindcraft-server-companion",
+  "version": "${version}",
+  "name": "Mindcraft Server Companion",
+  "description": "Pushes server-authoritative data (roster, events, world facts) to the companion client over a custom payload channel.",
+  "authors": [ "stanstan-sta" ],
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": [ "com.mindcraft.companion.CompanionServerMod" ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft":    "~1.21.1",
+    "java":         ">=21",
+    "fabric-api":   "*"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "mindcraft-companion",
+  "version": "${version}",
+  "name": "Mindcraft Companion",
+  "description": "Server-side companion mod that pushes player rosters, discrete events, and world facts to companion clients over the mindcraft:companion payload channel.",
+  "authors": [ "stanstan-sta" ],
+  "contact": { "sources": "https://github.com/stanstan-sta/tool" },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": [ "com.mindcraft.companion.CompanionServerMod" ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft":    "~1.21.11",
+    "java":         ">=21",
+    "fabric-api":   "*"
+  }
+}

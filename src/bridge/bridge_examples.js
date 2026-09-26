@@ -129,11 +129,21 @@ export class BridgeExampleRetriever {
             }));
         } else {
             const qVec = this._lastQueryVec;
+            const haveQueryVec = Array.isArray(qVec) && qVec.length > 0;
             scored = BRIDGE_EXAMPLE_LIBRARY.map(ex => {
                 const emb = this.snippet_embeddings[ex.intent];
-                const score = Array.isArray(emb) && Array.isArray(qVec) && emb.length === qVec.length
-                    ? safeCosineSimilarity(qVec, emb)
-                    : wordOverlapScore(query, ex.text);
+                let score;
+                if (haveQueryVec && Array.isArray(emb) && emb.length === qVec.length) {
+                    score = safeCosineSimilarity(qVec, emb);
+                } else if (!haveQueryVec) {
+                    // No query vector at all — word overlap is the consistent metric.
+                    score = wordOverlapScore(query, ex.text);
+                } else {
+                    // Query embedded but this snippet's vector is missing/mismatched.
+                    // Rank it last on the cosine scale instead of mixing in a
+                    // [0,1] word-overlap score that isn't comparable to cosine.
+                    score = -1;
+                }
                 return { ex, score };
             });
         }

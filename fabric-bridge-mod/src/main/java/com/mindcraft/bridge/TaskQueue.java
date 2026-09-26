@@ -107,11 +107,24 @@ public class TaskQueue {
     private volatile boolean cancellationRequested = false;
     private volatile CountDownLatch cancelGate = new CountDownLatch(0);
     private volatile long generation = 0;
+    private volatile long clientGeneration = Long.MIN_VALUE;
 
     private TaskQueue() {}
 
     public long getLastActivityMs() {
         return lastActivityMs;
+    }
+
+    public boolean acceptClientGeneration(Long requestedGeneration) {
+        if (requestedGeneration == null) return true;
+        lock.lock();
+        try {
+            if (requestedGeneration < clientGeneration) return false;
+            clientGeneration = requestedGeneration;
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     public boolean isEnabled() {

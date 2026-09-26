@@ -349,6 +349,29 @@ test('buildBridgeSystemPrompt includes retrieved task guidance when provided', (
     assert(prompt.includes(guidance));
 });
 
+test('buildBridgeSystemPrompt compacts static rules when prompt-pack guidance is present', () => {
+    const guidance = 'BRIDGE TASK GUIDANCE (retrieved):\n# Smithing\nAsk when smithing is ambiguous.';
+    const full = buildBridgeSystemPrompt(
+        { persona_preset: 'miku_nakano', bridge_structured_output: true, bridge_prompt_packs_compact_core: false },
+        '',
+        null,
+        '',
+        guidance,
+    );
+    const compact = buildBridgeSystemPrompt(
+        { persona_preset: 'miku_nakano', bridge_structured_output: true, bridge_prompt_packs_compact_core: true },
+        '',
+        null,
+        '',
+        guidance,
+    );
+
+    assert(compact.includes('CORE ACTION RULES'));
+    assert(!compact.includes('ACTION SELECTION:'));
+    assert(compact.includes(guidance));
+    assert(compact.length < full.length);
+});
+
 test('buildBridgeSystemPrompt omits bridgeExamples section when empty', () => {
     const settings = { persona_preset: 'miku_nakano', bridge_structured_output: true };
     const prompt = buildBridgeSystemPrompt(settings, '', null, '');
@@ -387,6 +410,20 @@ test('BridgeAgent refreshes semantic examples into non-structured prompt before 
     agent.name = 'TestBridge';
     agent._promptQueue = [];
     agent._capabilities = null;
+    agent._lastState = {
+        connected: true,
+        x: 1,
+        y: 64,
+        z: 2,
+        dimension: 'minecraft:overworld',
+        health: 20,
+        hunger: 20,
+        inventory: [],
+        nearby_players: [],
+        nearby_entities: [],
+        open_screen: { open: false },
+        queue: { status: 'idle' },
+    };
     agent.history = {
         memory: '',
         turns: [{ role: 'user', content: 'ADMIN: please sleep' }],
@@ -399,14 +436,46 @@ test('BridgeAgent refreshes semantic examples into non-structured prompt before 
             return [{ intent: 'sleep', text: 'Go to sleep', snippet: 'Sleep: {"reply":"Going to bed.","actions":[{"type":"sleep_try"}]}' }];
         }
     };
+    agent._bridgePromptPacks = {
+        async getRelevantPacks(query, options) {
+            assert(query.includes('ADMIN: please sleep'));
+            assert(query.includes('Dimension: overworld'));
+            assert.equal(options.k, 4);
+            return [{
+                id: 'sleep_pack',
+                title: 'Sleep Pack',
+                actions: ['sleep_try'],
+                triggers: ['sleep'],
+                requires: [],
+                priority: 10,
+                token_budget: 80,
+                content: 'Use sleep_try for simple sleep requests.',
+            }];
+        }
+    };
+    // Static rules live in the stable prefix (conversing); per-turn retrieved
+    // content is appended as a trailing system message to the messages array.
+    let capturedMessages = null;
     agent.prompter = {
-        profile: { conversing: '' },
-        async promptConvo() {
-            return agent.prompter.profile.conversing;
+        profile: { conversing: 'STABLE PREFIX\n\nCORE ACTION RULES placeholder' },
+        async promptConvo(messages) {
+            capturedMessages = messages;
+            return messages.map(m => m.content).join('\n');
         }
     };
 
-    const response = await agent._runPromptConvoNow(1, 'smoke', agent.history.turns, { mode: 'queue' });
+    const response = await agent._runPromptConvoNow(1, 'smoke', [...agent.history.turns], { mode: 'queue' });
+
+    // The dynamic block was appended as the final system message.
+    const trailing = capturedMessages[capturedMessages.length - 1];
+    assert.equal(trailing.role, 'system');
+    assert(trailing.content.includes('BRIDGE EXAMPLES'));
+    assert(trailing.content.includes('Sleep: {"reply":"Going to bed."'));
+    assert(trailing.content.includes('BRIDGE GUIDANCE PACKS'));
+    assert(trailing.content.includes('Use sleep_try for simple sleep requests.'));
+    // The retrieved content reaches the model (full prompt = prefix + messages).
     assert(response.includes('BRIDGE EXAMPLES'));
-    assert(response.includes('Sleep: {"reply":"Going to bed."'));
+    assert(response.includes('Use sleep_try for simple sleep requests.'));
+    // The stable prefix (conversing) is NOT rebuilt with per-turn content.
+    assert.equal(agent.prompter.profile.conversing, 'STABLE PREFIX\n\nCORE ACTION RULES placeholder');
 });

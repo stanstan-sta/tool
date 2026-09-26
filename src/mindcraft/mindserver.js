@@ -4,7 +4,8 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as mindcraft from './mindcraft.js';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, mkdirSync } from 'fs';
+import settings from '../../settings.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mindserver is:
@@ -19,6 +20,72 @@ const agent_listeners = [];
 
 const settings_spec = JSON.parse(readFileSync(path.join(__dirname, 'public/settings_spec.json'), 'utf8'));
 
+// Top-level settings the web UI persists across full app restarts. main.js
+// merges this file over the settings.js defaults on startup. Profile-level
+// fields are NOT stored here — they are written to each profile's JSON.
+const SETTINGS_LOCAL_PATH = path.join(__dirname, '../../settings_local.json');
+const NON_PERSISTED_KEYS = new Set(['profile', 'profile_path', 'profiles', 'task']);
+
+const PROFILES_DIR = path.join(__dirname, '../../profiles');
+
+function sanitizeProfileName(name) {
+    const cleaned = String(name || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleaned) throw new Error('Profile name must contain only letters, numbers, underscores, and hyphens.');
+    if (cleaned.length > 64) throw new Error('Profile name too long (max 64 chars).');
+    return cleaned;
+}
+
+function validateProfile(profile) {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+        throw new Error('Profile must be a JSON object.');
+    }
+    if (!profile.name || typeof profile.name !== 'string' || !profile.name.trim()) {
+        throw new Error('Profile must have a non-empty "name" string.');
+    }
+    return true;
+}
+
+function profileFilePath(name) {
+    return path.join(PROFILES_DIR, `${sanitizeProfileName(name)}.json`);
+}
+
+function readStartupProfiles() {
+    return Array.isArray(settings.profiles) ? [...settings.profiles] : [];
+}
+
+function persistStartupProfiles(profiles) {
+    settings.profiles = profiles;
+    let existing = {};
+    if (existsSync(SETTINGS_LOCAL_PATH)) {
+        try { existing = JSON.parse(readFileSync(SETTINGS_LOCAL_PATH, 'utf8')) || {}; }
+        catch { existing = {}; }
+    }
+    existing.profiles = profiles;
+    writeFileSync(SETTINGS_LOCAL_PATH, JSON.stringify(existing, null, 4), 'utf8');
+}
+
+// Persist the top-level (non-profile) settings the UI sent so they survive a
+// full restart. Stores only keys defined in settings_spec, minus profile data.
+function persistGlobalSettings(settings) {
+    try {
+        let existing = {};
+        if (existsSync(SETTINGS_LOCAL_PATH)) {
+            try { existing = JSON.parse(readFileSync(SETTINGS_LOCAL_PATH, 'utf8')) || {}; }
+            catch { existing = {}; }
+        }
+        const out = { ...existing };
+        for (const key of Object.keys(settings)) {
+            if (NON_PERSISTED_KEYS.has(key)) continue;
+            if (!(key in settings_spec)) continue;
+            out[key] = settings[key];
+        }
+        writeFileSync(SETTINGS_LOCAL_PATH, JSON.stringify(out, null, 4), 'utf8');
+        console.log(`Persisted ${Object.keys(out).length} setting(s) to settings_local.json`);
+    } catch (err) {
+        console.error('Failed to persist settings_local.json:', err);
+    }
+}
+
 class AgentConnection {
     constructor(settings) {
         this.socket = null;
@@ -28,7 +95,7 @@ class AgentConnection {
         this.profile_path = settings.profile_path || null;
     }
     setSettings(settings) {
-        this.settings = settings;
+        this.settings = { ...this.settings, ...settings };
     }
 }
 
@@ -82,6 +149,20 @@ export function createMindServer(host_public = false, port = 8080) {
             if (settings.profile?.name) {
                 if (settings.profile.name in agent_connections) {
                     callback({ success: false, error: 'Agent already exists' });
+                    return;
+                }
+                try {
+                    validateProfile(settings.profile);
+                    const safeName = sanitizeProfileName(settings.profile.name);
+                    const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+                    if (!existsSync(filePath)) {
+                        if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
+                        writeFileSync(filePath, JSON.stringify(settings.profile, null, 4), 'utf8');
+                        console.log(`Saved new profile to ${filePath}`);
+                    }
+                    settings.profile_path = filePath;
+                } catch (err) {
+                    callback({ success: false, error: `Failed to save profile: ${err.message}` });
                     return;
                 }
                 let returned = await mindcraft.createAgent(settings);
@@ -158,12 +239,20 @@ export function createMindServer(host_public = false, port = 8080) {
             agent_connections[agentName].socket.emit('chat-message', curAgentName, json);
         });
 
-        socket.on('set-agent-settings', (agentName, settings) => {
+        socket.on('set-agent-settings', (agentName, settings, callback) => {
             try {
                 const agent = agent_connections[agentName];
                 if (!agent) {
                     console.warn(`set-agent-settings: no agent named '${agentName}'`);
+                    if (callback) callback({ success: false, error: `Agent '${agentName}' not found.` });
                     return;
+                }
+                if (settings.profile) {
+                    try { validateProfile(settings.profile); }
+                    catch (err) {
+                        if (callback) callback({ success: false, error: err.message });
+                        return;
+                    }
                 }
                 agent.setSettings(settings);
                 if (agent.profile_path && settings.profile) {
@@ -172,16 +261,16 @@ export function createMindServer(host_public = false, port = 8080) {
                         console.log(`Saved profile for ${agentName} to ${agent.profile_path}`);
                     } catch (err) {
                         console.error(`Failed to save profile for ${agentName}:`, err);
+                        if (callback) callback({ success: false, error: `Failed to save profile: ${err.message}` });
+                        return;
                     }
                 }
-                // Trigger a full process-level restart so the new settings are
-                // picked up when init_bridge_agent.js re-reads settings.js.
-                // Do NOT rely on agent.socket — the child's socket may already
-                // be torn down (the MindServer -> agent-process socket is
-                // separate from the AgentProcess child-process handle).
-                mindcraft.startAgent(agentName); // calls forceRestart()
+                persistGlobalSettings(settings);
+                mindcraft.startAgent(agentName);
+                if (callback) callback({ success: true });
             } catch (err) {
                 console.error('set-agent-settings handler failed:', err);
+                if (callback) callback({ success: false, error: err.message });
             }
         });
 
@@ -233,10 +322,10 @@ export function createMindServer(host_public = false, port = 8080) {
 		socket.on('send-message', (agentName, data) => {
 			if (!agent_connections[agentName]) {
 				console.warn(`Agent ${agentName} not in game, cannot send message via MindServer.`);
-				return
+				return;
 			}
 			try {
-				agent_connections[agentName].socket.emit('send-message', data)
+				agent_connections[agentName].socket.emit('send-message', data);
 			} catch (error) {
 				console.error('Error: ', error);
 			}
@@ -347,6 +436,164 @@ export function createMindServer(host_public = false, port = 8080) {
         } catch (err) {
             console.error('Failed to load model prefixes:', err);
             res.status(500).json({ error: 'Failed to load model prefixes' });
+        }
+    });
+
+    // ── Profile library management ──────────────────────────────────────
+    // List, create, read, update, and delete profile JSON files on disk.
+    // All file operations are constrained to PROFILES_DIR to prevent path traversal.
+
+    app.get('/api/profiles', async (req, res) => {
+        try {
+            const profiles = [];
+            if (existsSync(PROFILES_DIR)) {
+                const files = readdirSync(PROFILES_DIR).filter(f => f.endsWith('.json'));
+                for (const f of files) {
+                    const filePath = path.join(PROFILES_DIR, f);
+                    try {
+                        const data = JSON.parse(readFileSync(filePath, 'utf8'));
+                        if (data && typeof data === 'object') {
+                            const modelStr = data.model && typeof data.model === 'object'
+                                ? (data.model.model || JSON.stringify(data.model))
+                                : (data.model || 'unknown');
+                            profiles.push({
+                                name: data.name || path.basename(f, '.json'),
+                                filename: f,
+                                path: `./profiles/${f}`,
+                                model: modelStr,
+                                hasPersonality: !!(data.personality && data.personality.trim()),
+                            });
+                        }
+                    } catch { /* skip unparseable */ }
+                }
+            }
+            const repoRoot = path.join(__dirname, '../..');
+            for (const f of readdirSync(repoRoot).filter(x => x.endsWith('.json') && x !== 'package.json' && x !== 'keys.json' && x !== 'keys.example.json' && x !== 'settings_local.json')) {
+                const filePath = path.join(repoRoot, f);
+                try {
+                    const data = JSON.parse(readFileSync(filePath, 'utf8'));
+                    if (data && typeof data === 'object' && data.name && (data.model || data.personality)) {
+                        const modelStr = data.model && typeof data.model === 'object'
+                            ? (data.model.model || JSON.stringify(data.model))
+                            : (data.model || 'unknown');
+                        profiles.push({
+                            name: data.name,
+                            filename: f,
+                            path: `./${f}`,
+                            model: modelStr,
+                            hasPersonality: !!(data.personality && data.personality.trim()),
+                        });
+                    }
+                } catch { /* skip */ }
+            }
+            profiles.sort((a, b) => a.name.localeCompare(b.name));
+            res.json(profiles);
+        } catch (err) {
+            console.error('Failed to list profiles:', err);
+            res.status(500).json({ error: 'Failed to list profiles' });
+        }
+    });
+
+    app.get('/api/profiles/:name', async (req, res) => {
+        try {
+            const safeName = sanitizeProfileName(req.params.name);
+            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+            if (!existsSync(filePath)) {
+                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
+            }
+            const data = JSON.parse(readFileSync(filePath, 'utf8'));
+            res.json(data);
+        } catch (err) {
+            res.status(400).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/profiles', express.json(), async (req, res) => {
+        try {
+            const profile = req.body;
+            validateProfile(profile);
+            const safeName = sanitizeProfileName(profile.name);
+            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+            if (existsSync(filePath)) {
+                return res.status(409).json({ error: `Profile '${safeName}' already exists. Use PUT to update.` });
+            }
+            if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
+            writeFileSync(filePath, JSON.stringify(profile, null, 4), 'utf8');
+            console.log(`Created profile ${safeName} at ${filePath}`);
+            res.status(201).json({ success: true, path: `./profiles/${safeName}.json` });
+        } catch (err) {
+            res.status(400).json({ error: err.message });
+        }
+    });
+
+    app.put('/api/profiles/:name', express.json(), async (req, res) => {
+        try {
+            const safeName = sanitizeProfileName(req.params.name);
+            const profile = req.body;
+            validateProfile(profile);
+            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+            if (!existsSync(filePath)) {
+                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
+            }
+            writeFileSync(filePath, JSON.stringify(profile, null, 4), 'utf8');
+            console.log(`Updated profile ${safeName} at ${filePath}`);
+            const agentName = profile.name;
+            if (agent_connections[agentName] && agent_connections[agentName].profile_path === filePath) {
+                agent_connections[agentName].settings.profile = profile;
+            }
+            res.json({ success: true });
+        } catch (err) {
+            res.status(400).json({ error: err.message });
+        }
+    });
+
+    app.delete('/api/profiles/:name', async (req, res) => {
+        try {
+            const safeName = sanitizeProfileName(req.params.name);
+            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+            if (!existsSync(filePath)) {
+                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
+            }
+            for (const agentName in agent_connections) {
+                if (agent_connections[agentName].profile_path === filePath) {
+                    return res.status(409).json({ error: `Profile is in use by agent '${agentName}'. Stop the agent first.` });
+                }
+            }
+            unlinkSync(filePath);
+            console.log(`Deleted profile ${safeName}`);
+            const startup = readStartupProfiles().filter(p => p !== `./profiles/${safeName}.json`);
+            if (startup.length !== readStartupProfiles().length) {
+                persistStartupProfiles(startup);
+            }
+            res.json({ success: true });
+        } catch (err) {
+            res.status(400).json({ error: err.message });
+        }
+    });
+
+    // ── Startup profile list management ─────────────────────────────────
+    // Controls which profiles load automatically at boot (settings.profiles).
+
+    app.get('/api/startup-profiles', async (req, res) => {
+        res.json(readStartupProfiles());
+    });
+
+    app.put('/api/startup-profiles', express.json(), async (req, res) => {
+        try {
+            const profiles = req.body;
+            if (!Array.isArray(profiles)) {
+                return res.status(400).json({ error: 'Expected a JSON array of profile paths.' });
+            }
+            for (const p of profiles) {
+                if (typeof p !== 'string') {
+                    return res.status(400).json({ error: 'All entries must be strings.' });
+                }
+            }
+            persistStartupProfiles(profiles);
+            console.log(`Updated startup profiles: ${profiles.join(', ')}`);
+            res.json({ success: true, profiles });
+        } catch (err) {
+            res.status(400).json({ error: err.message });
         }
     });
 

@@ -23,7 +23,7 @@ export async function init(host_public=false, port=8080, auto_open_ui=true) {
             if (numStateListeners() === 0) {
                 open('http://localhost:'+port);
             }
-        }, 3000);
+        }, 500);
     }
 }
 

@@ -59,6 +59,9 @@ public class BridgeConfig {
     // Experimental actions
     public boolean enableExperimentalActions = false;
 
+    // Companion channel (server-companion-mod data)
+    public boolean companionChannelEnabled = false;
+
     // raw_command policy
     public boolean enableRawCommand = true;
     public java.util.List<String> rawCommandAllowlist = new java.util.ArrayList<>(

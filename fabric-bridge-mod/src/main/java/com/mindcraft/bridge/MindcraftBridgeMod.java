@@ -32,9 +32,12 @@ public class MindcraftBridgeMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("Mindcraft Bridge Mod initialising...");
-        BridgeConfig.get();
+        BridgeConfig config = BridgeConfig.get();
         try {
             StateCollector.registerEvents();
+            if (config.companionChannelEnabled) {
+                CompanionChannel.register();
+            }
             httpServer = new BridgeHttpServer(HTTP_PORT);
             httpServer.start();
             LOGGER.info("Mindcraft Bridge HTTP server started on localhost:{}", HTTP_PORT);
@@ -72,5 +75,7 @@ public class MindcraftBridgeMod implements ClientModInitializer {
         LOGGER.info("Player disconnected, cancelling all tasks");
         TaskQueue.getInstance().cancelAll();
         WorkerThreads.interruptAll("disconnect");
+        // Drop server-companion data so /state doesn't report stale roster/facts after switching servers.
+        CompanionState.get().reset();
     }
 }

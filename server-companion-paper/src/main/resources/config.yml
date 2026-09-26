@@ -1,0 +1,10 @@
+# Mindcraft Server Companion (Paper)
+enabled: true
+# Roster broadcast period in server ticks (20 ticks = 1 second). 30 = 1.5s, matching the Fabric mod.
+broadcast-interval-ticks: 30
+send-roster: true
+send-events: true
+send-facts: true
+# PRIVACY: empty list = send to NOBODY. Add the exact in-game username(s) of whoever
+# is running the Mindcraft Fabric client.
+player-allowlist: []

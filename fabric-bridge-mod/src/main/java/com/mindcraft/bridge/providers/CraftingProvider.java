@@ -62,7 +62,9 @@ public class CraftingProvider implements ItemProvider {
 
             boolean needsCraftingTable = false;
             for (CommandExecutor.GridSlot slot : recipe.slots) {
-                if (slot.gridIndex > 4) { needsCraftingTable = true; break; }
+                // 1-based 3x3 grid; the 2x2 player grid is {1,2,4,5}. A table is
+                // only needed for the 3rd column {3,6,9} or 3rd row {7,8,9}.
+                if (slot.gridIndex == 3 || slot.gridIndex >= 6) { needsCraftingTable = true; break; }
             }
             if (needsCraftingTable) {
                 int hasTable = child.available("minecraft:crafting_table");
@@ -153,7 +155,9 @@ public class CraftingProvider implements ItemProvider {
 
         for (String pattern : patterns) {
             String normalized = normalizePattern(pattern, ctx);
-            int count = ctx.inventory().getOrDefault(normalized, 0);
+            // Use the live plan ledger (reflects items consumed/produced earlier
+            // in this same plan), not the frozen Phase-1 inventory snapshot.
+            int count = ctx.ledger().available(normalized);
             if (count > bestCount) {
                 bestCount = count;
                 bestMatch = normalized;
@@ -169,6 +173,15 @@ public class CraftingProvider implements ItemProvider {
         }
         if (pattern.contains("*")) {
             String suffix = pattern.substring(pattern.indexOf('*') + 1);
+            // Prefer a variant actually available in the live plan ledger (this
+            // includes items produced earlier in the same plan, e.g. spruce_planks
+            // crafted from a spruce_log), then the raw inventory, then a default.
+            for (Map.Entry<String, Integer> e : ctx.ledger().snapshot().entrySet()) {
+                if (e.getValue() != null && e.getValue() > 0) {
+                    String norm = ItemIds.normalize(e.getKey());
+                    if (norm.endsWith(suffix)) return norm;
+                }
+            }
             for (String item : ctx.inventory().keySet()) {
                 if (item.endsWith(suffix)) {
                     return item;

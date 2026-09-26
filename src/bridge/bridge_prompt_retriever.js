@@ -58,7 +58,9 @@ function scorePackLexically(pack, query, context = {}) {
     if (context.dimension && containsToken(document, context.dimension)) score += 0.2;
     if (context.openScreen && containsToken(document, 'container')) score += 0.2;
 
-    return score + Number(pack.priority || 0) / 1000;
+    // Pure relevance — the static priority is folded in by the caller as a
+    // tie-breaker, never as part of the relevance gate.
+    return score;
 }
 
 export class BridgePromptPackRetriever {
@@ -117,17 +119,20 @@ export class BridgePromptPackRetriever {
         }
 
         const scored = this.packs.map(pack => {
-            let score = scorePackLexically(pack, cleanQuery, options);
+            let relevance = scorePackLexically(pack, cleanQuery, options);
             const emb = this.packEmbeddings.get(pack.id);
             if (queryEmbedding && emb && emb.length === queryEmbedding.length) {
-                score += safeCosineSimilarity(queryEmbedding, emb);
+                relevance += safeCosineSimilarity(queryEmbedding, emb);
             }
-            return { pack, score };
+            // Priority is only a tie-breaker between similarly-relevant packs;
+            // it must not by itself push an irrelevant pack past the filter.
+            const score = relevance + Number(pack.priority || 0) / 1000;
+            return { pack, relevance, score };
         });
         scored.sort((a, b) => b.score - a.score);
 
         const k = Math.max(0, Number(options.k || 4));
-        const selected = scored.filter(s => s.score > 0).slice(0, k).map(s => s.pack);
+        const selected = scored.filter(s => s.relevance > 0).slice(0, k).map(s => s.pack);
         return this._withDependencies(selected);
     }
 
@@ -138,11 +143,17 @@ export class BridgePromptPackRetriever {
         const add = pack => {
             if (!pack || seen.has(pack.id)) return;
             seen.add(pack.id);
-            for (const req of asArray(pack.requires)) add(byId.get(req));
+            // Push the (more-relevant) dependent first, then its dependencies,
+            // so the pack the user actually asked about leads and is the last
+            // thing dropped under budget truncation.
             out.push(pack);
+            for (const req of asArray(pack.requires)) add(byId.get(req));
         };
         for (const pack of selected) add(pack);
-        out.sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
+        // Preserve the relevance ordering of `selected` (dependencies are
+        // inlined before their dependent by `add`). Re-sorting by static
+        // priority here would let a less-relevant high-priority pack survive
+        // budget truncation ahead of the pack the user actually asked about.
         return out;
     }
 }

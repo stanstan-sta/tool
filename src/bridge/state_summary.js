@@ -113,8 +113,11 @@ export function buildFabricStateLines(state, options = {}) {
     const equipment = summarizeEquipment(state);
     const nearbyPlayers = (state.nearby_players || []).join(', ') || 'none';
     const nearbyEntities = summarizeList(
-        (state.nearby_entities || []).slice(0, options.entityLimit || 5),
-        e => `${stripNamespace(e.type || '?')}@(${e.x},${e.y},${e.z})`,
+        state.nearby_entities || [],
+        e => {
+            const pos = [e.x, e.y, e.z].every(Number.isFinite) ? `@(${e.x},${e.y},${e.z})` : '';
+            return `${stripNamespace(e.type || '?')}${pos}`;
+        },
         options.entityLimit || 5,
     );
 
@@ -141,6 +144,22 @@ export function buildFabricStateLines(state, options = {}) {
     lines.push(`Inventory: ${summarizeInventory(state.inventory, options.inventoryLimit || 16)}`);
     lines.push(`Nearby players: ${nearbyPlayers}`);
     lines.push(`Nearby entities: ${nearbyEntities}`);
+
+    if (state.server_players && state.server_players.length > 0) {
+        const names = state.server_players.map(p => p.name || '?').join(', ');
+        lines.push(`Server players: ${names}`);
+    }
+    if (state.server_facts) {
+        const f = state.server_facts;
+        const spawn = f.spawn ? `spawn=[${f.spawn}]` : '';
+        const border = f.borderSize ? `border=${f.borderSize}@(${f.borderCenterX},${f.borderCenterZ})` : '';
+        const facts = [spawn, border].filter(Boolean).join(' ');
+        if (facts) lines.push(`World facts: ${facts}`);
+    }
+    if (state.server_companion) {
+        const caps = state.server_companion.capabilities || [];
+        if (caps.length > 0) lines.push(`Server capabilities: ${caps.join(', ')}`);
+    }
 
     if (state.queue && state.queue.status !== 'idle' && state.queue.status !== 'disabled') {
         const q = state.queue;

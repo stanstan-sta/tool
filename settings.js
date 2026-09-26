@@ -6,7 +6,11 @@ const settings = {
     "bridge_chat_blacklist": [], // list of player names blocked from triggering the bridge agent
     "bridge_structured_output": false, // request structured JSON replies for bridge runtime and execute only parsed actions
     "bridge_queue_enabled": true, // enable sequential task queue: actions execute one at a time, advancing on Baritone completion signals. disable for old fire-and-forget behavior
-    "bridge_proactive_enabled": false, // master switch: false = pure turn-based (respond only to player chat)
+    "bridge_prompt_packs_enabled": true, // retrieve compact task-specific bridge guidance with the configured embedding model, falling back to lexical routing
+    "bridge_prompt_pack_count": 4, // number of prompt guidance packs to retrieve per bridge LLM turn
+    "bridge_prompt_pack_max_chars": 2400, // max characters of retrieved bridge task guidance inserted into the prompt
+    "bridge_prompt_packs_compact_core": true, // when retrieved guidance exists, shrink the static bridge prompt to core invariants
+    "bridge_proactive_enabled": true, // master switch: false = pure turn-based (respond only to player chat)
     "bridge_auto_defend": true, // armed+healthy bot auto-attacks hostiles that enter range
     "bridge_ambient_enabled": true, // enable ambient ticks: bot self-initiates speech/actions when idle
     "bridge_ambient_vision_enabled": true, // when allow_vision is true, send occasional screenshots to ambient/improvise turns
@@ -17,6 +21,18 @@ const settings = {
     "bridge_ambient_budget_per_hour": 4, // max spontaneous lines per hour (token-bucket)
     "bridge_ambient_min_gap_ms": 45000,
     "bridge_ambient_max_gap_ms": 180000,
+    "bridge_goal_enabled": true,
+    "bridge_goal_tick_ms": 4000,
+    "bridge_world_memory_enabled": true,
+    "bridge_world_memory_record_ms": 8000,
+    "bridge_reward_enabled": true,
+    "bridge_survival_reflex_enabled": true,
+    "bridge_survival_flee_hp": 6,
+    "bridge_system_one_shadow": false, // run Decider-2b (System One) beside the active-task evaluator and log both choices; never acts
+    "bridge_system_one_active": true, // System One decides continue/cancel/append for mid-task chat and stops tasks instantly; the LLM still writes replies and actions
+    "bridge_system_one_min_confidence": 0.6, // below this, active mode defers to the LLM's decision
+    "bridge_system_one_url": "http://127.0.0.1:8781", // llama-server serving decider-2b-q8_0.gguf
+    "bridge_server_data_enabled": false, // consume server-companion-mod data (server_players/events/facts) when present
 
     "auto_open_ui": true, // opens UI in browser on startup
 

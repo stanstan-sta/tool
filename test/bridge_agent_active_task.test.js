@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    BridgeAgent,
     describeBatchDispatchFailure,
     isActiveQueueState,
+    mergeBridgeState,
     parseBridgeResponse,
     parseActiveTaskDecision,
     pruneManualPrerequisiteCommandsBeforeCraft,
@@ -11,6 +13,47 @@ import {
     shouldCancelAfterBatchDispatchFailure,
 } from '../src/bridge/bridge_agent.js';
 import { preprocessMineActions } from '../src/bridge/mine_preprocessor.js';
+
+test('unchanged bridge state merges fresh events onto the previous full snapshot', () => {
+    const previous = {
+        connected: true,
+        seq: 10,
+        player_name: 'Miku',
+        x: 12,
+        y: 64,
+        z: -8,
+        health: 5,
+        nearby_entities: [{ type: 'minecraft:zombie', distance: 3 }],
+        inventory: [{ item: 'minecraft:torch', count: 16 }],
+        queue: { status: 'executing', pending: 2 },
+        chat: ['old'],
+        chat_events: [{ type: 'player', message: '<Alex> old' }],
+        recent_events: ['old event'],
+    };
+    const sparse = {
+        connected: true,
+        seq: 11,
+        player_name: 'Miku',
+        unchanged: true,
+        chat: ['new'],
+        chat_events: [{ type: 'player', message: '<Alex> new' }],
+        recent_events: ['new event'],
+    };
+
+    const merged = mergeBridgeState(previous, sparse);
+
+    assert.equal(merged.seq, 11);
+    assert.equal(merged.x, 12);
+    assert.equal(merged.y, 64);
+    assert.equal(merged.z, -8);
+    assert.equal(merged.health, 5);
+    assert.deepEqual(merged.nearby_entities, previous.nearby_entities);
+    assert.deepEqual(merged.inventory, previous.inventory);
+    assert.deepEqual(merged.queue, previous.queue);
+    assert.deepEqual(merged.chat, ['new']);
+    assert.deepEqual(merged.chat_events, sparse.chat_events);
+    assert.deepEqual(merged.recent_events, ['new event']);
+});
 
 test('active queue state only includes executing and draining', () => {
     assert.equal(isActiveQueueState({ queue: { status: 'executing' } }), true);
@@ -49,14 +92,10 @@ test('cancel_replace decision parses actions and commands', () => {
     assert.deepEqual(decision.commands, ['#come']);
 });
 
-test('append_after_current decision parses fenced JSON', () => {
-    const decision = parseActiveTaskDecision('```json\n{"decision":"append_after_current","reply":"","actions":[{"type":"craft","item":"torch","count":4}],"commands":[]}\n```');
-
-    assert.equal(decision.valid, true);
-    assert.equal(decision.decision, 'append_after_current');
-    assert.deepEqual(decision.actions, [
-        { type: 'craft', item: 'torch', count: 4 },
-    ]);
+test('active task response rejects fenced JSON', () => {
+    const decision = parseActiveTaskDecision('```json\n{"decision":"append_after_current","actions":[{"type":"craft","item":"torch"}]}\n```');
+    assert.equal(decision.valid, false);
+    assert.deepEqual(decision.actions, []);
 });
 
 test('normal action JSON during active task infers append or cancel intent', () => {
@@ -219,11 +258,11 @@ test('structured bridge response normalizes sleep command aliases', () => {
     assert.deepEqual(parsed.commands, ['#sleep', '#sleep']);
 });
 
-test('multi-object bridge response preserves commands', () => {
+test('multi-object bridge response cannot dispatch commands', () => {
     const parsed = parseBridgeResponse('{"reply":""}\n{"commands":["#sleep"]}', true);
 
-    assert.equal(parsed.structured, true);
-    assert.deepEqual(parsed.commands, ['#sleep']);
+    assert.equal(parsed.structured, false);
+    assert.deepEqual(parsed.commands, []);
 });
 
 test('nether mine followed by overworld move inserts return action', async () => {
@@ -532,4 +571,386 @@ test('shouldCancelAfterBatchDispatchFailure queue_busy and invalid_action still 
         success: false,
         results: [{ status: 'rejected', failure_code: 'raw_command_forbidden' }],
     }), true);
+});
+
+test('observation keeps receiving chat while slow message reasoning is outstanding', async () => {
+    const states = [
+        {
+            connected: true,
+            seq: 1,
+            player_name: 'Miku',
+            x: 0,
+            y: 64,
+            z: 0,
+            health: 20,
+            inventory: [],
+            chat_events: [{ type: 'player', sender: 'Alex', message: '<Alex> first request' }],
+            recent_events: [],
+        },
+        {
+            connected: true,
+            seq: 2,
+            player_name: 'Miku',
+            x: 1,
+            y: 64,
+            z: 0,
+            health: 20,
+            inventory: [],
+            chat_events: [{ type: 'player', sender: 'Alex', message: '<Alex> second request' }],
+            recent_events: [],
+        },
+    ];
+    let releaseFirst;
+    let markFirstStarted;
+    const firstBlocked = new Promise(resolve => { releaseFirst = resolve; });
+    const firstStarted = new Promise(resolve => { markFirstStarted = resolve; });
+    const handled = [];
+    let polls = 0;
+    const agent = Object.create(BridgeAgent.prototype);
+    Object.assign(agent, {
+        stopped: false,
+        name: 'Miku',
+        _generation: 100,
+        _inboundQueue: [],
+        _reasoningQueue: [],
+        _reasoningKeys: new Set(),
+        _reasoningWorkerPromise: null,
+        _lastState: null,
+        _lastStateSeq: null,
+        _lastStateStr: '',
+        _bridgeReachable: true,
+        _pollIntervalMs: 2000,
+        _recentSentChats: [],
+        _nextWorldRecordAt: Number.POSITIVE_INFINITY,
+        _pendingContinuation: false,
+        _lastHadActions: false,
+        bridge: {
+            async getState() {
+                const state = states[polls];
+                polls += 1;
+                return state;
+            },
+        },
+        survivalReflex: { evaluate: () => null },
+        eventDetector: { check: () => [] },
+        history: { add() {}, save() {} },
+        worldMemory: { recordSighting() {} },
+        async _tickBuildValidation() {},
+        async _runAmbientTick() {},
+        async _runGoalTick() {},
+        async _handleActiveTaskMessage() {},
+        async _handleMessage(source, message) {
+            handled.push({ source, message });
+            if (message === 'first request') {
+                markFirstStarted();
+                await firstBlocked;
+            }
+        },
+    });
+
+    await agent._runObservationCycle();
+    await firstStarted;
+    await agent._runObservationCycle();
+
+    assert.equal(polls, 2);
+    assert.equal(agent._lastState.seq, 2);
+    assert.equal(agent._inboundQueue.length, 1);
+    assert.equal(agent._inboundQueue[0].message, 'second request');
+
+    releaseFirst();
+    await agent._reasoningWorkerPromise;
+    assert.deepEqual(handled.map(item => item.message), ['first request', 'second request']);
+});
+
+test('late model response from a stale generation does not enqueue work', async () => {
+    let releaseResponse;
+    const delayedResponse = new Promise(resolve => { releaseResponse = resolve; });
+    let dispatches = 0;
+    const historyEntries = [];
+    const agent = Object.create(BridgeAgent.prototype);
+    Object.assign(agent, {
+        name: 'Miku',
+        _generation: 200,
+        _knownItems: new Set(),
+        _lastState: { connected: true, x: 0, y: 64, z: 0, inventory: [] },
+        history: {
+            memory: '',
+            add(role, content) { historyEntries.push({ role, content }); },
+            getHistory() { return []; },
+            save() {},
+        },
+        episodicMemory: { lastPlayerChatAnsweredAt: 0 },
+        worldMemory: null,
+        _buildStateContext: () => '',
+        _promptConvoLocked: async () => await delayedResponse,
+        async _sendBatchWithBuildExpansion() {
+            dispatches += 1;
+            return { success: true, queued: 1 };
+        },
+        _updateEpisodicMemory() {},
+    });
+
+    const handling = agent._handleMessage(
+        'Alex',
+        'walk east',
+        agent._lastState,
+        200,
+    );
+    agent._generation = 201;
+    releaseResponse('{"reply":"","actions":[{"type":"move","x":10,"y":64,"z":0}]}');
+    await handling;
+
+    assert.equal(dispatches, 0);
+    assert.equal(historyEntries.some(entry => entry.role === 'Miku'), false);
+});
+
+test('superseded inbound message is kept in history', async () => {
+    const handled = [];
+    const historyAdds = [];
+    let release; const blocked = new Promise(r => { release = r; });
+    let started; const hasStarted = new Promise(r => { started = r; });
+
+    const agent = Object.create(BridgeAgent.prototype);
+    Object.assign(agent, {
+        stopped: false, name: 'Miku', _generation: 100,
+        _inboundQueue: [], _reasoningQueue: [], _reasoningKeys: new Set(),
+        _reasoningWorkerPromise: null, _lastState: { connected: true }, _pollIntervalMs: 2000,
+        bridge: {},
+        history: { add(src, msg) { historyAdds.push(msg); }, save() {} },
+        async _handleActiveTaskMessage() {},
+        async _handleMessage(source, message) {
+            handled.push(message);
+            if (message === 'slow one') { started(); await blocked; }
+        },
+    });
+
+    await agent._enqueueInboundMessage('Alex', 'slow one');
+    await hasStarted;
+    await agent._enqueueInboundMessage('Alex', 'follow me');
+    await agent._enqueueInboundMessage('Alex', 'actually get wood');
+    release();
+    await agent._reasoningWorkerPromise;
+
+    assert.deepEqual(handled, ['slow one', 'actually get wood'], 'latest request wins for dispatch');
+    assert.deepEqual(historyAdds, ['follow me'], 'superseded message is still recorded');
+});
+
+function systemOneActiveAgent(choice, confidence, llmResponse, order) {
+    const agent = Object.create(BridgeAgent.prototype);
+    const others = (1 - confidence) / 2;
+    const probs = { continue: others, cancel_replace: others, append_after_current: others, [choice]: confidence };
+    Object.assign(agent, {
+        name: 'Miku', _generation: 7, dispatched: [], episodicMemory: {},
+        history: { add() {}, async save() {} },
+        _systemOne: { async decide() { order.push('system-one'); return { choice, probs, ms: 80 }; } },
+        _logSystemOneShadow() {},
+        _buildStateContext() { return 'CURRENT STATE: test'; },
+        async _pollForQueueIdle() { return true; },
+        bridge: { async cancelQueue(generation) { order.push(`cancel@${generation}`); return { success: true }; } },
+        async _promptConvoLocked() { order.push('llm'); return llmResponse; },
+        _armVerification() {},
+        async _sendBatchWithBuildExpansion(actions, generation) {
+            order.push(`dispatch@${generation}`); agent.dispatched.push(...actions);
+            return { success: true, queued: actions.length };
+        },
+        _recordQueueDispatch() {},
+    });
+    return agent;
+}
+
+async function withSystemOneActive(fn) {
+    const { default: settings } = await import('../src/agent/settings.js');
+    const { serverProxy } = await import('../src/agent/mindserver_proxy.js');
+    const saved = [settings.bridge_system_one_active, serverProxy.socket];
+    settings.bridge_system_one_active = true;
+    serverProxy.socket = { emit() {} };
+    try { await fn(); } finally { [settings.bridge_system_one_active, serverProxy.socket] = saved; }
+}
+
+test('active System One stops the task before the LLM answers, then dispatches the replacement', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('cancel_replace', 0.9,
+            '{"decision":"cancel_replace","reply":"ok","actions":[{"type":"follow","target":"Alex"}]}', order);
+        await agent._handleActiveTaskMessage('Alex', 'stop and follow me', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(order, ['system-one', 'cancel@8', 'llm', 'dispatch@8']);
+        assert.equal(agent.dispatched[0].type, 'follow');
+    });
+});
+
+test('active System One below the confidence floor defers to the LLM', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('cancel_replace', 0.4, '{"decision":"continue","reply":"","actions":[]}', order);
+        await agent._handleActiveTaskMessage('Alex', 'hmm stop?', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(order, ['system-one', 'llm']);
+    });
+});
+
+test('active System One continue rejects repeated conflicting LLM decisions', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('continue', 0.8,
+            '{"decision":"append_after_current","reply":"","actions":[{"type":"follow","target":"Alex"}]}', order);
+        await agent._handleActiveTaskMessage('Alex', 'nice work!', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(order, ['system-one', 'llm', 'llm']);
+        assert.equal(agent.dispatched.length, 0);
+    });
+});
+
+test('a bare stop phrase cancels before the LLM even when System One says continue', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('continue', 0.9, '{"decision":"continue","reply":"okay","actions":[]}', order);
+        await agent._handleActiveTaskMessage('Alex', 'nvm', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(order, ['cancel@8']);
+    });
+});
+
+test('quoted examples and malformed envelopes never become executable actions', () => {
+    const samples = [
+        'Do not execute this example:\n```json\n{"type":"mine","target":"diamond_ore","count":64}\n```',
+        '{"type":"mine","target":"diamond_ore"}',
+        '{"reply":"example"}\n{"actions":[{"type":"cancel"}]}',
+        'COMMAND: #cancel',
+        '{"reply":"okay","actions":{"type":"cancel"}}',
+        '{"reply":"okay","actions":[null]}',
+        '{"commands":[{"command":"#cancel"}]}',
+    ];
+    for (const text of samples) {
+        for (const structured of [true, false]) {
+            const parsed = parseBridgeResponse(text, structured);
+            assert.equal(parsed.structured, false, text);
+            assert.deepEqual(parsed.actions, []);
+            assert.deepEqual(parsed.commands, []);
+        }
+        assert.equal(parseActiveTaskDecision(text).valid, false);
+    }
+});
+
+test('both models continuing cannot turn a negated craft request into actions', async () => {
+    await withSystemOneActive(async () => {
+        const agent = systemOneActiveAgent('continue', 0.9, '{"decision":"continue","actions":[]}', []);
+        await agent._handleActiveTaskMessage('Alex', 'Do not craft a crafting table', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(agent.dispatched, []);
+        assert.equal(agent._generation, 7);
+    });
+});
+
+test('bare stop never dispatches even if the unused model response contains actions', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('append_after_current', 0.9,
+            '{"decision":"append_after_current","actions":[{"type":"follow","target":"Alex"}]}', order);
+        await agent._handleActiveTaskMessage('Alex', 'nvm', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(order, ['cancel@8']);
+        assert.deepEqual(agent.dispatched, []);
+    });
+});
+
+test('append policy removes cancellation from typed and raw payloads', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('append_after_current', 0.99, JSON.stringify({
+            decision: 'append_after_current', actions: [
+                { type: 'cancel' }, { type: 'cancel_build' },
+                { type: 'raw_command', command: '#stop' }, { type: 'raw_command', command: '#cancel_build' },
+                { type: 'follow', target: 'Alex' },
+            ], commands: ['#cancel', 'stop', '#cancel_build'],
+        }), order);
+        await agent._handleActiveTaskMessage('Alex', 'follow me after you finish', { queue: { status: 'executing' } }, 7);
+        assert.deepEqual(agent.dispatched, [{ type: 'follow', target: 'Alex' }]);
+        assert.deepEqual(order, ['system-one', 'llm', 'dispatch@7']);
+    });
+});
+
+test('cancel handoff provides current policy, idle state, recent history and user-role request', async () => {
+    await withSystemOneActive(async () => {
+        const agent = systemOneActiveAgent('cancel_replace', 0.9, '', []);
+        const turns = [{ role: 'user', content: 'Alex: My target is the red house at 10 64 20' }];
+        agent.history = {
+            add(role, content) { turns.push({ role: role === 'Alex' ? 'user' : role, content: role === 'Alex' ? `Alex: ${content}` : content }); },
+            getHistory() { return turns; }, async save() {},
+        };
+        let sent;
+        agent._promptConvoLocked = (label, messages) => {
+            sent = messages;
+            return '{"decision":"cancel_replace","actions":[{"type":"move","x":10,"y":64,"z":20}]}';
+        };
+        await agent._handleActiveTaskMessage('Alex', 'go back there instead', { queue: { status: 'executing', active: '#mine iron_ore' } }, 7);
+        assert.match(sent[0].content, /Authoritative decision: cancel_replace/);
+        assert.match(sent[0].content, /Cancellation succeeded/);
+        assert.match(sent[0].content, /Queue status: idle/);
+        assert.ok(sent.some(turn => turn.content.includes('red house')));
+        assert.deepEqual(sent.at(-1), { role: 'user', content: 'Alex: go back there instead' });
+        assert.ok(!sent[0].content.includes('go back there instead'));
+        const { buildPromptPackQuery } = await import('../src/bridge/bridge_prompt_retriever.js');
+        assert.match(buildPromptPackQuery({ history: sent }), /go back there instead/);
+        let exampleQuery;
+        agent._bridgeExamples = { getRelevantSnippets(query) { exampleQuery = query; return []; } };
+        await agent._retrieveBridgeExamplesForHistory(sent);
+        assert.equal(exampleQuery, 'Alex: go back there instead');
+    });
+});
+
+test('one repair turn resolves disagreement before publishing reply or work', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('cancel_replace', 0.9, '', order);
+        let calls = 0;
+        agent._promptConvoLocked = () => ++calls === 1
+            ? '{"decision":"continue","reply":"I will keep mining","actions":[]}'
+            : '{"decision":"cancel_replace","reply":"Switching","actions":[{"type":"follow","target":"Alex"}]}';
+        await agent._handleActiveTaskMessage('Alex', 'follow me instead', { queue: { status: 'executing' } }, 7);
+        assert.equal(calls, 2);
+        assert.deepEqual(agent.dispatched, [{ type: 'follow', target: 'Alex' }]);
+        assert.deepEqual(order, ['system-one', 'cancel@8', 'dispatch@8']);
+    });
+});
+
+test('fast cancellation proceeds while the previous slow response is pending', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('continue', 0.9, '', order);
+        Object.assign(agent, {
+            stopped: false, _inboundQueue: [], _reasoningQueue: [], _reasoningKeys: new Set(),
+            _reasoningWorkerPromise: null, _lastState: { queue: { status: 'executing', active: '#mine iron_ore' } },
+        });
+        let releaseFirst;
+        let startedFirst;
+        const firstStarted = new Promise(resolve => { startedFirst = resolve; });
+        const firstResponse = new Promise(resolve => { releaseFirst = resolve; });
+        let calls = 0;
+        agent._systemOne.decide = state => {
+            const choice = state.playerMessage.text.includes('instead') ? 'cancel_replace' : 'continue';
+            order.push(`fast:${choice}`);
+            return { choice, probs: { [choice]: 0.9 }, ms: 1 };
+        };
+        agent._promptConvoLocked = async () => {
+            if (++calls === 1) { startedFirst(); return await firstResponse; }
+            return '{"decision":"cancel_replace","actions":[{"type":"follow","target":"Alex"}]}';
+        };
+        await agent._enqueueInboundMessage('Alex', 'nice work');
+        await firstStarted;
+        await agent._enqueueInboundMessage('Alex', 'follow me instead');
+        await agent._inboundQueue[0].prepared;
+        assert.ok(order.includes('cancel@10'), 'cancel happens before the old model response is released');
+        releaseFirst('{"decision":"continue","actions":[]}');
+        await agent._reasoningWorkerPromise;
+        assert.deepEqual(agent.dispatched, [{ type: 'follow', target: 'Alex' }]);
+    });
+});
+
+test('superseded fast decision cannot cancel the newer request', async () => {
+    await withSystemOneActive(async () => {
+        const order = [];
+        const agent = systemOneActiveAgent('cancel_replace', 0.9, '', order);
+        let release;
+        agent._systemOne.decide = () => new Promise(resolve => { release = resolve; });
+        const preparing = agent._prepareActiveTaskMessage('Alex', 'follow instead', { queue: { status: 'executing' } }, 7);
+        agent._generation = 8;
+        release({ choice: 'cancel_replace', probs: { cancel_replace: 0.9 }, ms: 1 });
+        assert.equal(await preparing, null);
+        assert.deepEqual(order, []);
+    });
 });

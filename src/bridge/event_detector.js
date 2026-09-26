@@ -59,21 +59,26 @@ export class EventDetector {
             }
             // new_player_nearby
             const prevPlayers = new Set(this.lastState.nearby_players || []);
-            const currPlayers = new Set(state.nearby_players || []);
+            const effectivePlayers = state.nearby_players !== undefined
+                ? state.nearby_players
+                : this.lastState?.nearby_players;
+            const currPlayers = new Set(effectivePlayers || []);
             for (const name of currPlayers) {
                 if (!prevPlayers.has(name)) {
-                    if (this._canFire('new_player_nearby', now)) {
+                    const key = `new_player_nearby:${name}`;
+                    if (this._canFire(key, now, COOLDOWNS.new_player_nearby)) {
                         events.push({ type: 'new_player_nearby', detail: name, source: 'diff' });
-                        this._recordFire('new_player_nearby', now);
+                        this._recordFire(key, now);
                     }
                 }
             }
             // player_left_nearby
             for (const name of prevPlayers) {
                 if (!currPlayers.has(name)) {
-                    if (this._canFire('player_left_nearby', now)) {
+                    const key = `player_left_nearby:${name}`;
+                    if (this._canFire(key, now, COOLDOWNS.player_left_nearby)) {
                         events.push({ type: 'player_left_nearby', detail: name, source: 'diff' });
-                        this._recordFire('player_left_nearby', now);
+                        this._recordFire(key, now);
                     }
                 }
             }
@@ -98,8 +103,8 @@ export class EventDetector {
         return events;
     }
 
-    _canFire(type, now) {
-        const cooldown = COOLDOWNS[type] || 0;
+    _canFire(type, now, cooldownOverride) {
+        const cooldown = cooldownOverride !== undefined ? cooldownOverride : (COOLDOWNS[type] || 0);
         const last = this.cooldowns.get(type) || 0;
         return (now - last) >= cooldown;
     }

@@ -325,7 +325,7 @@ export function resolveBuildRequest(request, state) {
     // Origin: 2 blocks in the direction the player is facing, at current y.
     // When the state doesn't expose yaw we fall back to 2 blocks north (+Z).
     let ox, oy, oz;
-    if (req.origin && Number.isFinite(req.origin.x)) {
+    if (req.origin && Number.isFinite(req.origin.x) && Number.isFinite(req.origin.y) && Number.isFinite(req.origin.z)) {
         ox = req.origin.x;
         oy = req.origin.y;
         oz = req.origin.z;

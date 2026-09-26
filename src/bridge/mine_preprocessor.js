@@ -198,6 +198,28 @@ function parseRawGotoCoordinates(command) {
     return { x, y, z };
 }
 
+// ── Pickaxe tier guard ─────────────────────────────────────────────────
+// Blocks that drop nothing without a good enough pickaxe. Values are the
+// minimum tier (1 wood/gold, 2 stone, 3 iron, 4 diamond/netherite).
+const REQUIRED_PICKAXE_TIER = {
+    stone: 1, cobblestone: 1, deepslate: 1, cobbled_deepslate: 1, netherrack: 1,
+    coal_ore: 1, nether_quartz_ore: 1,
+    iron_ore: 2, copper_ore: 2, lapis_ore: 2,
+    gold_ore: 3, diamond_ore: 3, redstone_ore: 3, emerald_ore: 3,
+    obsidian: 4, crying_obsidian: 4, ancient_debris: 4,
+};
+const PICKAXE_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 4 };
+const PICKAXE_FOR_TIER = { 1: 'wooden_pickaxe', 2: 'stone_pickaxe', 3: 'iron_pickaxe', 4: 'diamond_pickaxe' };
+
+function bestPickaxeTier(inventory) {
+    let best = 0;
+    for (const stack of inventory) {
+        const tier = PICKAXE_TIER[normalizeBlockName(stack?.item || '')];
+        if (tier > best) best = tier;
+    }
+    return best;
+}
+
 function getMineActionInfo(action) {
     if (!action || typeof action !== 'object') return null;
     if (action.type === 'mine' && action.target) {
@@ -365,14 +387,25 @@ export async function preprocessMineActions(actions, state, bridge) {
 
     const currentDim = normalizeDimension(state?.dimension || 'minecraft:overworld');
     const playerPos = { x: state?.x, y: state?.y, z: state?.z };
+    const originPos = { x: state?.x, y: state?.y, z: state?.z, dimension: state?.dimension };
 
     const out = [];
     let virtualDim = currentDim;
     let mustReturnToDim = null;
     let lastMineKey = '';
+    // Only guard tools when the inventory is actually known.
+    let pickaxeTier = Array.isArray(state?.inventory) ? bestPickaxeTier(state.inventory) : Infinity;
 
     for (const action of actions) {
+        if (action?.type === 'craft') pickaxeTier = Math.max(pickaxeTier, PICKAXE_TIER[normalizeBlockName(action.item)] || 0);
         const mineInfo = getMineActionInfo(action);
+        const requiredTier = mineInfo ? REQUIRED_PICKAXE_TIER[mineInfo.canonical] || 0 : 0;
+        if (requiredTier > pickaxeTier) {
+            // The craft planner resolves the pickaxe's own prerequisites.
+            out.push({ type: 'craft', item: PICKAXE_FOR_TIER[requiredTier], count: 1 });
+            pickaxeTier = requiredTier;
+            lastMineKey = '';
+        }
 
         if (!mineInfo) {
             if (mustReturnToDim && !isReturnActionForDimension(action, mustReturnToDim)) {
@@ -431,7 +464,17 @@ export async function preprocessMineActions(actions, state, bridge) {
     }
 
     if (mustReturnToDim) {
-        out.push(makeTravelAction(mustReturnToDim));
+        // Attach the player's starting position so an auto-return to the
+        // overworld brings them back to where mining began rather than an
+        // arbitrary point. (Nether/End travel actions carry no waypoint.)
+        const waypoint = mustReturnToDim === 'overworld'
+            ? makeReturnWaypoint(
+                { type: 'move', x: originPos.x, y: originPos.y, z: originPos.z, dimension: originPos.dimension },
+                state,
+                mustReturnToDim,
+            )
+            : null;
+        out.push(makeTravelAction(mustReturnToDim, waypoint));
     }
 
     return out;
