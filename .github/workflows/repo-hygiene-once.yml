@@ -1,0 +1,59 @@
+name: One-off repository hygiene
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/repo-hygiene-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-lock-and-autofix:
+    if: github.event.head_commit.message == 'Run one-off repository hygiene'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact dependencies and generate lockfile
+        run: npm install
+
+      - name: Apply safe ESLint autofixes
+        run: npx eslint src test main.js --fix || true
+
+      - name: Run Node tests after autofix
+        run: node --test test/*.test.js
+
+      - name: Record remaining lint count
+        shell: bash
+        run: |
+          set +e
+          npx eslint src test main.js -f json > eslint-after.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const rows = JSON.parse(fs.readFileSync('eslint-after.json', 'utf8'));
+          const errors = rows.reduce((n, r) => n + r.errorCount, 0);
+          const fixable = rows.reduce((n, r) => n + r.fixableErrorCount, 0);
+          console.log(`Remaining ESLint errors: ${errors}; fixable: ${fixable}`);
+          NODE
+
+      - name: Commit generated lockfile and autofixes
+        shell: bash
+        run: |
+          rm -f eslint-after.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json src test main.js
+          if git diff --cached --quiet; then
+            echo "No generated changes."
+            exit 0
+          fi
+          git commit -m "Generate lockfile and apply ESLint autofixes [skip hygiene]"
+          git push origin HEAD:beta
