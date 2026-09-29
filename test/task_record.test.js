@@ -11,6 +11,7 @@ import { SkillLibrary } from '../src/bridge/skill_library.js';
 import {
     createTaskRecord,
     appendTaskBatch,
+    addRetrievedSkillIds,
     closeTaskRecord,
     flattenTaskActions,
     batchHasRejection,
@@ -46,6 +47,7 @@ function makeAgent({ prompt = async () => '', sendBatch = async () => ({ success
         _promptInFlight: false,
         _continuationSource: null,
         _currentTaskText: '',
+        _pendingRetrievedSkills: null,
         _nextGoalTickAt: 0,
         _inboundQueue: [],
         _reasoningQueue: [],
@@ -104,6 +106,15 @@ test('close is exactly-once and append deep-copies', () => {
     assert.equal(closeTaskRecord(record, 'plan-complete'), 'plan-complete');
     assert.equal(closeTaskRecord(record, 'plan-complete'), null);
     assert.equal(appendTaskBatch(record, [{ type: 'mine' }]), false);
+});
+
+test('G2 task record de-duplicates and bounds retrieved skill ids', () => {
+    const record = createTaskRecord({ label: 'get logs', baseline: new Map() });
+    assert.equal(addRetrievedSkillIds(record, ['a', 'a', '', null, 'b']), true);
+    assert.deepEqual(record.retrievedSkillIds, ['a', 'b']);
+    assert.equal(addRetrievedSkillIds(record, ['a', 'b']), false);
+    closeTaskRecord(record, 'done');
+    assert.equal(addRetrievedSkillIds(record, ['c']), false, 'closed records cannot gain attribution candidates');
 });
 
 test('idle eligibility: only fresh connected idle with zero work', () => {
@@ -480,6 +491,86 @@ test('benign chat advances generation but the accepted record survives', async (
     await agent._continuePlan(1);
     assert.equal(idleFetches, 0, 'stale continuation must not run');
     assert.equal(record.closed, false);
+});
+
+// ── G2 retrieval attribution and verified failure lessons ────────────
+
+test('G2 first-prompt retrieval ids transfer into the task record created after inference', async () => {
+    const agent = makeAgent();
+    const skill = await agent.skillLibrary.recordOutcome(
+        'fetch oak logs',
+        [mineOak(2)],
+        { met: true, results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }] },
+    );
+    agent._currentTaskText = 'fetch oak logs';
+    const context = await agent._retrieveSkillsForTask();
+    assert.match(context, /PROVEN PLANS/);
+    assert.deepEqual(agent._pendingRetrievedSkills?.ids, [skill.id]);
+
+    const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+    assert.deepEqual(record.retrievedSkillIds, [skill.id]);
+    assert.equal(agent._pendingRetrievedSkills, null);
+});
+
+test('G2 retrieval during an active task attaches ids directly to that identity', async () => {
+    const agent = makeAgent();
+    const skill = await agent.skillLibrary.recordOutcome(
+        'fetch oak logs',
+        [mineOak(2)],
+        { met: true, results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }] },
+    );
+    const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+    await agent._retrieveSkillsForTask();
+    assert.deepEqual(record.retrievedSkillIds, [skill.id]);
+    assert.equal(agent._pendingRetrievedSkills, null);
+});
+
+test('definite verified failure records a lesson instead of disappearing', async () => {
+    const saved = settings.bridge_reward_enabled;
+    settings.bridge_reward_enabled = true;
+    try {
+        const agent = makeAgent();
+        const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+        agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+        agent.bridge.getState = async () => ({
+            connected: true,
+            inventory: [],
+            queue: { status: 'idle', pending: 0, active: null },
+        });
+        const result = await agent._closeTaskWithVerification('plan-complete', agent._lastState, record.id);
+        assert.equal(result.learned, false);
+        assert.equal(result.lessonRecorded, true);
+        assert.equal(agent.skillLibrary.data.lessons.length, 1);
+        assert.match(agent.skillLibrary.data.lessons[0].text, /fell short/);
+    } finally {
+        settings.bridge_reward_enabled = saved;
+    }
+});
+
+test('G2 exact successful skill is not double-credited as retrieved reuse', async () => {
+    const saved = settings.bridge_reward_enabled;
+    settings.bridge_reward_enabled = true;
+    try {
+        const agent = makeAgent();
+        const existing = await agent.skillLibrary.recordOutcome(
+            'fetch oak logs',
+            [mineOak(2)],
+            { met: true, results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }] },
+        );
+        const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+        addRetrievedSkillIds(record, [existing.id]);
+        agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+        agent.bridge.getState = async () => ({
+            connected: true,
+            inventory: [{ item: 'minecraft:oak_log', count: 2 }],
+            queue: { status: 'idle', pending: 0, active: null },
+        });
+        await agent._closeTaskWithVerification('plan-complete', agent._lastState, record.id);
+        assert.equal(existing.successes, 2, 'direct execution increments exactly once');
+        assert.equal(existing.retrievalSuccesses || 0, 0, 'same exact skill is excluded from reuse credit');
+    } finally {
+        settings.bridge_reward_enabled = saved;
+    }
 });
 
 // ── once-only learning and reward-disabled ────────────────────────────

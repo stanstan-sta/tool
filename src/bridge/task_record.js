@@ -46,6 +46,10 @@ export function createTaskRecord({ label, origin = 'player', baseline = null, ge
         origin: String(origin || 'player'),
         baseline: baseline instanceof Map ? new Map(baseline) : new Map(),
         batches: [],
+        // G2: IDs of skills that were actually surfaced to the model while
+        // this task identity was active. These are attribution candidates
+        // only; trust changes happen later, after a definite verified outcome.
+        retrievedSkillIds: [],
         generation: Number.isSafeInteger(generation) ? generation : null,
         attempt: Number.isSafeInteger(attempt) && attempt > 0 ? attempt : 1,
         createdAt: Date.now(),
@@ -64,6 +68,23 @@ export function appendTaskBatch(record, actions) {
     if (!Array.isArray(actions) || actions.length === 0) return false;
     record.batches.push(deepCopyActions(actions));
     return true;
+}
+
+export function addRetrievedSkillIds(record, ids, maxIds = 16) {
+    if (!isRecordOpen(record) || !Array.isArray(ids) || ids.length === 0) return false;
+    if (!Array.isArray(record.retrievedSkillIds)) record.retrievedSkillIds = [];
+    const seen = new Set(record.retrievedSkillIds);
+    let changed = false;
+    const limit = Number.isSafeInteger(maxIds) && maxIds > 0 ? maxIds : 16;
+    for (const raw of ids) {
+        if (record.retrievedSkillIds.length >= limit) break;
+        const id = typeof raw === 'string' ? raw.trim() : '';
+        if (!id || seen.has(id)) continue;
+        record.retrievedSkillIds.push(id);
+        seen.add(id);
+        changed = true;
+    }
+    return changed;
 }
 
 // Close exactly once. Returns the close reason on the first call, null after.

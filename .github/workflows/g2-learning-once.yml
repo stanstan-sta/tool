@@ -1,0 +1,43 @@
+name: One-off G2 learning attribution validation
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/g2-learning-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.event.head_commit.message == 'Implement G2 retrieved-skill attribution'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Clean install
+        run: npm ci
+      - name: Focused G2 regressions
+        run: node --test test/task_record.test.js test/p3b_skill_storage.test.js
+      - name: Full Node suite
+        shell: bash
+        run: |
+          mapfile -t tests < <(find test -maxdepth 1 -name '*.test.js' ! -name 'server_data.test.js' -print | sort)
+          node --test "${tests[@]}"
+      - name: Repository lint
+        run: npx eslint src test main.js
+      - name: Commit validated files and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/g2-learning-once.yml
+          git add src/bridge/task_record.js src/bridge/skill_library.js src/bridge/bridge_agent.js test/task_record.test.js test/p3b_skill_storage.test.js
+          git commit -m "Validate G2 retrieved-skill attribution [skip g2-once]"
+          git push origin HEAD:beta

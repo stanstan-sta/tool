@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SkillLibrary, canonicalActions, normaliseTask, formatSkillContext } from '../src/bridge/skill_library.js';
+import { SkillLibrary, canonicalActions, normaliseTask, formatSkillContext, actionTokenSet, skillActionOverlap } from '../src/bridge/skill_library.js';
 import { verifyOutcome, snapshotInventory, expectFromActions } from '../src/bridge/outcome_verifier.js';
 
 function tempLibrary(embeddingModel = null) {
@@ -266,6 +266,97 @@ test('F10 persistence failures are visible and return false', () => {
         console.error = originalError;
         rmSync(dir, { recursive: true, force: true });
     }
+});
+
+// G2: retrieved-skill outcome attribution
+test('G2 action-token overlap ignores count but requires matching type:item identity', () => {
+    const candidate = [
+        { type: 'mine', target: 'oak_log', count: 2 },
+        { type: 'craft', item: 'oak_planks', count: 4 },
+    ];
+    const actual = [
+        { type: 'mine', target: 'oak_log', count: 16 },
+        { type: 'craft', item: 'oak_planks', count: 64 },
+        { type: 'craft', item: 'stick', count: 4 },
+    ];
+    assert.deepEqual([...actionTokenSet(candidate)].sort(), ['craft:oak_planks', 'mine:oak_log']);
+    assert.equal(skillActionOverlap(candidate, actual), 1);
+    assert.equal(skillActionOverlap(candidate, [{ type: 'mine', target: 'birch_log', count: 2 }]), 0);
+});
+
+test('G2 verified reuse credits matching retrieved skills and ignores unrelated ones', async () => {
+    const { lib, cleanup } = tempLibrary();
+    try {
+        const used = await lib.recordOutcome('fetch oak logs', [
+            { type: 'mine', target: 'oak_log', count: 2 },
+        ], {
+            met: true,
+            results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }],
+        });
+        const unrelated = await lib.recordOutcome('craft a table', craftTable,
+            verify([], [{ item: 'crafting_table', count: 1 }], craftTable));
+
+        const attributed = lib.attributeRetrievedOutcome(
+            [used.id, unrelated.id],
+            [{ type: 'mine', target: 'oak_log', count: 12 }],
+            true,
+        );
+        assert.deepEqual(attributed.map(x => x.id), [used.id]);
+        assert.equal(used.retrievalSuccesses, 1);
+        assert.equal(used.retrievalFailures || 0, 0);
+        assert.equal(unrelated.retrievalSuccesses || 0, 0);
+    } finally { cleanup(); }
+});
+
+test('G2 verified reuse failure can remove trust, while excluded direct skill is untouched', async () => {
+    const { lib, cleanup } = tempLibrary();
+    try {
+        const skill = await lib.recordOutcome('fetch oak logs', [
+            { type: 'mine', target: 'oak_log', count: 2 },
+        ], {
+            met: true,
+            results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }],
+        });
+        assert.equal(SkillLibrary.isTrusted(skill), true);
+
+        lib.attributeRetrievedOutcome(
+            [skill.id],
+            [{ type: 'mine', target: 'oak_log', count: 99 }],
+            false,
+        );
+        assert.equal(skill.retrievalFailures, 1);
+        assert.equal(SkillLibrary.isTrusted(skill), false, '1 success / 1 attributed failure is not trusted');
+
+        lib.attributeRetrievedOutcome(
+            [skill.id],
+            [{ type: 'mine', target: 'oak_log', count: 99 }],
+            true,
+            { excludeIds: [skill.id] },
+        );
+        assert.equal(skill.retrievalSuccesses || 0, 0, 'excluded direct skill is not double-counted');
+    } finally { cleanup(); }
+});
+
+test('G2 load normalizes persisted retrieval evidence counters', () => {
+    const { lib, dir, cleanup } = tempLibrary();
+    try {
+        writeFileSync(join(dir, 'skills.json'), JSON.stringify({
+            skills: [{
+                id: 's1',
+                task: 'fetch oak logs',
+                actions: [{ type: 'mine', target: 'oak_log', count: 2 }],
+                successes: 2,
+                failures: 0,
+                retrievalSuccesses: '3',
+                retrievalFailures: -4,
+            }],
+            lessons: [],
+        }));
+        lib.load();
+        assert.equal(lib.data.skills[0].retrievalSuccesses, 3);
+        assert.equal(lib.data.skills[0].retrievalFailures, 0);
+        assert.equal(SkillLibrary.isTrusted(lib.data.skills[0]), true);
+    } finally { cleanup(); }
 });
 
 // F11: concurrent recordOutcome serializes, no duplicate ids

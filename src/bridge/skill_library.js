@@ -79,6 +79,45 @@ export function actionSignature(actions) {
     return JSON.stringify(canonicalActions(actions));
 }
 
+export function actionTokenSet(actions) {
+    const tokens = new Set();
+    for (const action of canonicalActions(actions)) {
+        const type = String(action.type || '').toLowerCase();
+        const item = action.item ?? action.target ?? action.block ?? action.output;
+        if (!type || item === undefined || item === null || item === '') continue;
+        const normalizedItem = normItem(item);
+        if (!normalizedItem) continue;
+        tokens.add(`${type}:${normalizedItem}`);
+    }
+    return tokens;
+}
+
+export function skillActionOverlap(skillActions, actualActions) {
+    const expected = actionTokenSet(skillActions);
+    if (expected.size === 0) return 0;
+    const actual = actionTokenSet(actualActions);
+    let matched = 0;
+    for (const token of expected) {
+        if (actual.has(token)) matched++;
+    }
+    return matched / expected.size;
+}
+
+function evidenceCounts(skill) {
+    const successes = Math.max(0, Number(skill?.successes) || 0);
+    const failures = Math.max(0, Number(skill?.failures) || 0);
+    const retrievalSuccesses = Math.max(0, Number(skill?.retrievalSuccesses) || 0);
+    const retrievalFailures = Math.max(0, Number(skill?.retrievalFailures) || 0);
+    return {
+        successes,
+        failures,
+        retrievalSuccesses,
+        retrievalFailures,
+        totalSuccesses: successes + retrievalSuccesses,
+        totalFailures: failures + retrievalFailures,
+    };
+}
+
 export class SkillLibrary {
     /**
      * @param {string} filePath JSON persistence path
@@ -181,6 +220,7 @@ export class SkillLibrary {
             const lesson = {
                 task: normaliseStoredText(task, MAX_TASK_TEXT_LEN),
                 taskNorm,
+                ...(skill?.id ? { skillId: skill.id } : {}),
                 text: normaliseStoredText(
                     `Plan ${signature.slice(0, 160)} fell short (${missing || 'no gain'}). Try a different approach or gather prerequisites first.`,
                     MAX_LESSON_TEXT_LEN),
@@ -193,9 +233,37 @@ export class SkillLibrary {
         });
     }
 
-    // A skill is trusted while it has succeeded more often than it has failed.
+    // Trust combines direct executions with attributed reuse. A retrieved
+    // plan only contributes when its action-token overlap with the verified
+    // dispatched work meets the G2 threshold.
     static isTrusted(skill) {
-        return skill.successes > 0 && skill.successes > skill.failures;
+        const evidence = evidenceCounts(skill);
+        return evidence.totalSuccesses > 0 && evidence.totalSuccesses > evidence.totalFailures;
+    }
+
+    attributeRetrievedOutcome(skillIds, actualActions, met, { minOverlap = 0.8, excludeIds = [] } = {}) {
+        if (!Array.isArray(skillIds) || skillIds.length === 0 || typeof met !== 'boolean') return [];
+        const ids = new Set(skillIds.filter(id => typeof id === 'string' && id));
+        const excluded = new Set((excludeIds || []).filter(id => typeof id === 'string' && id));
+        const attributed = [];
+        const now = Date.now();
+
+        for (const skill of this.data.skills) {
+            if (!ids.has(skill.id) || excluded.has(skill.id)) continue;
+            const overlap = skillActionOverlap(skill.actions, actualActions);
+            if (!Number.isFinite(overlap) || overlap < minOverlap) continue;
+            if (met) skill.retrievalSuccesses = Math.max(0, Number(skill.retrievalSuccesses) || 0) + 1;
+            else skill.retrievalFailures = Math.max(0, Number(skill.retrievalFailures) || 0) + 1;
+            skill.lastAttributedAt = now;
+            skill.lastUsedAt = now;
+            attributed.push({ id: skill.id, overlap, met });
+        }
+
+        if (attributed.length > 0) {
+            this._prune();
+            this.save();
+        }
+        return attributed;
     }
 
     _score(query, queryVec, entry) {
@@ -329,8 +397,10 @@ export class SkillLibrary {
                 taskNorm,
                 signature,
                 actions,
-                successes: Number.isFinite(Number(row.successes)) ? Number(row.successes) : 0,
-                failures: Number.isFinite(Number(row.failures)) ? Number(row.failures) : 0,
+                successes: Math.max(0, Number.isFinite(Number(row.successes)) ? Number(row.successes) : 0),
+                failures: Math.max(0, Number.isFinite(Number(row.failures)) ? Number(row.failures) : 0),
+                retrievalSuccesses: Math.max(0, Number.isFinite(Number(row.retrievalSuccesses)) ? Number(row.retrievalSuccesses) : 0),
+                retrievalFailures: Math.max(0, Number.isFinite(Number(row.retrievalFailures)) ? Number(row.retrievalFailures) : 0),
                 embedding: isFiniteVector(row.embedding) ? quantizeVector(row.embedding) : undefined,
             });
         }
@@ -386,7 +456,8 @@ export function formatSkillContext({ skills = [], lessons = [] } = {}) {
     if (skills.length) {
         lines.push('PROVEN PLANS (verified to work in this world; reuse or adapt when the task matches):');
         for (const row of skills) {
-            lines.push(`- task=${JSON.stringify(String(row.task || ''))} (${row.successes} ok/${row.failures} failed): ${JSON.stringify({ actions: row.actions })}`);
+            const evidence = evidenceCounts(row);
+            lines.push(`- task=${JSON.stringify(String(row.task || ''))} (direct ${evidence.successes} ok/${evidence.failures} failed; reused ${evidence.retrievalSuccesses} ok/${evidence.retrievalFailures} failed): ${JSON.stringify({ actions: row.actions })}`);
         }
     }
     if (lessons.length) {

@@ -16,10 +16,10 @@ import { preprocessMineActions } from './mine_preprocessor.js';
 import { GoalManager, parseGoalCommand, inferGoalTarget } from './goal_manager.js';
 import { WorldMemory, parseWaypointCommand, extractNotablePositions } from './world_memory.js';
 import { expectFromActions, snapshotInventory, verifyOutcome } from './outcome_verifier.js';
-import { createTaskRecord, appendTaskBatch, closeTaskRecord, flattenTaskActions, batchHasRejection, isEligibleIdleSnapshot, isQueueOmitted } from './task_record.js';
+import { createTaskRecord, appendTaskBatch, addRetrievedSkillIds, closeTaskRecord, flattenTaskActions, batchHasRejection, isEligibleIdleSnapshot, isQueueOmitted } from './task_record.js';
 import { SurvivalReflex } from './survival_reflex.js';
 import { SystemOne } from './system_one.js';
-import { SkillLibrary, formatSkillContext } from './skill_library.js';
+import { SkillLibrary, formatSkillContext, normaliseTask } from './skill_library.js';
 import { Curriculum } from './curriculum.js';
 import { buildFabricStateLines, summarizeOpenScreen } from './state_summary.js';
 import { hasServerData, getServerPlayers, findServerPlayer, getServerEvents, getServerFacts } from './server_data.js';
@@ -749,6 +749,10 @@ export class BridgeAgent {
         // Voyager-style self-improvement: verified plans become reusable skills, failures
         // become lessons, and an automatic curriculum proposes goals when idle.
         this._currentTaskText = '';
+        // G2: retrieval can occur before a task record exists (the first LLM
+        // prompt). Keep only the latest query's surfaced IDs until dispatch
+        // creates the matching task identity.
+        this._pendingRetrievedSkills = null;
         this.skillLibrary = settings.bridge_skill_library_enabled !== false
             ? new SkillLibrary(`./bots/${this.name}/skills.json`, this.prompter.embedding_model || null)
             : null;
@@ -1020,6 +1024,18 @@ export class BridgeAgent {
             const found = await this.skillLibrary.retrieve(query, {
                 k: settings.bridge_skill_retrieve_count ?? 3,
             });
+            const ids = (found.skills || [])
+                .map(skill => skill?.id)
+                .filter(id => typeof id === 'string' && id);
+            const record = this._activeTaskRecord();
+            if (record) {
+                addRetrievedSkillIds(record, ids);
+            } else {
+                this._pendingRetrievedSkills = {
+                    taskNorm: normaliseTask(query),
+                    ids: [...new Set(ids)].slice(0, 16),
+                };
+            }
             return formatSkillContext(found);
         } catch (err) {
             console.warn('Skill retrieval failed:', err.message || err);
@@ -2103,6 +2119,12 @@ export class BridgeAgent {
         record.id = ++this._taskSeq;
         this._taskRecord = record;
         this._currentTaskText = clean;
+        const pending = this._pendingRetrievedSkills;
+        if (pending && pending.taskNorm === normaliseTask(clean)) {
+            addRetrievedSkillIds(record, pending.ids);
+        }
+        // Never let retrieval evidence leak across distinct task identities.
+        this._pendingRetrievedSkills = null;
         return record;
     }
 
@@ -2289,17 +2311,42 @@ export class BridgeAgent {
         } catch {
             // Reward logging is best-effort.
         }
-        if (verification.met && this.skillLibrary && record.label) {
+        let outcomeEntry = null;
+        if (this.skillLibrary && record.label) {
+            // Definite verified failures are useful learning evidence too:
+            // recordOutcome's failure branch creates a bounded lesson and
+            // debits an exact known plan when one exists.
             try {
-                const entry = await this.skillLibrary.recordOutcome(record.label, actions, verification);
-                if (entry && entry.successes === 1) sendOutputToServer(this.name, `Learned skill: ${entry.task}`);
-                return { closed, learned: true };
+                outcomeEntry = await this.skillLibrary.recordOutcome(record.label, actions, verification);
+                if (verification.met && outcomeEntry?.successes === 1) {
+                    sendOutputToServer(this.name, `Learned skill: ${outcomeEntry.task}`);
+                }
             } catch (err) {
-                console.warn('Skill library update failed:', err.message || err);
-                return { closed, learned: false };
+                console.warn('Skill library outcome update failed:', err.message || err);
+            }
+
+            // G2: close the loop on plans that were actually surfaced to the
+            // model. Attribution is deliberately loose on count but strict on
+            // action identity (>=80% type:item overlap), and only happens here
+            // after fresh terminal verification. Exclude the directly updated
+            // exact skill so one outcome never counts twice.
+            try {
+                const directId = verification.met ? outcomeEntry?.id : outcomeEntry?.skillId;
+                this.skillLibrary.attributeRetrievedOutcome?.(
+                    record.retrievedSkillIds || [],
+                    actions,
+                    verification.met,
+                    { excludeIds: directId ? [directId] : [] },
+                );
+            } catch (err) {
+                console.warn('Skill retrieval attribution failed:', err.message || err);
             }
         }
-        return { closed, learned: false };
+        return {
+            closed,
+            learned: verification.met && !!outcomeEntry?.id,
+            lessonRecorded: !verification.met && !!outcomeEntry,
+        };
     }
 
     _survivalSafePos(state) {
