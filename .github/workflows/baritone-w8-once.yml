@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: stanstan-sta/morebaritone
-          ref: 9c0ac851d6155cd5dac40ce0a0849501bf0d0b83
+          ref: d1eb37df482fbcd547ee70d6accfedc4834f813f
           fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
@@ -28,5 +28,5 @@ jobs:
       - name: Verify reviewed head
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "9c0ac851d6155cd5dac40ce0a0849501bf0d0b83"
+          test "$(git rev-parse HEAD)" = "d1eb37df482fbcd547ee70d6accfedc4834f813f"
           git diff --check 8260e63b422435d955a04f3a3dd6000d776d132b..HEAD
