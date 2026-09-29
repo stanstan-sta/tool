@@ -6,7 +6,7 @@ This section supersedes older status summaries below; historical findings are re
 
 **Verified after the follow-up:**
 - clean `npm ci` with all six `patch-package` patches applying;
-- **338/338 Node tests pass** when the protected legacy `test/server_data.test.js` is excluded, matching the established test convention for this branch; the added regressions include vLLM SDK construction and typed durable-memory migration/validation;
+- **347/347 Node tests pass** when the protected legacy `test/server_data.test.js` is excluded, matching the established test convention for this branch; current regressions include vLLM SDK construction, typed durable-memory migration/validation, and closed-loop skill attribution;
 - `npx eslint src test main.js` is clean after resolving the historical repo-wide lint backlog; `bridge_agent.js` is clean independently;
 - Fabric bridge Java tests complete successfully under **JDK 21**; an earlier CI failure was only the runner using Java 17, not a Java test failure;
 - the official `openai` dependency is now pinned to **7.23.0** so the code's `Responses` API and `AzureOpenAI` import actually exist. The upgrade workflow smoke-tested AzureOpenAI, Responses, Chat Completions and Embeddings surfaces, then reran the Node suite and lint;
@@ -24,6 +24,7 @@ This section supersedes older status summaries below; historical findings are re
 - F16 companion events are visible to the observation consumer without being hidden by the `since` fast path, are consumed once, and are discarded rather than injected when `bridge_server_data_enabled` is false.
 - The SES lockdown wrapper, dependency/patch reproducibility, generated repository artifacts, machine-specific launcher paths, line endings and lockfile issues from the broader repository review are fixed.
 - Two legacy correctness bugs exposed during lint cleanup were fixed: exception stack handling in `action_manager.js` and an undeclared `res` in `npc/item_goal.js`. Detached async work now has explicit await/rejection ownership instead of floating promises.
+- G2 closed-loop retrieval is now implemented: task records retain the IDs of skills actually surfaced to the model; first-prompt retrieval is transferred into the later task identity; active-task retrieval attaches directly; terminal fresh verification credits/debits only retrieved skills with at least 0.8 `type:item` overlap; direct exact-skill updates are excluded from reuse attribution to prevent double-counting. Definite verified failures now also reach the existing lesson writer instead of disappearing. Retrieval evidence persists and contributes to skill trust. Focused tests plus clean `npm ci`, the full 347-test Node suite and repo-wide lint pass.
 
 **Items that remain open by design/evidence rather than known unfixed source regressions:**
 - A9 is now source-complete: durable memory persists a versioned typed fact schema (`preference|reminder|correction|fact|outcome`), legacy string memories migrate safely, malformed/hostile facts fail closed, and existing prompts receive only a compact rendered compatibility string. Focused memory regressions, clean `npm ci`, the full 338-test Node suite and repo-wide lint pass.
@@ -202,7 +203,7 @@ P1–P3 make the existing layer *correct*; it would then only get better at repe
 ### Design review (independent, Fable 5.1; claims marked ✓ were re-verified by grep)
 **Missing after P1–P3 (G#):**
 - G1 Skills are constants: `item`/`count` literal, matched by exact task text + signature, so "8 oak logs" never helps "16 birch logs" and `successes` rarely exceeds 1. → store `{target_item}`/`{target_count}` slots from the verified target; instantiate at retrieval.
-- G2 Open-loop retrieval: nothing records whether a retrieved skill was used or helped, so trust can't move. → task record stores `retrievedSkillIds`; credit/debit by loose match (≥0.8 overlap of `type:item`) on definite outcomes only.
+- G2 **DONE:** task records store surfaced `retrievedSkillIds`; fresh definite outcomes credit/debit matching retrieved skills at ≥0.8 `type:item` overlap, persistence/trust includes reuse evidence, and exact direct updates are excluded from reuse double-counting.
 - G3 No fast path: mastered tasks still cost a full System Two call. → if a skill has ≥3 successes/0 failures and stored preconditions hold, dispatch directly (`bridge_skill_fastpath_enabled`, off by default); one failure disables it for that skill. Fewer LLM calls per repeated task is the measurable definition of improvement.
 - G4 Lessons have no cause and never resolve. Baritone's `Task failed: <label> - <reason>` carries a category that is discarded. → parse into an enum (`not_found|no_path|invalid_args|no_tool|interrupted|timeout|unknown`); skip lessons for interruptions; a later success marks lessons resolved. Optional one-sentence critic call only for `unknown`.
 - G5 Verification is inventory-only. → per-type verifiers returning met/not_met/null: build → `validateHouse` score ≥0.8 (score exists but never reaches reward), move → distance <4, sleep → day phase changes, attack → hostile count/drops. Log `goal_done` claims vs verifier.
