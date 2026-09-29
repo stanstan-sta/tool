@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { SkillLibrary, canonicalActions, normaliseTask, formatSkillContext, actionTokenSet, skillActionOverlap } from '../src/bridge/skill_library.js';
+import { SkillLibrary, canonicalActions, normaliseTask, formatSkillContext, actionTokenSet, skillActionOverlap, classifyFailureReason } from '../src/bridge/skill_library.js';
 import { verifyOutcome, snapshotInventory, expectFromActions } from '../src/bridge/outcome_verifier.js';
 
 function tempLibrary(embeddingModel = null) {
@@ -356,6 +356,58 @@ test('G2 load normalizes persisted retrieval evidence counters', () => {
         assert.equal(lib.data.skills[0].retrievalSuccesses, 3);
         assert.equal(lib.data.skills[0].retrievalFailures, 0);
         assert.equal(SkillLibrary.isTrusted(lib.data.skills[0]), true);
+    } finally { cleanup(); }
+});
+
+// G4: categorized and resolvable failure lessons
+test('G4 failure reasons map to stable categories', () => {
+    assert.equal(classifyFailureReason('mine - no_path'), 'no_path');
+    assert.equal(classifyFailureReason('target not found'), 'not_found');
+    assert.equal(classifyFailureReason('invalid argument: count'), 'invalid_args');
+    assert.equal(classifyFailureReason('missing tool: pickaxe'), 'no_tool');
+    assert.equal(classifyFailureReason('worker timed out'), 'timeout');
+    assert.equal(classifyFailureReason('cancelled by player'), 'interrupted');
+    assert.equal(classifyFailureReason('strange provider failure'), 'unknown');
+});
+
+test('G4 repeated identical failures coalesce and interruptions create no lesson', async () => {
+    const { lib, cleanup } = tempLibrary();
+    try {
+        const actions = [{ type: 'mine', target: 'oak_log', count: 2 }];
+        const first = lib.recordFailureLesson('fetch oak logs', actions, 'mine - no_path');
+        const second = lib.recordFailureLesson('fetch oak logs', actions, 'pathing failed: no path');
+        assert.equal(first, second);
+        assert.equal(first.category, 'no_path');
+        assert.equal(first.occurrences, 2);
+        assert.equal(lib.data.lessons.length, 1);
+
+        const interrupted = lib.recordFailureLesson('fetch oak logs', actions, 'cancelled by player');
+        assert.equal(interrupted, null);
+        assert.equal(lib.data.lessons.length, 1);
+    } finally { cleanup(); }
+});
+
+test('G4 later success resolves prior task lessons and retrieval hides them', async () => {
+    const { lib, cleanup } = tempLibrary();
+    try {
+        const actions = [{ type: 'mine', target: 'oak_log', count: 2 }];
+        const lesson = lib.recordFailureLesson('fetch oak logs', actions, 'target not found');
+        assert.equal(lesson.resolvedAt, null);
+        assert.equal(lib.failureCount('fetch oak logs'), 1);
+
+        const before = await lib.retrieve('fetch oak logs', { k: 0, lessonK: 3 });
+        assert.equal(before.lessons.length, 1);
+
+        const skill = await lib.recordOutcome('fetch oak logs', actions, {
+            met: true,
+            results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }],
+        });
+        assert.ok(lesson.resolvedAt > 0);
+        assert.equal(lesson.resolvedBySkillId, skill.id);
+        assert.equal(lib.failureCount('fetch oak logs'), 0);
+
+        const after = await lib.retrieve('fetch oak logs', { k: 0, lessonK: 3 });
+        assert.equal(after.lessons.length, 0, 'resolved lessons are no longer injected');
     } finally { cleanup(); }
 });
 

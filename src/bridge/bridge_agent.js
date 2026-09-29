@@ -19,7 +19,7 @@ import { expectFromActions, snapshotInventory, verifyOutcome } from './outcome_v
 import { createTaskRecord, appendTaskBatch, addRetrievedSkillIds, closeTaskRecord, flattenTaskActions, batchHasRejection, isEligibleIdleSnapshot, isQueueOmitted } from './task_record.js';
 import { SurvivalReflex } from './survival_reflex.js';
 import { SystemOne } from './system_one.js';
-import { SkillLibrary, formatSkillContext, normaliseTask } from './skill_library.js';
+import { SkillLibrary, formatSkillContext, normaliseTask, classifyFailureReason } from './skill_library.js';
 import { Curriculum } from './curriculum.js';
 import { buildFabricStateLines, summarizeOpenScreen } from './state_summary.js';
 import { hasServerData, getServerPlayers, findServerPlayer, getServerEvents, getServerFacts } from './server_data.js';
@@ -1763,6 +1763,7 @@ export class BridgeAgent {
                         console.log(`${this.name} task failed: ${reason}`);
                         sendOutputToServer(this.name, `WARNING: Task failed: ${reason}`);
                         const failedRecord = this._activeTaskRecord();
+                        if (failedRecord) this._recordDefiniteTaskFailure(failedRecord, reason);
                         this._retireTaskRecord(`task-failed:${reason || 'unknown'}`);
                         this._pendingContinuation = false;
                         this._lastHadActions = false;
@@ -2168,6 +2169,32 @@ export class BridgeAgent {
         this._lastHadActions = false;
         this._noteTaskRecord(record, 'An active task record was retired with no outcome recorded.', closed);
         return closed;
+    }
+
+    _recordDefiniteTaskFailure(record, reason) {
+        if (!record || record.closed || !this.skillLibrary || settings.bridge_reward_enabled === false) return null;
+        const category = classifyFailureReason(reason);
+        if (category === 'interrupted') return null;
+        const actions = flattenTaskActions(record);
+        if (actions.length === 0) return null;
+
+        let lesson = null;
+        try {
+            lesson = this.skillLibrary.recordFailureLesson(record.label, actions, reason);
+        } catch (err) {
+            console.warn('Skill failure lesson update failed:', err.message || err);
+        }
+        try {
+            this.skillLibrary.attributeRetrievedOutcome?.(
+                record.retrievedSkillIds || [],
+                actions,
+                false,
+                { excludeIds: lesson?.skillId ? [lesson.skillId] : [] },
+            );
+        } catch (err) {
+            console.warn('Skill failure attribution failed:', err.message || err);
+        }
+        return lesson;
     }
 
     // Accept one bridge dispatch into the record. Only clean acceptance
@@ -2676,7 +2703,10 @@ export class BridgeAgent {
         // workers report failure this way, with no Baritone log line).
         if (state.queue?.paused === true || String(state.queue?.status || '').toLowerCase() === 'paused') {
             const detail = state.queue?.lastFailure || state.queue?.last_failure || 'paused';
-            if (record) this._retireTaskRecord(`queue-paused:${detail}`, record.id);
+            if (record) {
+                this._recordDefiniteTaskFailure(record, String(detail));
+                this._retireTaskRecord(`queue-paused:${detail}`, record.id);
+            }
             this._lastHadActions = false;
             this._pendingContinuation = false;
             this._scheduleReasoningTask(800, {

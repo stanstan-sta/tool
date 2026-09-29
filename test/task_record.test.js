@@ -425,6 +425,8 @@ test('Task failed retires; recovery is a new attempt under the original label', 
     });
     await agent._runObservationCycle();
     assert.match(failed.closeReason, /^task-failed:/);
+    assert.equal(agent.skillLibrary.data.lessons.length, 1, 'definite server failure becomes one lesson');
+    assert.equal(agent.skillLibrary.data.lessons[0].category, 'no_path');
     const scheduled = agent.scheduled.find(s => s.key === 'failure-recovery');
     assert.ok(scheduled);
     assert.equal(scheduled.task.taskLabel, 'fetch oak logs');
@@ -437,6 +439,42 @@ test('Task failed retires; recovery is a new attempt under the original label', 
     assert.notEqual(retry.id, failed.id);
     assert.equal(retry.label, 'fetch oak logs', 'not relabelled with the failure string');
     assert.equal(retry.attempt, failed.attempt + 1);
+});
+
+test('G4 interruption-like server failure is neutral for lessons and retrieved-skill trust', async () => {
+    const agent = makeAgent();
+    const skill = await agent.skillLibrary.recordOutcome(
+        'fetch oak logs',
+        [mineOak(2)],
+        { met: true, results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }] },
+    );
+    const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+    addRetrievedSkillIds(record, [skill.id]);
+    agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+
+    const lesson = agent._recordDefiniteTaskFailure(record, 'cancelled by player');
+    assert.equal(lesson, null);
+    assert.equal(agent.skillLibrary.data.lessons.length, 0);
+    assert.equal(skill.failures, 0);
+    assert.equal(skill.retrievalFailures || 0, 0);
+});
+
+test('G4 exact server failure debits direct plan once without duplicate retrieved debit', async () => {
+    const agent = makeAgent();
+    const skill = await agent.skillLibrary.recordOutcome(
+        'fetch oak logs',
+        [mineOak(2)],
+        { met: true, results: [{ item: 'oak_log', expectedGain: 2, gained: 2, met: true }] },
+    );
+    const record = agent._startTaskRecord('fetch oak logs', 'player', 1);
+    addRetrievedSkillIds(record, [skill.id]);
+    agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+
+    const lesson = agent._recordDefiniteTaskFailure(record, 'mine - no_path');
+    assert.equal(lesson.category, 'no_path');
+    assert.equal(lesson.skillId, skill.id);
+    assert.equal(skill.failures, 1, 'exact plan gets one direct failure');
+    assert.equal(skill.retrievalFailures || 0, 0, 'same exact plan is excluded from duplicate reuse debit');
 });
 
 test('cancel_replace replaces the identity; stale records cannot learn', async () => {

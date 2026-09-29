@@ -17,6 +17,23 @@ const MAX_TASK_TEXT_LEN = 200;
 const MAX_LESSON_TEXT_LEN = 500;
 const EMBED_INSTRUCTION = 'Given a Minecraft task, retrieve previously successful plans for similar tasks.';
 
+export const FAILURE_CATEGORIES = Object.freeze([
+    'not_found', 'no_path', 'invalid_args', 'no_tool', 'interrupted', 'timeout', 'unknown',
+]);
+const FAILURE_CATEGORY_SET = new Set(FAILURE_CATEGORIES);
+
+export function classifyFailureReason(reason) {
+    const text = String(reason || '').toLowerCase().replace(/[_-]+/g, ' ');
+    if (!text.trim()) return 'unknown';
+    if (/\b(interrupt(?:ed|ion)?|cancel(?:led|ed)?|stopp?ed|aborted?)\b/.test(text)) return 'interrupted';
+    if (/\b(time ?out|timed out|deadline exceeded)\b/.test(text)) return 'timeout';
+    if (/\b(no path|path(?:ing)? failed|unreachable|cannot reach|can't reach|could not reach)\b/.test(text)) return 'no_path';
+    if (/\b(no tool|missing tool|tool required|requires? (?:a )?(?:pickaxe|axe|shovel|hoe|shears))\b/.test(text)) return 'no_tool';
+    if (/\b(invalid (?:arg|argument|parameter)|bad (?:arg|argument|parameter)|illegal argument|unsupported (?:arg|action|target))\b/.test(text)) return 'invalid_args';
+    if (/\b(not found|no .{0,40} found|missing (?:target|block|item|entity|resource)|unknown (?:block|item|entity|target))\b/.test(text)) return 'not_found';
+    return 'unknown';
+}
+
 // Stored task/lesson text: collapse newlines/runs of whitespace, trim, cap
 // length. Retrieval fences text as user-role data; this keeps loaded rows in
 // the same schema/shape the writer produces so overlong or multi-line rows
@@ -167,6 +184,81 @@ export class SkillLibrary {
         }
     }
 
+    _upsertLesson({ task, taskNorm, signature, category = 'unknown', text, skillId = null, now = Date.now() }) {
+        const normalizedCategory = FAILURE_CATEGORY_SET.has(category) ? category : 'unknown';
+        let lesson = this.data.lessons.find(row =>
+            !row.resolvedAt
+            && row.taskNorm === taskNorm
+            && row.signature === signature
+            && (row.category || 'unknown') === normalizedCategory);
+        if (lesson) {
+            lesson.text = normaliseStoredText(text, MAX_LESSON_TEXT_LEN);
+            lesson.occurrences = Math.max(1, Number(lesson.occurrences) || 1) + 1;
+            lesson.lastSeenAt = now;
+            if (skillId) lesson.skillId = skillId;
+            return lesson;
+        }
+        lesson = {
+            task: normaliseStoredText(task, MAX_TASK_TEXT_LEN),
+            taskNorm,
+            signature,
+            category: normalizedCategory,
+            text: normaliseStoredText(text, MAX_LESSON_TEXT_LEN),
+            at: now,
+            lastSeenAt: now,
+            occurrences: 1,
+            resolvedAt: null,
+            ...(skillId ? { skillId } : {}),
+        };
+        this.data.lessons.push(lesson);
+        if (this.data.lessons.length > MAX_LESSONS) {
+            this.data.lessons.splice(0, this.data.lessons.length - MAX_LESSONS);
+        }
+        return lesson;
+    }
+
+    _resolveLessons(taskNorm, skillId, now = Date.now()) {
+        let changed = 0;
+        for (const lesson of this.data.lessons) {
+            if (lesson.taskNorm !== taskNorm || lesson.resolvedAt) continue;
+            lesson.resolvedAt = now;
+            if (skillId) lesson.resolvedBySkillId = skillId;
+            changed++;
+        }
+        return changed;
+    }
+
+    recordFailureLesson(task, actions, reason) {
+        const taskNorm = normaliseTask(task);
+        const canon = canonicalActions(actions);
+        if (!taskNorm || canon.length === 0) return null;
+        const category = classifyFailureReason(reason);
+        // Interruptions/cancellations are ownership changes, not evidence that
+        // a plan is bad. They neither create lessons nor reduce trust.
+        if (category === 'interrupted') return null;
+
+        const signature = JSON.stringify(canon);
+        const now = Date.now();
+        const skill = this.data.skills.find(row => row.taskNorm === taskNorm && row.signature === signature);
+        if (skill) {
+            skill.failures = Math.max(0, Number(skill.failures) || 0) + 1;
+            skill.lastUsedAt = now;
+        }
+        const reasonText = normaliseStoredText(reason || 'unknown failure', 180);
+        const lesson = this._upsertLesson({
+            task,
+            taskNorm,
+            signature,
+            category,
+            skillId: skill?.id || null,
+            now,
+            text: `Plan failed [${category}]: ${reasonText || 'unknown failure'}. Avoid repeating it without changing the failed precondition or approach.`,
+        });
+        this._prune();
+        this.save();
+        return lesson;
+    }
+
     /**
      * Record the verified outcome of one dispatched batch.
      * @param {string} task the request/goal that produced the batch
@@ -204,6 +296,7 @@ export class SkillLibrary {
                 }
                 skill.successes += 1;
                 skill.lastUsedAt = now;
+                this._resolveLessons(taskNorm, skill.id, now);
                 this._prune();
                 this.save();
                 return skill;
@@ -215,19 +308,18 @@ export class SkillLibrary {
             }
             const missing = (verification.results || []).filter(r => !r.met)
                 .map(r => `${r.item} +${r.gained}/${r.expectedGain}`).join(', ');
-            // F10: lessons are short text only — never embedded, so the DB does
-            // not pay a 1024-d vector per failure.
-            const lesson = {
-                task: normaliseStoredText(task, MAX_TASK_TEXT_LEN),
+            // F10/G4: lessons are short text only — never embedded. Verification
+            // shortfalls do not expose a more specific server cause, so they
+            // use the explicit unknown category rather than inventing one.
+            const lesson = this._upsertLesson({
+                task,
                 taskNorm,
-                ...(skill?.id ? { skillId: skill.id } : {}),
-                text: normaliseStoredText(
-                    `Plan ${signature.slice(0, 160)} fell short (${missing || 'no gain'}). Try a different approach or gather prerequisites first.`,
-                    MAX_LESSON_TEXT_LEN),
-                at: now,
-            };
-            this.data.lessons.push(lesson);
-            if (this.data.lessons.length > MAX_LESSONS) this.data.lessons.splice(0, this.data.lessons.length - MAX_LESSONS);
+                signature,
+                category: 'unknown',
+                skillId: skill?.id || null,
+                now,
+                text: `Plan ${signature.slice(0, 160)} fell short (${missing || 'no gain'}). Try a different approach or gather prerequisites first.`,
+            });
             this.save();
             return lesson;
         });
@@ -327,7 +419,8 @@ export class SkillLibrary {
             .sort((a, b) => b.score - a.score);
         const skills = rank(this.data.skills.filter(SkillLibrary.isTrusted))
             .slice(0, k).map(r => r.entry);
-        const lessons = rank(this.data.lessons).slice(0, lessonK).map(r => r.entry);
+        const lessons = rank(this.data.lessons.filter(lesson => !lesson.resolvedAt))
+            .slice(0, lessonK).map(r => r.entry);
         return { skills, lessons };
     }
 
@@ -338,7 +431,7 @@ export class SkillLibrary {
 
     failureCount(task) {
         const t = normaliseTask(task);
-        return this.data.lessons.filter(l => l.taskNorm === t).length;
+        return this.data.lessons.filter(l => l.taskNorm === t && !l.resolvedAt).length;
     }
 
     _prune() {
@@ -411,11 +504,22 @@ export class SkillLibrary {
             const task = normaliseStoredText(row.task, MAX_TASK_TEXT_LEN);
             if (!task) continue;
             const { embedding: _dropped, ...rest } = row;
+            const category = FAILURE_CATEGORY_SET.has(String(row.category || 'unknown'))
+                ? String(row.category || 'unknown')
+                : 'unknown';
+            const resolvedAt = Number.isFinite(Number(row.resolvedAt)) && Number(row.resolvedAt) > 0
+                ? Number(row.resolvedAt)
+                : null;
             lessons.push({
                 ...rest,
                 task,
                 taskNorm: normaliseTask(task),
+                signature: typeof row.signature === 'string' ? row.signature : '',
+                category,
                 text: normaliseStoredText(row.text, MAX_LESSON_TEXT_LEN),
+                occurrences: Math.max(1, Number(row.occurrences) || 1),
+                resolvedAt,
+                resolvedBySkillId: typeof row.resolvedBySkillId === 'string' ? row.resolvedBySkillId : undefined,
             });
         }
 
@@ -463,7 +567,7 @@ export function formatSkillContext({ skills = [], lessons = [] } = {}) {
     if (lessons.length) {
         lines.push('PAST FAILURES ON SIMILAR TASKS (avoid repeating):');
         for (const row of lessons) {
-            lines.push(`- task=${JSON.stringify(String(row.task || ''))}: ${JSON.stringify(String(row.text || ''))}`);
+            lines.push(`- [${row.category || 'unknown'}] task=${JSON.stringify(String(row.task || ''))}: ${JSON.stringify(String(row.text || ''))}`);
         }
     }
     return lines.join('\n');

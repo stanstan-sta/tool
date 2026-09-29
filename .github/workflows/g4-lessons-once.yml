@@ -1,0 +1,43 @@
+name: One-off G4 failure lesson validation
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/g4-lessons-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.event.head_commit.message == 'Implement G4 categorized failure lessons'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Clean install
+        run: npm ci
+      - name: Focused G4 regressions
+        run: node --test test/task_record.test.js test/p3b_skill_storage.test.js
+      - name: Full Node suite
+        shell: bash
+        run: |
+          mapfile -t tests < <(find test -maxdepth 1 -name '*.test.js' ! -name 'server_data.test.js' -print | sort)
+          node --test "${tests[@]}"
+      - name: Repository lint
+        run: npx eslint src test main.js
+      - name: Commit validated files and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/g4-lessons-once.yml
+          git add src/bridge/skill_library.js src/bridge/bridge_agent.js test/task_record.test.js test/p3b_skill_storage.test.js
+          git commit -m "Validate G4 categorized failure lessons [skip g4-once]"
+          git push origin HEAD:beta
