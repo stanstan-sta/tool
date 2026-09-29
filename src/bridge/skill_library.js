@@ -7,13 +7,32 @@
 // the next attempt sees what went wrong. Nothing here executes actions: retrieval only
 // shapes the prompt, and the existing queue/continuation loop still runs everything.
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync } from 'fs';
 import { safeCosineSimilarity } from '../models/embedding_normaliser.js';
 import { wordOverlapScore } from '../utils/text.js';
 
 const MAX_SKILLS = 300;
 const MAX_LESSONS = 100;
+const MAX_TASK_TEXT_LEN = 200;
+const MAX_LESSON_TEXT_LEN = 500;
 const EMBED_INSTRUCTION = 'Given a Minecraft task, retrieve previously successful plans for similar tasks.';
+
+// Stored task/lesson text: collapse newlines/runs of whitespace, trim, cap
+// length. Retrieval fences text as user-role data; this keeps loaded rows in
+// the same schema/shape the writer produces so overlong or multi-line rows
+// cannot reach the prompt unnormalized.
+export function normaliseStoredText(text, maxLen = MAX_TASK_TEXT_LEN) {
+    return String(text || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLen);
+}
+
+function quantizeVector(vec) {
+    if (!Array.isArray(vec)) return vec;
+    return vec.map(n => (typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 1e4) / 1e4 : n));
+}
+
+function isFiniteVector(v) {
+    return Array.isArray(v) && v.length > 0 && v.every(Number.isFinite);
+}
 
 const normItem = n => String(n || '').replace(/^minecraft:/i, '').toLowerCase();
 
@@ -23,10 +42,16 @@ export function normaliseTask(text) {
 
 // Canonical form of an action batch: stable key order, no bookkeeping fields, and
 // position-specific coordinates dropped so a plan generalises beyond where it ran.
+// F5: a `move`/`goto` without x/y/z is unusable (the bridge move spec requires
+// coordinates), so coordinate-only move actions are dropped instead of stored
+// as a bare `{type:'move'}` that can never dispatch.
+const COORDINATE_ONLY_ACTION_TYPES = new Set(['move', 'goto']);
 export function canonicalActions(actions) {
     const out = [];
     for (const a of actions || []) {
         if (!a || typeof a !== 'object' || !a.type) continue;
+        const type = String(a.type);
+        if (COORDINATE_ONLY_ACTION_TYPES.has(type)) continue;
         const c = {};
         for (const key of Object.keys(a).sort()) {
             if (['x', 'y', 'z', 'id', 'generation', 'provider'].includes(key)) continue;
@@ -34,6 +59,9 @@ export function canonicalActions(actions) {
             if (v === undefined || v === null || v === '') continue;
             c[key] = typeof v === 'string' && /^(item|target|block)$/.test(key) ? normItem(v) : v;
         }
+        // Defensive: any other action that carried only coordinates (or nothing)
+        // beyond its type generalises to nothing usable — drop it.
+        if (Object.keys(c).length <= 1 && ('x' in a || 'y' in a || 'z' in a)) continue;
         out.push(c);
     }
     return out;
@@ -52,17 +80,42 @@ export class SkillLibrary {
         this.filePath = filePath;
         this.embeddingModel = embeddingModel;
         this.data = { skills: [], lessons: [] };
+        this._recordLocks = new Map();
+        this._idCounter = 0;
     }
 
-    async _embed(text) {
+    // F4: a transient provider failure degrades this call to lexical retrieval
+    // only. The model is kept so the next call can retry (same pattern as
+    // BridgePromptPackRetriever). `intent` is 'document' when storing vectors
+    // and 'query' when embedding a retrieval query (LocalEmbedding/Qwen3
+    // prefix pattern).
+    async _embed(text, intent = 'query') {
         if (!this.embeddingModel || !text) return null;
         try {
-            const v = await this.embeddingModel.embed(text, { intent: 'query', instruction: EMBED_INSTRUCTION });
-            return Array.isArray(v) && v.length > 0 && v.every(Number.isFinite) ? v : null;
+            const v = await this.embeddingModel.embed(text, { intent, instruction: EMBED_INSTRUCTION });
+            if (!isFiniteVector(v)) return null;
+            return intent === 'document' ? quantizeVector(v) : v;
         } catch (err) {
             console.warn('SkillLibrary: embed failed, using lexical retrieval:', err.message || err);
-            this.embeddingModel = null;
             return null;
+        }
+    }
+
+    // F11: serialize recordOutcome per skill key so two concurrent records for
+    // the same task+signature cannot both miss, await embedding, and insert
+    // duplicates.
+    async _withRecordLock(key, fn) {
+        const prev = this._recordLocks.get(key) || Promise.resolve();
+        let release;
+        const cur = new Promise(resolve => { release = resolve; });
+        const tail = prev.then(() => cur);
+        this._recordLocks.set(key, tail);
+        await prev;
+        try {
+            return await fn();
+        } finally {
+            release();
+            if (this._recordLocks.get(key) === tail) this._recordLocks.delete(key);
         }
     }
 
@@ -73,53 +126,62 @@ export class SkillLibrary {
      * @param {{met: boolean, results: object[]}} verification from verifyOutcome
      * @returns {Promise<object|null>} the skill or lesson that was written
      */
-    async recordOutcome(task, actions, verification) {
+    recordOutcome(task, actions, verification) {
         const taskNorm = normaliseTask(task);
         const canon = canonicalActions(actions);
         if (!taskNorm || canon.length === 0 || !verification) return null;
         const signature = JSON.stringify(canon);
-        const now = Date.now();
-        let skill = this.data.skills.find(s => s.taskNorm === taskNorm && s.signature === signature);
+        const key = `${taskNorm}::${signature}`;
+        // Serialize per skill key: the find-or-create below must not interleave
+        // with a concurrent record for the same key across the embedding await.
+        return this._withRecordLock(key, async () => {
+            const now = Date.now();
+            let skill = this.data.skills.find(s => s.taskNorm === taskNorm && s.signature === signature);
 
-        if (verification.met) {
-            if (!skill) {
-                skill = {
-                    id: `skill_${now.toString(36)}_${this.data.skills.length}`,
-                    task: String(task).trim().slice(0, 200),
-                    taskNorm,
-                    signature,
-                    actions: canon,
-                    successes: 0,
-                    failures: 0,
-                    createdAt: now,
-                    embedding: await this._embed(String(task)),
-                };
-                this.data.skills.push(skill);
+            if (verification.met) {
+                if (!skill) {
+                    const taskText = normaliseStoredText(task, MAX_TASK_TEXT_LEN);
+                    skill = {
+                        id: `skill_${now.toString(36)}_${(this._idCounter++).toString(36)}`,
+                        task: taskText,
+                        taskNorm,
+                        signature,
+                        actions: canon,
+                        successes: 0,
+                        failures: 0,
+                        createdAt: now,
+                        embedding: await this._embed(taskText, 'document'),
+                    };
+                    this.data.skills.push(skill);
+                }
+                skill.successes += 1;
+                skill.lastUsedAt = now;
+                this._prune();
+                this.save();
+                return skill;
             }
-            skill.successes += 1;
-            skill.lastUsedAt = now;
-            this._prune();
-            this.save();
-            return skill;
-        }
 
-        if (skill) {
-            skill.failures += 1;
-            skill.lastUsedAt = now;
-        }
-        const missing = (verification.results || []).filter(r => !r.met)
-            .map(r => `${r.item} +${r.gained}/${r.expectedGain}`).join(', ');
-        const lesson = {
-            task: String(task).trim().slice(0, 200),
-            taskNorm,
-            text: `Plan ${signature.slice(0, 160)} fell short (${missing || 'no gain'}). Try a different approach or gather prerequisites first.`,
-            at: now,
-            embedding: await this._embed(String(task)),
-        };
-        this.data.lessons.push(lesson);
-        if (this.data.lessons.length > MAX_LESSONS) this.data.lessons.splice(0, this.data.lessons.length - MAX_LESSONS);
-        this.save();
-        return lesson;
+            if (skill) {
+                skill.failures += 1;
+                skill.lastUsedAt = now;
+            }
+            const missing = (verification.results || []).filter(r => !r.met)
+                .map(r => `${r.item} +${r.gained}/${r.expectedGain}`).join(', ');
+            // F10: lessons are short text only — never embedded, so the DB does
+            // not pay a 1024-d vector per failure.
+            const lesson = {
+                task: normaliseStoredText(task, MAX_TASK_TEXT_LEN),
+                taskNorm,
+                text: normaliseStoredText(
+                    `Plan ${signature.slice(0, 160)} fell short (${missing || 'no gain'}). Try a different approach or gather prerequisites first.`,
+                    MAX_LESSON_TEXT_LEN),
+                at: now,
+            };
+            this.data.lessons.push(lesson);
+            if (this.data.lessons.length > MAX_LESSONS) this.data.lessons.splice(0, this.data.lessons.length - MAX_LESSONS);
+            this.save();
+            return lesson;
+        });
     }
 
     // A skill is trusted while it has succeeded more often than it has failed.
@@ -134,12 +196,45 @@ export class SkillLibrary {
         return wordOverlapScore(query, entry.task);
     }
 
+    // Embedding dimension migration: a stored vector whose length differs
+    // from the current query vector belongs to an older model dim. Re-embed
+    // that entry's task text (document intent) per entry and persist the
+    // migrated vector; entries that cannot be re-embedded lose their vector
+    // and fall back to lexical scoring explicitly rather than silently.
+    async _migrateStaleEmbeddings(queryVec) {
+        if (!isFiniteVector(queryVec) || !this.embeddingModel) return false;
+        let migrated = false;
+        for (const entry of this.data.skills) {
+            if (!Array.isArray(entry.embedding) || entry.embedding.length === queryVec.length) continue;
+            try {
+                const v = await this._embed(String(entry.task || entry.taskNorm || ''), 'document');
+                if (isFiniteVector(v) && v.length === queryVec.length) {
+                    entry.embedding = v;
+                } else {
+                    entry.embedding = undefined;
+                }
+                migrated = true;
+            } catch {
+                entry.embedding = undefined;
+                migrated = true;
+            }
+        }
+        return migrated;
+    }
+
     /**
      * @returns {Promise<{skills: object[], lessons: object[]}>}
      */
     async retrieve(query, { k = 3, lessonK = 2, minScore = 0.35 } = {}) {
         if (!query || (this.data.skills.length === 0 && this.data.lessons.length === 0)) return { skills: [], lessons: [] };
-        const queryVec = await this._embed(query);
+        const queryVec = await this._embed(query, 'query');
+        if (queryVec) {
+            try {
+                if (await this._migrateStaleEmbeddings(queryVec)) this.save();
+            } catch { /* migration is best-effort; scoring still applies */ }
+        }
+        // N8/N9 thresholds are unchanged (lexical 0.2 / cosine minScore 0.35):
+        // measurement-only until fixtures justify a change.
         const threshold = queryVec ? minScore : 0.2;
         const rank = list => list
             .map(entry => ({ entry, score: this._score(query, queryVec, entry) }))
@@ -174,8 +269,42 @@ export class SkillLibrary {
             if (existsSync(this.filePath)) {
                 const raw = JSON.parse(readFileSync(this.filePath, 'utf8'));
                 if (raw && typeof raw === 'object') {
-                    this.data.skills = Array.isArray(raw.skills) ? raw.skills : [];
-                    this.data.lessons = Array.isArray(raw.lessons) ? raw.lessons : [];
+                    // F6: normalize loaded rows to the writer schema — task
+                    // text collapsed to one line and capped, taskNorm
+                    // recomputed, malformed rows dropped. Lessons never carry
+                    // vectors (F10); strip any legacy lesson embeddings here.
+                    const skills = [];
+                    for (const s of (Array.isArray(raw.skills) ? raw.skills : [])) {
+                        if (!s || typeof s !== 'object') continue;
+                        const task = normaliseStoredText(s.task, MAX_TASK_TEXT_LEN);
+                        if (!task) continue;
+                        const taskNorm = normaliseTask(task);
+                        if (!taskNorm || typeof s.signature !== 'string' || !s.signature) continue;
+                        if (!Array.isArray(s.actions) || s.actions.length === 0) continue;
+                        skills.push({
+                            ...s,
+                            task,
+                            taskNorm,
+                            successes: Number.isFinite(Number(s.successes)) ? Number(s.successes) : 0,
+                            failures: Number.isFinite(Number(s.failures)) ? Number(s.failures) : 0,
+                            embedding: isFiniteVector(s.embedding) ? quantizeVector(s.embedding) : undefined,
+                        });
+                    }
+                    const lessons = [];
+                    for (const l of (Array.isArray(raw.lessons) ? raw.lessons : [])) {
+                        if (!l || typeof l !== 'object') continue;
+                        const task = normaliseStoredText(l.task, MAX_TASK_TEXT_LEN);
+                        if (!task) continue;
+                        const { embedding: _dropped, ...rest } = l;
+                        lessons.push({
+                            ...rest,
+                            task,
+                            taskNorm: normaliseTask(task),
+                            text: normaliseStoredText(l.text, MAX_LESSON_TEXT_LEN),
+                        });
+                    }
+                    this.data.skills = skills.slice(-MAX_SKILLS);
+                    this.data.lessons = lessons.slice(-MAX_LESSONS);
                 }
             }
         } catch { /* ignore corrupt library */ }
@@ -183,7 +312,16 @@ export class SkillLibrary {
     }
 
     save() {
-        try { writeFileSync(this.filePath, JSON.stringify(this.data)); } catch { /* non-fatal */ }
+        // F10: atomic tmp-file + rename so a crash mid-write never leaves a
+        // truncated skills.json; lessons carry no vectors and stored skill
+        // vectors are quantized to 4 decimals to bound DB size.
+        const tmp = `${this.filePath}.tmp.${Date.now().toString(36)}${(this._idCounter++).toString(36)}`;
+        try {
+            writeFileSync(tmp, JSON.stringify(this.data));
+            renameSync(tmp, this.filePath);
+        } catch {
+            try { unlinkSync(tmp); } catch { /* non-fatal */ }
+        }
     }
 }
 

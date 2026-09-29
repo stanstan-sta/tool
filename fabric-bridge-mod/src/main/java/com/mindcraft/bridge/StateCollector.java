@@ -223,6 +223,18 @@ public class StateCollector {
     }
 
     /** Build and return the complete state as a JSON string. */
+    // W7: companion events never bump stateSeq (the state hash excludes
+    // them), so the incremental decision must explicitly account for pending
+    // server_events. Otherwise a companion-only arrival stays invisible
+    // through repeated since= polls — and collectOnClientThread drains the
+    // companion queue before the unchanged check, so the event would be
+    // silently lost.
+    static boolean isUnchangedPoll(Long sinceSeq, long seq, boolean chatEmpty,
+            boolean worldEmpty, java.util.List<String> serverEvents) {
+        return sinceSeq != null && sinceSeq == seq && chatEmpty && worldEmpty
+                && (serverEvents == null || serverEvents.isEmpty());
+    }
+
     public static String collect(Long sinceSeq, boolean includeSurfaceMap, int surfaceRadius, boolean drainEvents) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.isOnThread()) {
@@ -553,8 +565,8 @@ public class StateCollector {
         }
         long seq = stateSeq.get();
 
-        if (sinceSeq != null && sinceSeq == seq && chatQueue.isEmpty() && worldEventQueue.isEmpty()) {
-            return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[],\"recent_events\":[]}";
+        if (isUnchangedPoll(sinceSeq, seq, chatQueue.isEmpty(), worldEventQueue.isEmpty(), serverEvents)) {
+            return "{\"connected\":true,\"seq\":" + seq + ",\"player_name\":\"" + escape(player.getName().getString()) + "\",\"unchanged\":true,\"chat\":[],\"chat_events\":[],\"recent_events\":[],\"server_events\":[]}";
         }
 
         // Chat messages received since last poll; peek reads copy without draining.

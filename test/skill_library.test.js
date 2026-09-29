@@ -92,7 +92,9 @@ test('retrieval uses embeddings when available and falls back when embedding fai
 
         lib.embeddingModel = { embed: () => Promise.reject(new Error('offline')) };
         const lexical = await lib.retrieve('crafting table please');
-        assert.equal(lib.embeddingModel, null);
+        // F4: a transient failure degrades one call to lexical retrieval and
+        // must NOT null the model for the whole session.
+        assert.ok(lib.embeddingModel, 'model survives a transient embed failure');
         assert.equal(lexical.skills.length, 1);
     } finally { cleanup(); }
 });

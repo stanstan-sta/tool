@@ -987,11 +987,20 @@ export class BridgeAgent {
      * and is NOT rebuilt here, so the inference server can reuse its KV cache.
      * Returns '' when there is nothing dynamic to add this turn.
      */
-    async _buildBridgeDynamicBlock(memory, history = this.history?.turns || null) {
+    // N12: learned skill plans are injected only into task prompts
+    // (inbound/continuation/goal/failure). Ambient/event reasoning
+    // (proactive:*, ambient, event:*) receives memory/guidance/examples but
+    // never skill context.
+    static _labelCarriesSkills(label) {
+        return !/^(proactive:|ambient|event:)/i.test(String(label || ''));
+    }
+
+    async _buildBridgeDynamicBlock(memory, history = this.history?.turns || null, options = {}) {
+        const includeSkills = options.includeSkills !== false;
         const [examplesText, { text: taskGuidanceText }, skillsText] = await Promise.all([
             this._retrieveBridgeExamplesForHistory(history),
             this._retrieveBridgeTaskGuidanceForHistory(history),
-            this._retrieveSkillsForTask(),
+            includeSkills ? this._retrieveSkillsForTask() : Promise.resolve(''),
         ]);
         this._lastBridgeExamplesText = examplesText;
         this._lastBridgeTaskGuidanceText = taskGuidanceText;
@@ -1025,8 +1034,8 @@ export class BridgeAgent {
      * Used right before a
      * prompt so the stable prefix stays byte-identical across turns.
      */
-    async _appendBridgeDynamicBlock(history) {
-        const block = await this._buildBridgeDynamicBlock(this.history?.memory || '', history);
+    async _appendBridgeDynamicBlock(history, options = {}) {
+        const block = await this._buildBridgeDynamicBlock(this.history?.memory || '', history, options);
         if (block) {
             let index = history.length;
             for (let i = history.length - 1; i >= 0; i--) {
@@ -1059,7 +1068,8 @@ export class BridgeAgent {
         try {
             console.log(`${this.name}: prompt start #${seq} ${label}`);
             if (options.refreshBridgePrompt !== false) {
-                await this._appendBridgeDynamicBlock(history);
+                const includeSkills = options.includeSkills ?? BridgeAgent._labelCarriesSkills(label);
+                await this._appendBridgeDynamicBlock(history, { includeSkills });
             }
             const response = await this.prompter.promptConvo(history);
             console.log(`${this.name}: prompt end #${seq} ${label} (${Date.now() - startedAt}ms)`);
@@ -1112,7 +1122,8 @@ export class BridgeAgent {
         try {
             console.log(`${this.name}: vision prompt start #${seq} ${label}`);
             if (options.refreshBridgePrompt !== false) {
-                await this._appendBridgeDynamicBlock(history);
+                const includeSkills = options.includeSkills ?? BridgeAgent._labelCarriesSkills(label);
+                await this._appendBridgeDynamicBlock(history, { includeSkills });
             }
             const response = await this.prompter.promptBridgeVisionConvo(history, imageBuffer);
             console.log(`${this.name}: vision prompt end #${seq} ${label} (${Date.now() - startedAt}ms)`);
@@ -1797,6 +1808,39 @@ export class BridgeAgent {
                 }
             }
         }
+            // W7 (F16): the observation poll is the explicit drain consumer
+            // for companion server_events (bridge.getState defaults to
+            // drain=true; all other reads peek). Preserve each drained
+            // event exactly once as fenced untrusted data: never silently
+            // consumed, never double-acted if a later unchanged merge
+            // resurrects the stale array.
+            const companionEvents = getServerEvents(state);
+            if (companionEvents.length > 0) {
+                this._seenCompanionEvents = this._seenCompanionEvents || new Set();
+                for (const raw of companionEvents) {
+                    let evt = raw;
+                    if (typeof evt === 'string') {
+                        try { evt = JSON.parse(evt); } catch { continue; }
+                    }
+                    if (!evt || typeof evt !== 'object') continue;
+                    const key = JSON.stringify(evt);
+                    if (this._seenCompanionEvents.has(key)) continue;
+                    this._seenCompanionEvents.add(key);
+                    if (this._seenCompanionEvents.size > 200) {
+                        const oldest = this._seenCompanionEvents.values().next().value;
+                        this._seenCompanionEvents.delete(oldest);
+                    }
+                    const label = String(evt.kind || evt.type || 'server_event');
+                    const detail = JSON.stringify(evt).slice(0, 2000);
+                    sendLogToUI(`${this.name}: companion event ${label}`);
+                    console.log(`${this.name} companion event: ${detail}`);
+                    if (this.history && typeof this.history.add === 'function') {
+                        this.history.add('user', untrustedContext(`Companion event ${label}`, detail));
+                    }
+                }
+                state.server_events = [];
+                if (this._lastState) this._lastState.server_events = [];
+            }
 
         // Typed workers complete or fail with no Baritone log line at all, so a
         // draining queue can go idle silently. Detect both terminal states here:
@@ -2311,6 +2355,9 @@ export class BridgeAgent {
 
     async _runGoalTick(state, generation = this._generation) {
         if (!this._isGenerationCurrent(generation)) return;
+        // F2: attach the persisted completed-milestone store (idempotent) so
+        // earning a milestone survives restarts and consumption regressions.
+        try { this.curriculum?.setFilePath?.(`./bots/${this.name}/curriculum.json`); } catch { /* non-fatal */ }
         // Disabled-curriculum residue is retired even when the goal engine
         // itself is off, so a stale persisted goal can never linger into a
         // later re-enable. A persisted or in-memory curriculum-origin goal must
@@ -2321,6 +2368,28 @@ export class BridgeAgent {
         if (!this.goalManager.isActive()) {
             this._maybeStartCurriculumGoal(state);
             return;
+        }
+
+        // N6 quiet period + N7/F12 safety guards for the ACTIVE curriculum
+        // loop: pause self-directed practice (no LLM, no dispatch, goal
+        // preserved) while the player is talking, the bot is
+        // dead/disconnected/low-HP, or a GUI screen is open. Explicit user
+        // goals are never gated here.
+        const _activeGoal = this.goalManager.goal;
+        if (_activeGoal && _activeGoal.origin === 'curriculum') {
+            const quietMs = settings.bridge_curriculum_idle_ms ?? 120000;
+            if (Date.now() - (this.episodicMemory.lastPlayerChatAnsweredAt || 0) < quietMs) return;
+            if (!state || state.connected !== true) return;
+            const hp = Number(state.health);
+            const dead = (Number.isFinite(hp) && hp <= 0)
+                || state.dead === true || state.is_dead === true
+                || state.alive === false;
+            if (dead) return;
+            const fleeAt = Number(this.survivalReflex?.fleeHp);
+            const lowHp = state.low_hp_flag === true
+                || (Number.isFinite(hp) && hp > 0 && Number.isFinite(fleeAt) && hp <= fleeAt);
+            if (lowHp) return;
+            if (state.open_screen?.open === true) return;
         }
 
         const now = Date.now();
@@ -2335,7 +2404,17 @@ export class BridgeAgent {
         // Deterministic completion (item-target goals). An open goal record
         // closes here with a real inventory verification; a goal that was
         // already met with no dispatched batches retires quietly.
-        if (this.goalManager.checkCompletion(state)) {
+        // N2: curriculum-origin goals complete on have()-equivalents, not the
+        // exact target item. F2: completing a curriculum milestone persists it.
+        const _openGoal = this.goalManager.goal;
+        const _equivComplete = !!_openGoal && _openGoal.origin === 'curriculum'
+            && typeof this.curriculum?.isGoalMet === 'function'
+            && this.curriculum.isGoalMet(_openGoal, state?.inventory);
+        if (_equivComplete) this.goalManager.markDone();
+        if (_equivComplete || this.goalManager.checkCompletion(state)) {
+            if (this.goalManager.goal.origin === 'curriculum') {
+                try { this.curriculum.markComplete(this.goalManager.goal.text); } catch { /* non-fatal */ }
+            }
             if (this._activeTaskRecord()) {
                 await this._closeTaskWithVerification('goal-complete', state);
             }
@@ -2344,6 +2423,20 @@ export class BridgeAgent {
             return;
         }
 
+        // N2: the exact-item no-progress streak must follow equivalent
+        // progress too, otherwise e.g. gathering birch for an oak-log goal
+        // still fails the goal. A rise in the equivalent count resets the
+        // streak (GoalManager itself stays exact; see IMPLEMENTATION_W5.md).
+        const _attemptGoal = this.goalManager.goal;
+        if (_attemptGoal && _attemptGoal.origin === 'curriculum'
+            && typeof this.curriculum?.countForGoal === 'function') {
+            const eq = this.curriculum.countForGoal(_attemptGoal, state?.inventory);
+            if (typeof _attemptGoal._lastEquivCount === 'number' && eq > _attemptGoal._lastEquivCount) {
+                _attemptGoal.noProgressStreak = 0;
+                _attemptGoal.lastTargetCount = null;
+            }
+            _attemptGoal._lastEquivCount = eq;
+        }
         // Count this as an attempt; may flip status to 'failed'.
         this.goalManager.recordAttempt(state);
         if (this.goalManager.goal.status === 'failed') {
@@ -2397,10 +2490,42 @@ export class BridgeAgent {
         this.history.add(this.name, response);
 
         if (/"goal_done"\s*:\s*true/i.test(response)) {
+            // F3: verify the claim against current inventory before clearing.
+            // A text-only goal (no target) has no inventory check and keeps
+            // the historical claim-completes behavior.
+            const claimed = this.goalManager.goal;
+            const hasTarget = !!claimed?.target && Number(claimed.target.count) > 0;
+            let verified = !hasTarget;
+            if (hasTarget) {
+                if (claimed.origin === 'curriculum' && typeof this.curriculum?.isGoalMet === 'function') {
+                    verified = this.curriculum.isGoalMet(claimed, state?.inventory);
+                } else {
+                    verified = this.goalManager.checkCompletion(state);
+                }
+            }
+            if (!verified) {
+                // Never fabricate success from the LLM goal_done string: the
+                // open record retires with NO verification-as-success either
+                // way.
+                this._retireTaskRecord('goal-done-claimed');
+                if (claimed && claimed.origin === 'curriculum') {
+                    // Cool the milestone down so it is not re-proposed
+                    // immediately with reset counters (chat-spam loop).
+                    try { this.curriculum.defer(claimed.text); } catch { /* non-fatal */ }
+                    this._announceGoal(`Not done yet: ${claimed.text} — will retry later.`);
+                    this.goalManager.clear();
+                }
+                // An unverified explicit user goal stays active for the next
+                // tick (attempt counters will eventually fail it normally).
+                return;
+            }
+            if (claimed && claimed.origin === 'curriculum') {
+                try { this.curriculum.markComplete(claimed.text); } catch { /* non-fatal */ }
+            }
             // Never fabricate success from the LLM goal_done string: the open
             // record retires with NO verification-as-success either way.
             this._retireTaskRecord('goal-done-claimed');
-            this._announceGoal(`Goal complete: ${this.goalManager.goal.text}`);
+            this._announceGoal(`Goal complete: ${claimed.text}`);
             this.goalManager.clear();
             return;
         }

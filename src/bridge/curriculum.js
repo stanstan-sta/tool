@@ -6,6 +6,9 @@
 // library do the rest. Milestones the bot already satisfies are skipped, and ones it keeps
 // failing are deferred so it does not grind on a task it cannot yet do.
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { BLOCK_DROPS, dropForBlock } from './outcome_verifier.js';
+
 const normItem = n => String(n || '').replace(/^minecraft:/i, '').toLowerCase();
 
 function countMatching(inventory, pattern) {
@@ -18,38 +21,137 @@ function countMatching(inventory, pattern) {
     return total;
 }
 
+function milestone(text, item, count, match) {
+    return {
+        text,
+        target: { item, count },
+        // N2: `match` is the single source for BOTH satisfaction (`have`) and
+        // goal-side counting (`countForGoal`), so a goal accepts exactly the
+        // same equivalents `have()` does.
+        match,
+        have: inv => countMatching(inv, match) >= count,
+    };
+}
+
 // Ordered survival progression. `have` decides whether a milestone is already satisfied
 // (it can accept equivalents, e.g. any log); `target` is what the goal engine verifies.
 export const MILESTONES = [
-    { text: 'collect 8 oak logs', target: { item: 'oak_log', count: 8 }, have: inv => countMatching(inv, /_log$|_stem$/) >= 8 },
-    { text: 'craft 1 crafting table', target: { item: 'crafting_table', count: 1 }, have: inv => countMatching(inv, 'crafting_table') >= 1 },
-    { text: 'craft 1 wooden pickaxe', target: { item: 'wooden_pickaxe', count: 1 }, have: inv => countMatching(inv, /_pickaxe$/) >= 1 },
-    { text: 'mine 16 cobblestone', target: { item: 'cobblestone', count: 16 }, have: inv => countMatching(inv, /^(cobblestone|cobbled_deepslate)$/) >= 16 },
-    { text: 'craft 1 stone pickaxe', target: { item: 'stone_pickaxe', count: 1 }, have: inv => countMatching(inv, /^(stone|iron|diamond|netherite)_pickaxe$/) >= 1 },
-    { text: 'craft 1 stone sword', target: { item: 'stone_sword', count: 1 }, have: inv => countMatching(inv, /^(stone|iron|diamond|netherite)_sword$/) >= 1 },
-    { text: 'craft 1 furnace', target: { item: 'furnace', count: 1 }, have: inv => countMatching(inv, 'furnace') >= 1 },
-    { text: 'collect 8 coal', target: { item: 'coal', count: 8 }, have: inv => countMatching(inv, /^(coal|charcoal)$/) >= 8 },
-    { text: 'craft 16 torches', target: { item: 'torch', count: 16 }, have: inv => countMatching(inv, 'torch') >= 16 },
-    { text: 'collect 6 cooked food', target: { item: 'cooked_beef', count: 6 }, have: inv => countMatching(inv, /^(cooked_|bread$|baked_potato$)/) >= 6 },
-    { text: 'smelt 8 iron ingots', target: { item: 'iron_ingot', count: 8 }, have: inv => countMatching(inv, 'iron_ingot') >= 8 },
-    { text: 'craft 1 iron pickaxe', target: { item: 'iron_pickaxe', count: 1 }, have: inv => countMatching(inv, /^(iron|diamond|netherite)_pickaxe$/) >= 1 },
-    { text: 'craft 1 iron sword', target: { item: 'iron_sword', count: 1 }, have: inv => countMatching(inv, /^(iron|diamond|netherite)_sword$/) >= 1 },
-    { text: 'craft 1 shield', target: { item: 'shield', count: 1 }, have: inv => countMatching(inv, 'shield') >= 1 },
-    { text: 'craft 1 iron chestplate', target: { item: 'iron_chestplate', count: 1 }, have: inv => countMatching(inv, /^(iron|diamond|netherite)_chestplate$/) >= 1 },
-    { text: 'craft 1 bucket', target: { item: 'bucket', count: 1 }, have: inv => countMatching(inv, /bucket$/) >= 1 },
-    { text: 'mine 3 diamonds', target: { item: 'diamond', count: 3 }, have: inv => countMatching(inv, 'diamond') >= 3 },
-    { text: 'craft 1 diamond pickaxe', target: { item: 'diamond_pickaxe', count: 1 }, have: inv => countMatching(inv, /^(diamond|netherite)_pickaxe$/) >= 1 },
+    milestone('collect 8 oak logs', 'oak_log', 8, /_log$|_stem$/),
+    milestone('craft 1 crafting table', 'crafting_table', 1, 'crafting_table'),
+    milestone('craft 1 wooden pickaxe', 'wooden_pickaxe', 1, /_pickaxe$/),
+    milestone('mine 16 cobblestone', 'cobblestone', 16, /^(cobblestone|cobbled_deepslate)$/),
+    milestone('craft 1 stone pickaxe', 'stone_pickaxe', 1, /^(stone|iron|diamond|netherite)_pickaxe$/),
+    milestone('craft 1 stone sword', 'stone_sword', 1, /^(stone|iron|diamond|netherite)_sword$/),
+    milestone('craft 1 furnace', 'furnace', 1, 'furnace'),
+    milestone('collect 8 coal', 'coal', 8, /^(coal|charcoal)$/),
+    milestone('craft 16 torches', 'torch', 16, 'torch'),
+    milestone('collect 6 cooked food', 'cooked_beef', 6, /^(cooked_|bread$|baked_potato$)/),
+    milestone('smelt 8 iron ingots', 'iron_ingot', 8, 'iron_ingot'),
+    milestone('craft 1 iron pickaxe', 'iron_pickaxe', 1, /^(iron|diamond|netherite)_pickaxe$/),
+    milestone('craft 1 iron sword', 'iron_sword', 1, /^(iron|diamond|netherite)_sword$/),
+    milestone('craft 1 shield', 'shield', 1, 'shield'),
+    milestone('craft 1 iron chestplate', 'iron_chestplate', 1, /^(iron|diamond|netherite)_chestplate$/),
+    milestone('craft 1 bucket', 'bucket', 1, /bucket$/),
+    milestone('mine 3 diamonds', 'diamond', 3, 'diamond'),
+    milestone('craft 1 diamond pickaxe', 'diamond_pickaxe', 1, /^(diamond|netherite)_pickaxe$/),
 ];
 
 export class Curriculum {
     /**
-     * @param {{maxFailures?: number, milestones?: object[]}} opts
+     * @param {{maxFailures?: number, milestones?: object[], filePath?: string, completed?: string[]}} opts
      */
     constructor(opts = {}) {
         this.maxFailures = opts.maxFailures ?? 3;
         this.milestones = opts.milestones || MILESTONES;
         this.deferred = new Map(); // milestone text -> timestamp when it may be retried
         this.deferMs = opts.deferMs ?? 30 * 60 * 1000;
+        // F2: persisted completed-milestone set. Once a milestone is earned it
+        // stays done even if the resource is later consumed, so progression
+        // cannot move backwards. Purely in-memory when no filePath is given.
+        this.filePath = null;
+        this.completed = new Set(
+            Array.isArray(opts.completed) ? opts.completed.filter(t => typeof t === 'string') : [],
+        );
+        if (opts.filePath) this.setFilePath(opts.filePath);
+    }
+
+    // Attach (or re-attach) the persistence file. Idempotent: loading twice is
+    // a no-op. Called lazily from the curriculum tick so Curriculum stays
+    // constructible without a bot name in unit tests.
+    setFilePath(path) {
+        if (!path || path === this.filePath) return;
+        this.filePath = path;
+        this.load();
+    }
+
+    load() {
+        try {
+            if (this.filePath && existsSync(this.filePath)) {
+                const raw = JSON.parse(readFileSync(this.filePath, 'utf8'));
+                if (raw && Array.isArray(raw.completed)) {
+                    this.completed = new Set(raw.completed.filter(t => typeof t === 'string'));
+                }
+            }
+        } catch { /* corrupt curriculum file keeps the in-memory set */ }
+        return this.completed;
+    }
+
+    save() {
+        if (!this.filePath) return;
+        try {
+            writeFileSync(this.filePath, JSON.stringify({ completed: [...this.completed] }, null, 2));
+        } catch { /* non-fatal */ }
+    }
+
+    // Record a milestone as earned. Returns false when it was already stored.
+    markComplete(text) {
+        const t = String(text || '').trim();
+        if (!t || this.completed.has(t)) return false;
+        this.completed.add(t);
+        this.save();
+        return true;
+    }
+
+    isComplete(text) {
+        return this.completed.has(String(text || '').trim());
+    }
+
+    _findMilestone(goal) {
+        const text = String(goal?.text || '').trim();
+        if (text) {
+            const byText = this.milestones.find(m => m.text === text);
+            if (byText) return byText;
+        }
+        const t = goal?.target;
+        if (t && t.item) {
+            const want = normItem(t.item);
+            const byTarget = this.milestones.find(m =>
+                normItem(m.target?.item) === want && Number(m.target?.count) === Number(t.count));
+            if (byTarget) return byTarget;
+        }
+        return null;
+    }
+
+    // N1+N2: equivalent-aware inventory count for a goal target. Milestone
+    // goals count through the same `match` pattern `have()` uses; a goal that
+    // names a mineable block instead counts its drop through the shared
+    // BLOCK_DROPS map (e.g. a `stone` target counts `cobblestone`); anything
+    // else counts exactly.
+    countForGoal(goal, inventory) {
+        const m = this._findMilestone(goal);
+        if (m && m.match) return countMatching(inventory, m.match);
+        const t = normItem(goal?.target?.item);
+        if (!t) return 0;
+        return countMatching(inventory, dropForBlock(t));
+    }
+
+    // N2: a curriculum goal is met exactly when `have()`-equivalent items
+    // cover its target count. Text-only goals (no target) never complete here;
+    // they still complete via the LLM `goal_done` path.
+    isGoalMet(goal, inventory) {
+        const need = Number(goal?.target?.count) || 0;
+        if (!goal || !goal.target || need <= 0) return false;
+        return this.countForGoal(goal, inventory) >= need;
     }
 
     /**
@@ -61,7 +163,13 @@ export class Curriculum {
         const inv = state?.inventory || [];
         const now = Date.now();
         for (const m of this.milestones) {
-            if (m.have(inv)) continue;
+            if (m.have(inv)) {
+                // F2: uphold what is earned — a satisfied milestone joins the
+                // persisted set so consuming the resource cannot regress it.
+                this.markComplete(m.text);
+                continue;
+            }
+            if (this.completed.has(m.text)) continue;
             const until = this.deferred.get(m.text);
             if (until && until > now) continue;
             if (library?.failureCount && library.failureCount(m.text) >= this.maxFailures && !until) {
@@ -80,7 +188,10 @@ export class Curriculum {
 
     progress(state) {
         const inv = state?.inventory || [];
-        const done = this.milestones.filter(m => m.have(inv)).length;
+        const done = this.milestones.filter(m => this.completed.has(m.text) || m.have(inv)).length;
         return { done, total: this.milestones.length };
     }
 }
+
+// Re-exported so tick code and tests can prove both sides share one map.
+export { BLOCK_DROPS };
