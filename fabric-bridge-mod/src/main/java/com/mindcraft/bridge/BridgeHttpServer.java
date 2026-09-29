@@ -61,14 +61,74 @@ public class BridgeHttpServer {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Local-only control plane: bearer auth, loopback-only CORS, explicit drain
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // A10: every non-liveness endpoint requires the per-installation bearer
+    // token from the mod config. /ping stays open as a liveness check only.
+    // Fails closed when no token is configured. Constant-time comparison.
+    static boolean isAuthorizedBridgeCall(HttpExchange ex) {
+        String token = BridgeConfig.get().bridgeToken;
+        if (token == null || token.isBlank()) return false;
+        if (ex == null || ex.getRequestHeaders() == null) return false;
+        String auth = ex.getRequestHeaders().getFirst("Authorization");
+        if (auth == null || !auth.startsWith("Bearer ")) return false;
+        String supplied = auth.substring("Bearer ".length()).trim();
+        if (supplied.isEmpty()) return false;
+        return java.security.MessageDigest.isEqual(
+                supplied.getBytes(StandardCharsets.UTF_8),
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private boolean requireBridgeAuth(HttpExchange ex) throws IOException {
+        if (isAuthorizedBridgeCall(ex)) return false;
+        respond(ex, 401, "{\"success\":false,\"error\":\"unauthorized_bridge_token\"}");
+        return true;
+    }
+
+    // A12: browsers may only read responses when the requesting origin is
+    // itself loopback. Arbitrary web origins get no ACAO header, so the
+    // browser blocks their reads of state/screenshots. Non-browser clients
+    // send no Origin and are unaffected.
+    private static void applyBridgeCors(HttpExchange ex) {
+        if (ex == null || ex.getRequestHeaders() == null) return;
+        String origin = ex.getRequestHeaders().getFirst("Origin");
+        if (origin == null) return;
+        String o = origin.trim();
+        if (o.matches("http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:\\d+)?")) {
+            ex.getResponseHeaders().set("Access-Control-Allow-Origin", o);
+            ex.getResponseHeaders().set("Vary", "Origin");
+        }
+    }
+
+    // Minimal preflight for loopback browser tooling; other origins get a
+    // bare 204 with no ACAO, which the browser refuses to share. Returns true
+    // when the request was a preflight and has been answered.
+    private static boolean handleBridgePreflight(HttpExchange ex) throws IOException {
+        if (!"OPTIONS".equalsIgnoreCase(ex.getRequestMethod())) return false;
+        applyBridgeCors(ex);
+        if (ex.getResponseHeaders().containsKey("Access-Control-Allow-Origin")) {
+            ex.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            ex.getResponseHeaders().set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+            ex.getResponseHeaders().set("Access-Control-Max-Age", "600");
+        }
+        ex.sendResponseHeaders(204, -1);
+        ex.getResponseBody().close();
+        return true;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Handlers
     // ──────────────────────────────────────────────────────────────────────────
 
     private void handlePing(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
         respond(ex, 200, "{\"ok\":true}");
     }
 
     private void handleState(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -76,7 +136,11 @@ public class BridgeHttpServer {
         String query = ex.getRequestURI().getRawQuery();
         Long since = extractQueryLong(query, "since");
         boolean includeSurface = extractQueryBoolean(query, "surface");
-        boolean drainEvents = !extractQueryBoolean(query, "peek");
+        // A12: reads are non-destructive by default. Only the agent's
+        // observation poll sends drain=true explicitly; peek reads (vision,
+        // inspections, reconnect checks) and legacy peek=true leave the chat,
+        // world-event and companion queues intact for the real consumer.
+        boolean drainEvents = extractQueryBoolean(query, "drain");
 
         int maxRadius = BridgeConfig.get().maxSurfaceRadius;
         Integer rawRadius = extractQueryInt(query, "surface_radius");
@@ -95,6 +159,8 @@ public class BridgeHttpServer {
     }
 
     private void handleCommand(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -149,6 +215,8 @@ public class BridgeHttpServer {
     }
 
     private void handleAction(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -196,6 +264,8 @@ public class BridgeHttpServer {
     }
 
     private void handleBatch(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -388,6 +458,8 @@ public class BridgeHttpServer {
     }
 
     private void handleCapabilities(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -396,6 +468,8 @@ public class BridgeHttpServer {
     }
 
     private void handleCommands(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -404,6 +478,8 @@ public class BridgeHttpServer {
     }
 
     private void handleScreenshot(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -478,7 +554,7 @@ public class BridgeHttpServer {
     private static void respond(HttpExchange ex, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        applyBridgeCors(ex);
         ex.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);
@@ -487,7 +563,7 @@ public class BridgeHttpServer {
 
     private static void respondBytes(HttpExchange ex, int status, String contentType, byte[] bytes) throws IOException {
         ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        applyBridgeCors(ex);
         ex.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);
@@ -718,6 +794,8 @@ public class BridgeHttpServer {
     }
 
     private void handleQueueSkip(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -729,6 +807,8 @@ public class BridgeHttpServer {
     }
 
     private void handleQueueResume(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -740,6 +820,8 @@ public class BridgeHttpServer {
     }
 
     private void handleQueueCancel(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -751,6 +833,8 @@ public class BridgeHttpServer {
     }
 
     private void handleQueueState(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
@@ -787,6 +871,8 @@ public class BridgeHttpServer {
      * Clamped to 24x24x24 to avoid runaway responses.
      */
     private void handleReadBlocks(HttpExchange ex) throws IOException {
+        if (handleBridgePreflight(ex)) return;
+        if (requireBridgeAuth(ex)) return;
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;

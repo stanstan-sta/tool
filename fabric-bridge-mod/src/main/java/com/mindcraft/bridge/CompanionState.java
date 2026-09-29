@@ -40,6 +40,12 @@ public final class CompanionState {
         return out;
     }
 
+    // Non-destructive copy for peek reads: the observation poll is the only
+    // consumer that drains (A12).
+    public List<String> peekEvents() {
+        return new ArrayList<>(events);
+    }
+
     /**
      * Clear all server-companion data. Called on disconnect so that /state does not
      * report stale roster/facts/events from a previous server after switching worlds.

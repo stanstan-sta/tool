@@ -71,14 +71,14 @@ test('a new parent instance rejects the previous instance credential', async t =
 
 test('real parent, child launcher and proxy carry authentication through agent startup', { timeout: 12000 }, async t => {
     const f = mindserverFixture(t);
-    for (const relative of ['src/process/agent_process.js', 'src/agent/mindserver_proxy.js', 'src/mindcraft/mindcraft.js']) {
+    for (const relative of ['src/process/agent_process.js', 'src/agent/mindserver_proxy.js', 'src/mindcraft/mindcraft.js', 'src/agent/history.js', 'src/agent/npc/data.js']) {
         mkdirSync(path.dirname(path.join(f.root, relative)), { recursive: true });
         copyFileSync(path.join(repo, relative), path.join(f.root, relative));
     }
     mkdirSync(path.join(f.root, 'src/agent/library'), { recursive: true });
     mkdirSync(path.join(f.root, 'src/runtime/fabric'), { recursive: true });
     f.write('src/agent/conversation.js', 'export default { receiveFromBot() {}, updateAgents() {} };');
-    f.write('src/agent/settings.js', 'export function setSettings(settings) { if (settings.profile.name !== "Alpha") throw Error("Wrong settings"); }');
+    f.write('src/agent/settings.js', 'export function setSettings(settings) { if (settings.profile.name !== "Alpha") throw Error("Wrong settings"); } export default {};');
     f.write('src/agent/library/full_state.js', 'export function getFullState() { return {}; }');
     f.write('src/runtime/fabric/create_agent_runtime.js', 'export async function prepareFabricRuntime(settings) { return { settings }; }');
     f.write('src/process/init_bridge_agent.js', `

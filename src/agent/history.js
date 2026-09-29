@@ -6,6 +6,31 @@ import settings from './settings.js';
 const MEMORY_FILTER_INSTRUCTION =
     'Memory-filtered transcript. Save only stable user preferences, explicit reminders, corrected facts, or confirmed successful outcomes. Ignore action proposals, queued/failed bridge actions, transient state, inventory, coordinates, docs, and anything the bot merely said it would do.';
 
+// A9: persisted memory is replayed into prompts, so it must never carry
+// instruction-like content. validateMemoryText returns the text when it is a
+// plain fact-style string, or null when it looks like an instruction,
+// command proposal, or markup injection. Callers keep the previous memory
+// (store path) or fall back to '' (load path) on rejection.
+const MEMORY_MAX_STORED_CHARS = 2000;
+const MEMORY_INSTRUCTION_PATTERNS = [
+    /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/im,
+    /^\s*system\s*:/im,
+    // Same breadth as the assistant action-proposal detector: summaries must
+    // never carry executable proposals, wherever they appear in the text.
+    /"(actions|commands)"\s*:|\b(ACTION|COMMAND)\s*:/im,
+    /![a-zA-Z_][\w-]*\s*\(/m,
+    /<\s*script\b/im,
+];
+
+export function validateMemoryText(text) {
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    if (trimmed.length > MEMORY_MAX_STORED_CHARS) return null;
+    if (MEMORY_INSTRUCTION_PATTERNS.some(pattern => pattern.test(trimmed))) return null;
+    return trimmed;
+}
+
 function parseJsonObject(text) {
     const trimmed = String(text || '').trim();
     if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
@@ -59,6 +84,29 @@ export function sanitizeTurnsForMemory(turns) {
     return sanitized;
 }
 
+// W1: turns restored from disk are untrusted prompt input. Only user/assistant
+// turns with string content survive; system-role turns from the file are
+// dropped (fresh state is rebuilt every prompt) so a crafted memory.json can
+// never inject system-role instructions. Returns the sanitized array.
+export function sanitizeLoadedTurns(turns) {
+    if (turns === undefined) return [];
+    if (!Array.isArray(turns)) {
+        console.warn('Discarded malformed stored turns (not an array); starting with empty turns.');
+        return [];
+    }
+    const clean = [];
+    let dropped = 0;
+    for (const turn of turns) {
+        if (!turn || typeof turn !== 'object' || Array.isArray(turn)) { dropped++; continue; }
+        if ((turn.role !== 'user' && turn.role !== 'assistant') || typeof turn.content !== 'string') { dropped++; continue; }
+        clean.push({ role: turn.role, content: turn.content });
+    }
+    if (dropped > 0) {
+        console.warn(`Discarded ${dropped} malformed or system-role stored turn(s); kept ${clean.length}.`);
+    }
+    return clean;
+}
+
 export class History {
     constructor(agent) {
         this.agent = agent;
@@ -93,10 +141,18 @@ export class History {
             console.log("No memory-worthy turns in compacted chunk.");
             return;
         }
-        this.memory = await this.agent.prompter.promptMemSaving([
+        const summary = await this.agent.prompter.promptMemSaving([
             { role: 'system', content: MEMORY_FILTER_INSTRUCTION },
             ...sanitized,
         ]);
+
+        const validated = validateMemoryText(summary);
+        if (validated === null) {
+            // Never persist instruction-like summaries; keep prior memory.
+            console.warn("Rejected instruction-like memory summary; keeping previous memory.");
+            return;
+        }
+        this.memory = validated;
 
         if (this.memory.length > 500) {
             this.memory = this.memory.slice(0, 500);
@@ -179,14 +235,41 @@ export class History {
                 console.log('No memory file found.');
                 return null;
             }
-            const data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
-            this.memory = data.memory || '';
-            this.turns = data.turns || [];
+            let data;
+            try {
+                data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
+            } catch (err) {
+                // W1: a corrupt file must not crash the agent (both bridge and
+                // legacy init call load() without a try/catch). Skip + warn.
+                console.warn(`Discarding corrupt memory file ${this.memory_fp}; starting with empty memory.`);
+                this.memory = '';
+                this.turns = [];
+                return null;
+            }
+            if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                console.warn(`Discarding unexpected-shape memory file ${this.memory_fp}; starting with empty memory.`);
+                this.memory = '';
+                this.turns = [];
+                return null;
+            }
+            // A9: stored memory is untrusted input. Non-string, overlong, or
+            // instruction-like content is discarded, never replayed.
+            this.memory = validateMemoryText(data.memory) ?? '';
+            if (data.memory !== undefined && data.memory !== null && data.memory !== '' && !this.memory) {
+                console.warn('Discarded invalid stored memory; starting with empty memory.');
+            }
+            // W1: stored turns are untrusted prompt input. System-role and
+            // malformed entries are dropped so they can never replay as
+            // system-role instructions; user/assistant flows are preserved.
+            this.turns = sanitizeLoadedTurns(data.turns);
             console.log('Loaded memory:', this.memory);
-            return data;
+            return { ...data, memory: this.memory, turns: this.turns };
         } catch (error) {
-            console.error('Failed to load history:', error);
-            throw error;
+            // W1: never let a malformed file crash the agent; fall back empty.
+            console.warn(`Discarding unreadable memory file ${this.memory_fp}; starting with empty memory.`);
+            this.memory = '';
+            this.turns = [];
+            return null;
         }
     }
 

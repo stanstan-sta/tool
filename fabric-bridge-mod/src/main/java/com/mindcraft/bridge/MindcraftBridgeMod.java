@@ -41,6 +41,7 @@ public class MindcraftBridgeMod implements ClientModInitializer {
             httpServer = new BridgeHttpServer(HTTP_PORT);
             httpServer.start();
             LOGGER.info("Mindcraft Bridge HTTP server started on localhost:{}", HTTP_PORT);
+            LOGGER.info("Bridge endpoints (except /ping) require the bearer token in config/mindcraft-bridge.json (field bridgeToken). Copy it into the agent keys.json as FABRIC_BRIDGE_TOKEN; /state drains chat/events only with ?drain=true.");
         } catch (Exception e) {
             LOGGER.error("Failed to start Mindcraft Bridge HTTP server", e);
         }

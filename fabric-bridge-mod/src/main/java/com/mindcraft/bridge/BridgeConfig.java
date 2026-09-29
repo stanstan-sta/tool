@@ -75,6 +75,12 @@ public class BridgeConfig {
         )
     );
 
+    // Local-only control-plane credential (A10). The Node agent presents this
+    // as a Bearer token on every non-liveness endpoint. Generated once and
+    // persisted here; the owner copies it into the agent keys.json as
+    // FABRIC_BRIDGE_TOKEN. Never null after load() in production.
+    public String bridgeToken = generateBridgeToken();
+
     // Task settle times (ms)
     public long gotoSettleMs = 300;
     public long mineSettleMs = 3000;
@@ -90,6 +96,14 @@ public class BridgeConfig {
     public static void reload() {
         INSTANCE = load();
         LOGGER.info("Configuration reloaded");
+    }
+
+    public static String generateBridgeToken() {
+        byte[] bytes = new byte[32];
+        new java.security.SecureRandom().nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(64);
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 
     private static BridgeConfig load() {
@@ -109,12 +123,23 @@ public class BridgeConfig {
             LOGGER.info("No config file found at {}, using defaults", configPath);
             BridgeConfig defaults = new BridgeConfig();
             defaults.save(configPath);
+            LOGGER.info("Generated new Fabric bridge token; copy it from {} into the agent keys.json as FABRIC_BRIDGE_TOKEN.", configPath);
+            LOGGER.info("Fabric bridge token (shown once, keep secret): {}", defaults.bridgeToken);
             return defaults;
         }
 
         try {
             String json = Files.readString(configPath);
             BridgeConfig config = GSON.fromJson(json, BridgeConfig.class);
+            if (config == null) config = new BridgeConfig();
+            if (config.bridgeToken == null || config.bridgeToken.isBlank()) {
+                config.bridgeToken = generateBridgeToken();
+                config.save(configPath);
+                // Shown once at generation: the owner must copy this into the
+                // agent keys.json as FABRIC_BRIDGE_TOKEN. Never logged again.
+                LOGGER.info("Generated new Fabric bridge token; copy it from {} into the agent keys.json as FABRIC_BRIDGE_TOKEN.", configPath);
+                LOGGER.info("Fabric bridge token (shown once, keep secret): {}", config.bridgeToken);
+            }
             LOGGER.info("Loaded configuration from {}", configPath);
             return config;
         } catch (IOException e) {

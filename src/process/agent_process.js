@@ -31,9 +31,16 @@ export class AgentProcess {
             stdio: 'inherit',
             stderr: 'inherit',
         });
-        
+
         let last_restart = Date.now();
+        // Identity guard: only the current child may drive restart decisions.
+        // A superseded child's late exit must never start another replacement
+        // (previously it could cascade into duplicate children).
         agentProcess.on('exit', (code, signal) => {
+            if (this.process !== agentProcess) {
+                console.log(`Ignoring exit from superseded agent child for ${this.name} (code ${code}, signal ${signal}).`);
+                return;
+            }
             console.log(`Agent process exited with code ${code} and signal ${signal}`);
             this.running = false;
             logoutAgent(this.name);
@@ -66,6 +73,13 @@ export class AgentProcess {
         });
     
         agentProcess.on('error', (err) => {
+            // Identity guard: a late error from a superseded child must not
+            // touch replacement-agent state (it never mutated state, but it
+            // must not even log as if it belonged to the current child).
+            if (this.process !== agentProcess) {
+                console.log(`Ignoring error from superseded agent child for ${this.name}.`);
+                return;
+            }
             console.error('Agent process error:', err);
         });
 
@@ -73,49 +87,90 @@ export class AgentProcess {
     }
 
     stop() {
-        if (!this.running) return;
+        if (!this.running || !this.process) return;
         this.process.kill('SIGINT');
     }
 
     forceRestart() {
-        if (this.running && this.process && !this.process.killed) {
+        const current = this.process;
+        // process.killed only means a signal was sent, not that the child
+        // exited. Liveness is decided by the 'exit' event (resolved flag),
+        // never by re-reading .killed (which is already true after SIGINT and
+        // previously made the SIGKILL escalation below dead code).
+        if (this.running && current && current.exitCode === null && current.signalCode === null) {
+            // Restart races: a second forceRestart while one is already
+            // driving the lifecycle must not attach duplicate handlers and
+            // start a duplicate replacement.
+            if (this._awaitingManualRestart) {
+                console.warn(`Agent ${this.name} restart already in progress; ignoring duplicate forceRestart.`);
+                return;
+            }
             console.log(`Agent process for ${this.name} is still running. Attempting to force restart.`);
 
             // Flag so the auto-exit handler defers to the .once('exit') below.
             this._awaitingManualRestart = true;
 
             let resolved = false;
+            let killGraceTimeout = null;
+            const finishWithRestart = (message) => {
+                if (resolved) return;
+                // Only the child we were asked to restart may trigger its
+                // replacement; a superseded exit must never start one.
+                if (this.process !== current) return;
+                resolved = true;
+                clearTimeout(restartTimeout);
+                if (killGraceTimeout) clearTimeout(killGraceTimeout);
+                this._awaitingManualRestart = false;
+                console.log(message);
+                this.start(true, 'Agent process restarted.', this.count_id);
+            };
+            const finishBlocked = () => {
+                if (resolved) return;
+                resolved = true;
+                this._awaitingManualRestart = false;
+                // A replacement must never run alongside its predecessor, so
+                // absence of confirmed exit blocks the replacement. The old
+                // child stays registered, so its eventual exit still flows
+                // through the normal auto-restart policy instead of being
+                // orphaned or duplicated.
+                console.error(`Agent ${this.name} (pid ${current.pid}) refused to exit after SIGINT+SIGKILL. Replacement blocked: manual restart required once pid ${current.pid} exits.`);
+            };
             const restartTimeout = setTimeout(() => {
                 if (resolved) return;
+                // The child may have exited in the gap between the liveness
+                // check above and the .once('exit') attach below; its exit
+                // event is then already gone, so confirm exit here instead of
+                // escalating against a dead child.
+                if (current.exitCode !== null || current.signalCode !== null) {
+                    finishWithRestart(`Agent ${this.name} already exited. Now restarting.`);
+                    return;
+                }
                 // SIGINT is advisory on Windows and often ignored when the
                 // child is mid-await on an HTTP call. Escalate to SIGKILL
                 // so the restart actually happens.
                 console.warn(`Agent ${this.name} did not stop after SIGINT. Escalating to SIGKILL.`);
                 try {
-                    if (this.process && !this.process.killed) {
-                        this.process.kill('SIGKILL');
+                    if (current.exitCode === null && current.signalCode === null) {
+                        current.kill('SIGKILL');
                     }
                 } catch (err) {
                     console.error(`Failed to SIGKILL ${this.name}:`, err);
                 }
-                // If SIGKILL also doesn't take for some reason (e.g. process
-                // already gone), start the replacement after a short delay so
-                // we don't deadlock the caller waiting for .once('exit').
-                setTimeout(() => {
+                // If the old child still has not exited some time after
+                // SIGKILL (e.g. unkillable), fail loudly and block the
+                // replacement instead of running two children at once.
+                killGraceTimeout = setTimeout(() => {
                     if (resolved) return;
-                    resolved = true;
-                    console.warn(`Agent ${this.name} still not exited 3s after SIGKILL. Starting replacement anyway.`);
-                    this._awaitingManualRestart = false;
-                    this.start(true, 'Agent process restarted.', this.count_id);
+                    if (current.exitCode !== null || current.signalCode !== null) {
+                        finishWithRestart(`Agent ${this.name} exited late. Now restarting.`);
+                        return;
+                    }
+                    finishBlocked();
                 }, 3000);
             }, 5000);
 
-            this.process.once('exit', () => {
-                 if (resolved) return;
-                 resolved = true;
-                 clearTimeout(restartTimeout);
-                 console.log(`Stopped hanging agent ${this.name}. Now restarting.`);
-                 this.start(true, 'Agent process restarted.', this.count_id);
+            current.once('exit', () => {
+                 finishWithRestart(`Stopped hanging agent ${this.name}. Now restarting.`);
             });
             this.stop(); // sends SIGINT
         } else {

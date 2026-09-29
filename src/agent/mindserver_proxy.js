@@ -2,6 +2,7 @@ import { io } from 'socket.io-client';
 import convoManager from './conversation.js';
 import { setSettings } from './settings.js';
 import { getFullState } from './library/full_state.js';
+import { validateMemoryText } from './history.js';
 
 // agent's individual connection to the mindserver
 // always connect to localhost
@@ -99,7 +100,13 @@ class MindServerProxy {
         this.socket.on('set-important-memory', async (memoryText) => {
             try {
                 if (this.agent?.history) {
-                    this.agent.history.memory = String(memoryText || '');
+                    // A9: dashboard-supplied text is untrusted prompt input.
+                    const validated = validateMemoryText(memoryText);
+                    if (validated === null && String(memoryText || '').trim() !== '') {
+                        console.warn('Rejected instruction-like important memory; keeping previous memory.');
+                        return;
+                    }
+                    this.agent.history.memory = validated ?? '';
                     await this.agent.history.save();
                 }
             } catch (error) {

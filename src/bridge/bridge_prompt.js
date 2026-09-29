@@ -241,9 +241,10 @@ export function buildBridgeStaticPrompt(settings, capabilities = null) {
 
 /**
  * Per-turn trailing block: memory/facts plus retrieved task guidance and
- * retrieved semantic examples. Appended to the conversation as the last
- * system message so only this small block (not the whole prompt) is
- * re-processed each turn. Returns '' when there is nothing dynamic to add.
+ * retrieved semantic examples. The caller (bridge_agent._appendBridgeDynamicBlock)
+ * wraps this block with untrustedContext() and appends it as a fenced USER-role
+ * message, never a system message, so remembered player text and learned plans
+ * stay data, not policy. Returns '' when there is nothing dynamic to add.
  */
 export function buildBridgeDynamicBlock(settings, { memory = '', taskGuidanceText = '', examplesText = '' } = {}) {
     const factsSection = buildFactsSection(settings, memory);

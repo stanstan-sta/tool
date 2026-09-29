@@ -23,6 +23,11 @@ class CommandHttpPolicyTest {
         HttpExchange exchange = mock(HttpExchange.class);
         ByteArrayOutputStream response = new ByteArrayOutputStream();
         when(exchange.getRequestMethod()).thenReturn("POST");
+        Headers headers = new Headers();
+        String token = BridgeConfig.get().bridgeToken;
+        assertNotNull(token, "bridge token must be configured for handler tests");
+        headers.set("Authorization", "Bearer " + token);
+        when(exchange.getRequestHeaders()).thenReturn(headers);
         when(exchange.getRequestBody()).thenReturn(new ByteArrayInputStream(
                 ("{\"command\":\"" + command + "\"}").getBytes(StandardCharsets.UTF_8)));
         when(exchange.getResponseHeaders()).thenReturn(new Headers());

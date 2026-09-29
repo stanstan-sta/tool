@@ -350,7 +350,9 @@ public class StateCollector {
         sb.append("\"server_players\":").append(snap.rosterJson != null ? snap.rosterJson : "null").append(",");
         sb.append("\"server_facts\":").append(snap.factsJson != null ? snap.factsJson : "null").append(",");
         sb.append("\"server_events\":[");
-        java.util.List<String> serverEvents = companion.drainEvents();
+        // A12: companion events drain only on the observation poll's explicit
+        // drain; peek reads (screenshots, inspections, reconnect checks) copy.
+        java.util.List<String> serverEvents = drainEvents ? companion.drainEvents() : companion.peekEvents();
         boolean firstServerEvent = true;
         for (String event : serverEvents) {
             if (!firstServerEvent) sb.append(",");

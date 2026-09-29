@@ -23,6 +23,12 @@ export class BridgeProbeClient {
     constructor(url = DEFAULT_BRIDGE_URL, options = {}) {
         this.url = String(url || DEFAULT_BRIDGE_URL).replace(/\/$/, '');
         this.requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+        // A10: bearer token for non-liveness endpoints (env or explicit opt).
+        this.token = options.token || process.env.FABRIC_BRIDGE_TOKEN || null;
+    }
+
+    authHeaders() {
+        return this.token ? { Authorization: `Bearer ${this.token}` } : {};
     }
 
     async request(endpoint, options = {}) {
@@ -30,7 +36,7 @@ export class BridgeProbeClient {
         const timeoutMs = options.timeoutMs || this.requestTimeoutMs;
         const init = {
             method,
-            headers: options.body == null ? undefined : { 'Content-Type': 'application/json' },
+            headers: { ...this.authHeaders(), ...(options.body == null ? undefined : { 'Content-Type': 'application/json' }) },
             body: options.body == null ? undefined : JSON.stringify(options.body),
             signal: AbortSignal.timeout(timeoutMs),
         };
@@ -80,6 +86,9 @@ export class BridgeProbeClient {
         if (options.since != null) query.push(`since=${encodeURIComponent(String(options.since))}`);
         if (options.surface === true) query.push('surface=true');
         if (options.surfaceRadius != null) query.push(`surface_radius=${encodeURIComponent(String(options.surfaceRadius))}`);
+        // A12: the probe is an explicit observation consumer; peek otherwise.
+        if (options.peek === true) query.push('peek=true');
+        else query.push('drain=true');
         return this.request(`/state${query.length ? `?${query.join('&')}` : ''}`, { timeoutMs: 4000 });
     }
 

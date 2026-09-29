@@ -50,6 +50,7 @@ class QueueHttpGenerationTest {
     private HttpResponse<String> post(String action, String body) throws Exception {
         return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/queue/" + action))
                 .timeout(Duration.ofSeconds(3)).header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + BridgeConfig.get().bridgeToken)
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }
 

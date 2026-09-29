@@ -5,9 +5,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as mindcraft from './mindcraft.js';
-import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, unlinkSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, unlinkSync, mkdirSync, realpathSync } from 'fs';
 import settings from '../../settings.js';
 import { readStartupProfile, validateProfile } from './startup_profiles.js';
+import { normalizeBridgeUrl } from '../bridge/fabric_bridge.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mindserver is:
@@ -112,6 +113,89 @@ function sameProfilePath(first, second) {
     return normalize(first) === normalize(second);
 }
 
+const REPO_ROOT = path.resolve(__dirname, '../..');
+const ROOT_RESERVED_PROFILE_FILES = new Set(['package.json', 'keys.json', 'keys.example.json', 'settings_local.json', 'package-lock.json']);
+
+// The profile list includes both profiles/*.json and legacy root files such as
+// miku.json. Read/update/delete must resolve the same actual file the list
+// advertises: match either the sanitized filename or the stored profile name,
+// reject ambiguous duplicate names instead of editing the wrong file, and never
+// let user input become an arbitrary filesystem path.
+function confinedProfileTarget(filePath) {
+    try {
+        const root = realpathSync(REPO_ROOT);
+        const real = realpathSync(filePath);
+        const relative = path.relative(root, real);
+        if (!relative || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) return null;
+        return real;
+    } catch {
+        return null;
+    }
+}
+
+function scanProfileCandidates(safeName) {
+    const found = [];
+    const seen = new Set();
+    const push = (filePath, startupPath) => {
+        const key = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
+        if (seen.has(key)) return;
+        if (!confinedProfileTarget(filePath)) return;
+        seen.add(key);
+        found.push({ filePath, startupPath });
+    };
+    const direct = path.join(PROFILES_DIR, `${safeName}.json`);
+    if (existsSync(direct)) push(direct, `./profiles/${safeName}.json`);
+    if (existsSync(PROFILES_DIR)) {
+        for (const f of readdirSync(PROFILES_DIR).filter(x => x.endsWith('.json'))) {
+            let base = null;
+            try { base = sanitizeProfileName(path.basename(f, '.json')); } catch { base = null; }
+            if (base === safeName) {
+                push(path.join(PROFILES_DIR, f), `./profiles/${f}`);
+                continue;
+            }
+            try {
+                const data = JSON.parse(readFileSync(path.join(PROFILES_DIR, f), 'utf8'));
+                if (data && typeof data.name === 'string') {
+                    let stored = null;
+                    try { stored = sanitizeProfileName(data.name); } catch { stored = null; }
+                    if (stored === safeName) push(path.join(PROFILES_DIR, f), `./profiles/${f}`);
+                }
+            } catch { /* skip unparseable files */ }
+        }
+    }
+    let rootFiles = [];
+    try { rootFiles = readdirSync(REPO_ROOT).filter(x => x.endsWith('.json')); } catch { rootFiles = []; }
+    for (const f of rootFiles) {
+        if (ROOT_RESERVED_PROFILE_FILES.has(f.toLowerCase())) continue;
+        let baseMatch = false;
+        try { baseMatch = sanitizeProfileName(path.basename(f, '.json')) === safeName; } catch { baseMatch = false; }
+        let storedMatch = false;
+        try {
+            const data = JSON.parse(readFileSync(path.join(REPO_ROOT, f), 'utf8'));
+            if (!data || typeof data !== 'object' || Array.isArray(data) || typeof data.name !== 'string' || (!data.model && !data.personality)) continue;
+            try { storedMatch = sanitizeProfileName(data.name) === safeName; } catch { storedMatch = false; }
+        } catch { continue; }
+        if (baseMatch || storedMatch) push(path.join(REPO_ROOT, f), `./${f}`);
+    }
+    return found;
+}
+
+function resolveProfileFile(requestedName) {
+    const safeName = sanitizeProfileName(requestedName);
+    const candidates = scanProfileCandidates(safeName);
+    if (candidates.length === 0) {
+        const error = new Error(`Profile '${safeName}' not found.`);
+        error.status = 404;
+        throw error;
+    }
+    if (candidates.length > 1) {
+        const error = new Error(`Multiple profiles named '${safeName}' exist (${candidates.map(c => c.startupPath).join(', ')}). Rename one file before editing.`);
+        error.status = 409;
+        throw error;
+    }
+    return { safeName, ...candidates[0] };
+}
+
 function readKeyFile(filePath) {
     let data;
     try { data = JSON.parse(readFileSync(filePath, 'utf8')); }
@@ -163,6 +247,14 @@ function persistGlobalSettings(settings) {
         for (const key of Object.keys(settings)) {
             if (NON_PERSISTED_KEYS.has(key)) continue;
             if (!(key in settings_spec)) continue;
+            // A15: never persist a bridge URL that would point Node at a
+            // non-loopback host; the request itself is rejected below.
+            if (key === 'bridge_url') {
+                try {
+                    out[key] = normalizeBridgeUrl(settings[key]);
+                } catch { /* keep the previous persisted value */ }
+                continue;
+            }
             out[key] = settings[key];
         }
         writeFileSync(SETTINGS_LOCAL_PATH, JSON.stringify(out, null, 4), 'utf8');
@@ -291,6 +383,16 @@ export function createMindServer(host_public = false, port = 8080) {
                     delete settings[key];
                 }
             }
+            // A15: bridge_url is a persisted setting and a fetch base — confine
+            // it to loopback here, not just in the dashboard editor.
+            if (settings.bridge_url !== undefined) {
+                try {
+                    settings.bridge_url = normalizeBridgeUrl(settings.bridge_url);
+                } catch (err) {
+                    callback({ success: false, error: err.message });
+                    return;
+                }
+            }
             if (settings.profile?.name) {
                 if (settings.profile.name in agent_connections) {
                     callback({ success: false, error: 'Agent already exists' });
@@ -299,11 +401,31 @@ export function createMindServer(host_public = false, port = 8080) {
                 try {
                     validateProfile(settings.profile);
                     const safeName = sanitizeProfileName(settings.profile.name);
-                    const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-                    if (!existsSync(filePath)) {
-                        if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
-                        writeFileSync(filePath, JSON.stringify(settings.profile, null, 4), 'utf8');
-                        console.log(`Saved new profile to ${filePath}`);
+                    // Launch must use the same confined file the library
+                    // advertises: reuse a legacy root file or a stored-name
+                    // match instead of duplicating it under profiles/, and
+                    // refuse ambiguous duplicate names rather than launching
+                    // (and later editing) the wrong file.
+                    let filePath = null;
+                    try {
+                        ({ filePath } = resolveProfileFile(settings.profile.name));
+                    } catch (err) {
+                        if (err.status === 409) {
+                            callback({ success: false, error: err.message });
+                            return;
+                        }
+                        if (!err.status || err.status !== 404) {
+                            callback({ success: false, error: `Failed to save profile: ${err.message}` });
+                            return;
+                        }
+                    }
+                    if (!filePath) {
+                        filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+                        if (!existsSync(filePath)) {
+                            if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
+                            writeFileSync(filePath, JSON.stringify(settings.profile, null, 4), 'utf8');
+                            console.log(`Saved new profile to ${filePath}`);
+                        }
                     }
                     settings.profile_path = filePath;
                 } catch (err) {
@@ -410,8 +532,17 @@ export function createMindServer(host_public = false, port = 8080) {
                         return;
                     }
                 }
-                if (agent.profile_path && settings.profile) {
+                // A15: confine the persisted bridge fetch base to loopback.
+                if (settings.bridge_url !== undefined) {
                     try {
+                        settings.bridge_url = normalizeBridgeUrl(settings.bridge_url);
+                    }
+                    catch (err) {
+                        if (callback) callback({ success: false, error: err.message });
+                        return;
+                    }
+                }
+                if (agent.profile_path && settings.profile) {                    try {
                         writeFileSync(agent.profile_path, JSON.stringify(settings.profile, null, 4), 'utf8');
                         console.log(`Saved profile for ${agentName} to ${agent.profile_path}`);
                     } catch (err) {
@@ -631,15 +762,11 @@ export function createMindServer(host_public = false, port = 8080) {
 
     app.get('/api/profiles/:name', async (req, res) => {
         try {
-            const safeName = sanitizeProfileName(req.params.name);
-            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-            if (!existsSync(filePath)) {
-                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
-            }
+            const { filePath } = resolveProfileFile(req.params.name);
             const data = JSON.parse(readFileSync(filePath, 'utf8'));
             res.json(data);
         } catch (err) {
-            res.status(400).json({ error: err.message });
+            res.status(err.status || 400).json({ error: err.message });
         }
     });
 
@@ -648,10 +775,10 @@ export function createMindServer(host_public = false, port = 8080) {
             const profile = req.body;
             validateProfile(profile);
             const safeName = sanitizeProfileName(profile.name);
-            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-            if (existsSync(filePath)) {
+            if (scanProfileCandidates(safeName).length > 0) {
                 return res.status(409).json({ error: `Profile '${safeName}' already exists. Use PUT to update.` });
             }
+            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
             if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
             writeFileSync(filePath, JSON.stringify(profile, null, 4), 'utf8');
             console.log(`Created profile ${safeName} at ${filePath}`);
@@ -663,15 +790,11 @@ export function createMindServer(host_public = false, port = 8080) {
 
     app.put('/api/profiles/:name', express.json(), async (req, res) => {
         try {
-            const safeName = sanitizeProfileName(req.params.name);
+            const { safeName, filePath, startupPath } = resolveProfileFile(req.params.name);
             const profile = req.body;
             validateProfile(profile);
             if (profile.name !== req.params.name) {
                 return res.status(400).json({ error: 'Profile name must match the requested profile. Use Clone to create a different profile.' });
-            }
-            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-            if (!existsSync(filePath)) {
-                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
             }
             const existingProfile = JSON.parse(readFileSync(filePath, 'utf8'));
             if (existingProfile.name !== profile.name) {
@@ -683,19 +806,15 @@ export function createMindServer(host_public = false, port = 8080) {
             if (agent_connections[agentName] && sameProfilePath(agent_connections[agentName].profile_path, filePath)) {
                 agent_connections[agentName].settings.profile = profile;
             }
-            res.json({ success: true });
+            res.json({ success: true, path: startupPath });
         } catch (err) {
-            res.status(400).json({ error: err.message });
+            res.status(err.status || 400).json({ error: err.message });
         }
     });
 
     app.delete('/api/profiles/:name', async (req, res) => {
         try {
-            const safeName = sanitizeProfileName(req.params.name);
-            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-            if (!existsSync(filePath)) {
-                return res.status(404).json({ error: `Profile '${safeName}' not found.` });
-            }
+            const { safeName, filePath, startupPath } = resolveProfileFile(req.params.name);
             for (const agentName in agent_connections) {
                 if (sameProfilePath(agent_connections[agentName].profile_path, filePath)) {
                     return res.status(409).json({ error: `Profile is in use by agent '${agentName}'. Remove the agent first.` });
@@ -703,13 +822,14 @@ export function createMindServer(host_public = false, port = 8080) {
             }
             unlinkSync(filePath);
             console.log(`Deleted profile ${safeName}`);
-            const startup = readStartupProfiles().filter(p => p !== `./profiles/${safeName}.json`);
-            if (startup.length !== readStartupProfiles().length) {
-                persistStartupProfiles(startup);
+            const startup = readStartupProfiles();
+            const filtered = startup.filter(p => p !== startupPath && p !== `./profiles/${safeName}.json` && p !== `./${safeName}.json`);
+            if (filtered.length !== startup.length) {
+                persistStartupProfiles(filtered);
             }
             res.json({ success: true });
         } catch (err) {
-            res.status(400).json({ error: err.message });
+            res.status(err.status || 400).json({ error: err.message });
         }
     });
 

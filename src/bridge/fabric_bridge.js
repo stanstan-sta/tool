@@ -17,9 +17,67 @@
  */
 import { buildFabricStateLines } from './state_summary.js';
 
+// A15: bridge_url is a persisted UI setting, so it must never turn the Node
+// process into a request primitive against arbitrary remote/private hosts.
+// Only the local Fabric bridge (loopback + intentional port selection) is
+// allowed. Throws on anything else.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+export function normalizeBridgeUrl(raw) {
+    const text = String(raw ?? '').trim();
+    if (!text) throw new Error('Bridge URL must be a non-empty http:// URL.');
+    let parsed;
+    try {
+        parsed = new URL(text);
+    } catch {
+        throw new Error('Bridge URL must be a valid http://localhost URL.');
+    }
+    if (parsed.protocol !== 'http:') throw new Error('Bridge URL must use http (local Fabric bridge only).');
+    if (parsed.username || parsed.password) throw new Error('Bridge URL must not contain credentials.');
+    // Query strings would be folded into the fetch path (`${url}/ping` puts
+    // `/ping` inside the query), so a configured URL must not carry one.
+    if (parsed.search) throw new Error('Bridge URL must not contain a query string.');
+    if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) {
+        throw new Error('Bridge URL must target localhost, 127.0.0.1, or [::1].');
+    }
+    const pathPart = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname.replace(/\/+$/, '') : '';
+    return `${parsed.protocol}//${parsed.host}${pathPart}`;
+}
+
+// Resolve the agent's bridge base URL. An absent value uses the local
+// default; an explicitly configured but invalid URL throws — the caller must
+// fail loudly instead of silently using a different endpoint.
+export function resolveBridgeUrl(configured) {
+    if (configured === undefined || configured === null || String(configured).trim() === '') {
+        return 'http://localhost:8765';
+    }
+    return normalizeBridgeUrl(configured);
+}
+
 export class FabricBridge {
-    constructor(url = 'http://localhost:8765') {
-        this.url = url.replace(/\/$/, '');
+    constructor(url = 'http://localhost:8765', options = {}) {
+        this.url = normalizeBridgeUrl(url);
+        // A10: per-installation bearer token (FABRIC_BRIDGE_TOKEN in keys.json
+        // or env), copied once from the mod config. Sent on every non-liveness
+        // endpoint; never requested over the wire.
+        this.token = typeof options.token === 'string' && options.token ? options.token : null;
+        this.authFailed = false;
+    }
+
+    authHeaders() {
+        return this.token ? { Authorization: `Bearer ${this.token}` } : {};
+    }
+
+    static bridgeUnauthorizedError() {
+        return 'HTTP 401 (bridge rejected credentials: set FABRIC_BRIDGE_TOKEN in keys.json from the mod config mindcraft-bridge.json)';
+    }
+
+    noteAuthFailure(res) {
+        if (res && res.status === 401 && !this.authFailed) {
+            this.authFailed = true;
+            console.error('Fabric bridge rejected our credentials (HTTP 401). Copy bridgeToken from the Minecraft config mindcraft-bridge.json into keys.json as FABRIC_BRIDGE_TOKEN (or the env var) and restart the agent.');
+        }
+        return !!res && res.status === 401;
     }
 
     /**
@@ -30,6 +88,7 @@ export class FabricBridge {
         try {
             const res = await fetch(`${this.url}/ping`, {
                 signal: AbortSignal.timeout(2000),
+                redirect: 'error',
             });
             return res.ok;
         } catch {
@@ -46,10 +105,12 @@ export class FabricBridge {
         try {
             const res = await fetch(`${this.url}/command`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                 body: JSON.stringify({ command }),
                 signal: AbortSignal.timeout(8000),
+                redirect: 'error',
             });
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -59,19 +120,21 @@ export class FabricBridge {
 
     /**
      * Send a typed action to the Fabric client.
-     * @param {object} action
-     * @returns {Promise<{success: boolean, output?: string, error?: string}>}
-     */
+      * @param {object} action
+      * @returns {Promise<{success: boolean, output?: string, error?: string}>}
+      */
     async sendAction(action, generation = null) {
         try {
             const body = { action };
             if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/action`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                 body: JSON.stringify(body),
                 signal: AbortSignal.timeout(8000),
+                redirect: 'error',
             });
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -92,10 +155,12 @@ export class FabricBridge {
             if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/batch`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                 body: JSON.stringify(body),
                 signal: AbortSignal.timeout(25000),
+                redirect: 'error',
             });
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) {
                 // Surface the planner's actual error message instead of just the status code.
                 let detail = `HTTP ${res.status}`;
@@ -136,10 +201,12 @@ export class FabricBridge {
             if (Number.isSafeInteger(generation)) body.generation = generation;
             const res = await fetch(`${this.url}/batch`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                 body: JSON.stringify(body),
                 signal: AbortSignal.timeout(8000),
+                redirect: 'error',
             });
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) {
                 let detail = `HTTP ${res.status}`;
                 try {
@@ -175,8 +242,11 @@ export class FabricBridge {
     async getCapabilities() {
         try {
             const res = await fetch(`${this.url}/capabilities`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return null;
             return await res.json();
         } catch {
@@ -192,13 +262,16 @@ export class FabricBridge {
         try {
             const options = {
                 method: 'POST',
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             };
             if (Number.isSafeInteger(generation)) {
-                options.headers = { 'Content-Type': 'application/json' };
+                options.headers = { 'Content-Type': 'application/json', ...this.authHeaders() };
                 options.body = JSON.stringify({ generation });
             }
             const res = await fetch(`${this.url}/queue/skip`, options);
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -214,13 +287,16 @@ export class FabricBridge {
         try {
             const options = {
                 method: 'POST',
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             };
             if (Number.isSafeInteger(generation)) {
-                options.headers = { 'Content-Type': 'application/json' };
+                options.headers = { 'Content-Type': 'application/json', ...this.authHeaders() };
                 options.body = JSON.stringify({ generation });
             }
             const res = await fetch(`${this.url}/queue/resume`, options);
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -236,13 +312,16 @@ export class FabricBridge {
         try {
             const options = {
                 method: 'POST',
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             };
             if (Number.isSafeInteger(generation)) {
-                options.headers = { 'Content-Type': 'application/json' };
+                options.headers = { 'Content-Type': 'application/json', ...this.authHeaders() };
                 options.body = JSON.stringify({ generation });
             }
             const res = await fetch(`${this.url}/queue/cancel`, options);
+            if (this.noteAuthFailure(res)) return { success: false, error: FabricBridge.bridgeUnauthorizedError() };
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -257,8 +336,11 @@ export class FabricBridge {
     async getQueueState() {
         try {
             const res = await fetch(`${this.url}/queue/state`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return null;
             return await res.json();
         } catch {
@@ -273,8 +355,11 @@ export class FabricBridge {
     async getCommands() {
         try {
             const res = await fetch(`${this.url}/commands`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return [];
             const data = await res.json();
             return Array.isArray(data) ? data : [];
@@ -285,8 +370,8 @@ export class FabricBridge {
 
     /**
      * Get the current player state snapshot from the Fabric client.
-     * The `chat` array is automatically cleared by the mod after each /state call
-     * so callers always receive only new messages, unless options.drainChat is false.
+     * Only the observation poll drains chat/events (it sends drain=true);
+     * every other read is non-destructive (peek=true or no drain flag).
      *
      * @returns {Promise<FabricState|null>}
      *
@@ -311,10 +396,14 @@ export class FabricBridge {
             if (options.includeSurfaceMap === true) query.push('surface=true');
             if (Number.isFinite(options.surfaceRadius)) query.push(`surface_radius=${encodeURIComponent(String(options.surfaceRadius))}`);
             if (options.drainChat === false) query.push('peek=true');
+            else query.push('drain=true');
             const suffix = query.length ? `?${query.join('&')}` : '';
             const res = await fetch(`${this.url}/state${suffix}`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(3000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return null;
             return await res.json();
         } catch {
@@ -332,8 +421,11 @@ export class FabricBridge {
         try {
             const query = `x=${x}&y=${y}&z=${z}&w=${w}&h=${h}&l=${l}`;
             const res = await fetch(`${this.url}/read_blocks?${query}`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(5000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return null;
             return await res.json();
         } catch {
@@ -352,8 +444,11 @@ export class FabricBridge {
             const downscale = Number.isFinite(options.downscale) ? options.downscale : 2;
             const query = `quality=${encodeURIComponent(String(quality))}&downscale=${encodeURIComponent(String(downscale))}`;
             const res = await fetch(`${this.url}/screenshot?${query}`, {
+                headers: { ...this.authHeaders() },
                 signal: AbortSignal.timeout(8000),
+                redirect: 'error',
             });
+            this.noteAuthFailure(res);
             if (!res.ok) return null;
             const arrayBuffer = await res.arrayBuffer();
             return {

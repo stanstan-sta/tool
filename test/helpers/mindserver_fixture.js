@@ -9,8 +9,9 @@ export function mindserverFixture(t, before) {
     const root = path.join(temporary, 'app');
     mkdirSync(path.join(root, 'src/mindcraft/public'), { recursive: true });
     mkdirSync(path.join(root, 'profiles'), { recursive: true });
+    mkdirSync(path.join(root, 'src/bridge'), { recursive: true });
     symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction');
-    for (const relative of ['main.js', 'src/mindcraft/mindserver.js', 'src/mindcraft/startup_profiles.js', 'src/mindcraft/public/settings_spec.json']) {
+    for (const relative of ['main.js', 'src/mindcraft/mindserver.js', 'src/mindcraft/startup_profiles.js', 'src/mindcraft/public/settings_spec.json', 'src/bridge/fabric_bridge.js', 'src/bridge/state_summary.js']) {
         const baseline = before && path.join(before, path.basename(relative));
         copyFileSync(baseline && existsSync(baseline) ? baseline : path.join(repo, relative), path.join(root, relative));
     }
