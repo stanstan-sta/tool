@@ -191,7 +191,7 @@ Check whether the Fabric bridge is reachable.
 npm run reinstall
 ```
 
-Delete `node_modules` and `package-lock.json`, then reinstall.
+Delete `node_modules`, preserve the lockfile if present, then reinstall.
 
 ### Optional System One server
 
