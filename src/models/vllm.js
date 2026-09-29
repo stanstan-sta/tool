@@ -2,7 +2,6 @@
 // Qwen is also compatible with the OpenAI API format;
 
 import OpenAIApi from 'openai';
-import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
 
 export class VLLM {
@@ -17,7 +16,10 @@ export class VLLM {
         else
             vllm_config.baseURL = 'http://0.0.0.0:8000/v1';
 
-        vllm_config.apiKey = "";
+        // The OpenAI SDK requires a non-empty apiKey even when the target is
+        // an unauthenticated local OpenAI-compatible server. vLLM ignores the
+        // value unless its server is explicitly configured for auth.
+        vllm_config.apiKey = 'vllm-local';
 
         this.vllm = new OpenAIApi(vllm_config);
     }

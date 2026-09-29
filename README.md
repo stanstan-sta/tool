@@ -16,7 +16,7 @@ Run the Node.js commands from `tool\`.
 ## Requirements
 
 - Windows
-- Node.js 20 or 22 LTS
+- Node.js 22 or newer (Node 22 LTS recommended)
 - Java 21, needed to build Fabric mods
 - Minecraft Java Edition with Fabric for the target version
 - A model provider:
