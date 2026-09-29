@@ -3,7 +3,7 @@
 // exercises dispatch and observation/continuation paths, not just internals.
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { BridgeAgent } from '../src/bridge/bridge_agent.js';
@@ -54,6 +54,7 @@ function makeAgent({ prompt = async () => '', sendBatch = async () => ({ success
         _reasoningKeys: new Set(),
         _lastState: { connected: true, inventory: [], x: 0, y: 64, z: 0, dimension: 'minecraft:overworld' },
         _rewardLogPath: join(tmpRoot, `reward-${Date.now()}-${Math.random().toString(36).slice(2)}.log`),
+        _outcomeLogPath: join(tmpRoot, `outcomes-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`),
         history: {
             memory: '',
             add(role, content) { historyEntries.push({ role, content }); },
@@ -104,6 +105,7 @@ test('close is exactly-once and append deep-copies', () => {
     batch[0].count = 99;
     assert.equal(flattenTaskActions(record)[0].count, 2);
     assert.equal(closeTaskRecord(record, 'plan-complete'), 'plan-complete');
+    assert.ok(record.closedAt >= record.createdAt, 'close records terminal timestamp');
     assert.equal(closeTaskRecord(record, 'plan-complete'), null);
     assert.equal(appendTaskBatch(record, [{ type: 'mine' }]), false);
 });
@@ -115,6 +117,50 @@ test('G2 task record de-duplicates and bounds retrieved skill ids', () => {
     assert.equal(addRetrievedSkillIds(record, ['a', 'b']), false);
     closeTaskRecord(record, 'done');
     assert.equal(addRetrievedSkillIds(record, ['c']), false, 'closed records cannot gain attribution candidates');
+});
+
+test('outcome ledger records retired task once with lifecycle metadata', () => {
+    const agent = makeAgent();
+    const record = agent._startTaskRecord('fetch 2 oak_log', 'player', 1);
+    addRetrievedSkillIds(record, ['skill_a']);
+    agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+    assert.equal(agent._retireTaskRecord('explicit-cancel', record.id), 'explicit-cancel');
+    assert.equal(agent._retireTaskRecord('explicit-cancel', record.id), null);
+
+    assert.equal(existsSync(agent._outcomeLogPath), true);
+    const rows = readFileSync(agent._outcomeLogPath, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(rows.length, 1, 'exactly one ledger row per task close');
+    assert.equal(rows[0].origin, 'player');
+    assert.equal(rows[0].closeReason, 'explicit-cancel');
+    assert.deepEqual(rows[0].retrievedSkillIds, ['skill_a']);
+    assert.equal(rows[0].batches.length, 1);
+    assert.ok(rows[0].durationMs >= 0);
+    assert.equal(rows[0].verification, null);
+    assert.deepEqual(rows[0].target, { item: 'oak_log', count: 2 });
+});
+
+test('outcome ledger stores terminal verification result', async () => {
+    const saved = settings.bridge_reward_enabled;
+    settings.bridge_reward_enabled = true;
+    try {
+        const agent = makeAgent();
+        const record = agent._startTaskRecord('fetch 2 oak_log', 'player', 1);
+        agent._trackDispatchResult(record, [mineOak(2)], { success: true, queued: 1 });
+        agent.bridge.getState = async () => ({
+            connected: true,
+            inventory: [{ item: 'minecraft:oak_log', count: 2 }],
+            queue: { status: 'idle', pending: 0, active: null },
+        });
+        const result = await agent._closeTaskWithVerification('plan-complete', agent._lastState, record.id);
+        assert.equal(result.learned, true);
+        const [row] = readFileSync(agent._outcomeLogPath, 'utf8').trim().split('\n').map(JSON.parse);
+        assert.equal(row.verification.met, true);
+        assert.equal(row.verification.reward, 1);
+        assert.equal(row.unverifiable, false);
+        assert.equal(row.rewardDisabled, false);
+    } finally {
+        settings.bridge_reward_enabled = saved;
+    }
 });
 
 test('idle eligibility: only fresh connected idle with zero work', () => {
@@ -427,6 +473,10 @@ test('Task failed retires; recovery is a new attempt under the original label', 
     assert.match(failed.closeReason, /^task-failed:/);
     assert.equal(agent.skillLibrary.data.lessons.length, 1, 'definite server failure becomes one lesson');
     assert.equal(agent.skillLibrary.data.lessons[0].category, 'no_path');
+    const failureLedger = readFileSync(agent._outcomeLogPath, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(failureLedger.length, 1);
+    assert.equal(failureLedger[0].failureCategory, 'no_path');
+    assert.match(failureLedger[0].closeReason, /^task-failed:/);
     const scheduled = agent.scheduled.find(s => s.key === 'failure-recovery');
     assert.ok(scheduled);
     assert.equal(scheduled.task.taskLabel, 'fetch oak logs');

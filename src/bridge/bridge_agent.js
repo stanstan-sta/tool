@@ -745,6 +745,7 @@ export class BridgeAgent {
         this._lastTaskLabel = '';
         this._lastTaskAttempt = 0;
         this._rewardLogPath = `./bots/${this.name}/reward.log`;
+        this._outcomeLogPath = `./bots/${this.name}/outcomes.jsonl`;
 
         // Voyager-style self-improvement: verified plans become reusable skills, failures
         // become lessons, and an automatic curriculum proposes goals when idle.
@@ -2109,9 +2110,20 @@ export class BridgeAgent {
             this._retireTaskRecord('replaced');
         }
         const attempt = clean === this._lastTaskLabel ? (this._lastTaskAttempt || 0) + 1 : 1;
+        let target = null;
+        try {
+            const activeGoal = this.goalManager?.goal;
+            target = activeGoal?.text === clean && activeGoal?.target
+                ? activeGoal.target
+                : inferGoalTarget(clean, this._knownItems || new Set());
+        } catch {
+            // A target is optional metadata; task ownership must not depend on
+            // heuristic target extraction.
+        }
         const record = createTaskRecord({
             label: clean,
             origin,
+            target,
             baseline: snapshotInventory(this._lastState),
             generation,
             attempt,
@@ -2157,6 +2169,52 @@ export class BridgeAgent {
         }
     }
 
+    _writeTaskOutcomeLedger(record, { verification = null, unverifiable = false, rewardDisabled = false } = {}) {
+        if (!record?.closed || record.ledgerWritten) return false;
+        const closedAt = Number(record.closedAt) || Date.now();
+        const createdAt = Number(record.createdAt) || closedAt;
+        const verified = verification && typeof verification === 'object'
+            ? {
+                met: verification.met === true,
+                reward: Number.isFinite(Number(verification.reward)) ? Number(verification.reward) : null,
+                results: Array.isArray(verification.results) ? verification.results : [],
+            }
+            : null;
+        const failureCategory = record.failureCategory
+            || (verified && verified.met === false ? 'unknown' : null);
+        const row = {
+            version: 1,
+            t: closedAt,
+            taskId: Number.isSafeInteger(record.id) ? record.id : null,
+            label: String(record.label || '').slice(0, 200),
+            origin: String(record.origin || 'unknown').slice(0, 40),
+            target: record.target || null,
+            attempt: Number(record.attempt) || 1,
+            generation: Number.isSafeInteger(record.generation) ? record.generation : null,
+            createdAt,
+            closedAt,
+            durationMs: Math.max(0, closedAt - createdAt),
+            closeReason: String(record.closeReason || 'closed').slice(0, 240),
+            failureCategory,
+            batches: Array.isArray(record.batches) ? record.batches : [],
+            retrievedSkillIds: Array.isArray(record.retrievedSkillIds)
+                ? [...new Set(record.retrievedSkillIds.filter(id => typeof id === 'string' && id))].slice(0, 16)
+                : [],
+            verification: verified,
+            unverifiable: unverifiable === true,
+            rewardDisabled: rewardDisabled === true,
+        };
+        try {
+            mkdirSync(`./bots/${this.name}`, { recursive: true });
+            appendFileSync(this._outcomeLogPath, JSON.stringify(row) + '\n');
+            record.ledgerWritten = true;
+            return true;
+        } catch (err) {
+            console.warn('Task outcome ledger write failed:', err.message || err);
+            return false;
+        }
+    }
+
     _retireTaskRecord(reason, recordId = this._taskRecord?.id) {
         const record = this._taskRecord;
         if (!record || record.closed) return null;
@@ -2167,6 +2225,7 @@ export class BridgeAgent {
         this._lastTaskAttempt = record.attempt;
         this._pendingContinuation = false;
         this._lastHadActions = false;
+        this._writeTaskOutcomeLedger(record);
         this._noteTaskRecord(record, 'An active task record was retired with no outcome recorded.', closed);
         return closed;
     }
@@ -2174,6 +2233,7 @@ export class BridgeAgent {
     _recordDefiniteTaskFailure(record, reason) {
         if (!record || record.closed || !this.skillLibrary || settings.bridge_reward_enabled === false) return null;
         const category = classifyFailureReason(reason);
+        record.failureCategory = category;
         if (category === 'interrupted') return null;
         const actions = flattenTaskActions(record);
         if (actions.length === 0) return null;
@@ -2307,6 +2367,7 @@ export class BridgeAgent {
         this._pendingContinuation = false;
         this._lastHadActions = false;
         if (settings.bridge_reward_enabled === false) {
+            this._writeTaskOutcomeLedger(record, { rewardDisabled: true });
             try {
                 this.history?.add?.('system', 'Task closed. Reward disabled; no outcome recorded.');
             } catch {
@@ -2317,6 +2378,7 @@ export class BridgeAgent {
         const actions = flattenTaskActions(record);
         const expectations = expectFromActions(actions);
         if (expectations.length === 0) {
+            this._writeTaskOutcomeLedger(record, { unverifiable: true });
             try {
                 this.history?.add?.('system', 'Task outcome unverifiable (no inventory expectations); never marked success.');
             } catch {
@@ -2325,6 +2387,7 @@ export class BridgeAgent {
             return { closed, learned: false, unverifiable: true };
         }
         const verification = verifyOutcome(record.baseline, snapshot, expectations);
+        this._writeTaskOutcomeLedger(record, { verification });
         const line = `Outcome verification ${verification.met ? 'met' : 'not met'} (reward ${verification.reward}).`;
         try {
             this.history?.add?.('system', line);
