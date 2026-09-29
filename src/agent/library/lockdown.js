@@ -6,8 +6,9 @@ import 'ses';
 // For configuration, see https://github.com/endojs/endo/blob/master/packages/ses/docs/lockdown.md
 
 const sesLockdown = globalThis.lockdown;
-if (typeof sesLockdown !== 'function') {
-  throw new Error('SES failed to install globalThis.lockdown');
+const SesCompartment = globalThis.Compartment;
+if (typeof sesLockdown !== 'function' || typeof SesCompartment !== 'function') {
+  throw new Error('SES failed to install lockdown/Compartment globals');
 }
 
 let lockeddown = false;
@@ -29,7 +30,7 @@ export function lockdown() {
 }
 
 export const makeCompartment = (endowments = {}) => {
-  return new Compartment({
+  return new SesCompartment({
     // provide untamed Math, Date, etc
     Math,
     Date,

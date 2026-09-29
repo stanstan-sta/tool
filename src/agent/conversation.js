@@ -191,7 +191,7 @@ class ConversationManager {
             await agent.self_prompter.pause();
         }
     
-        _scheduleProcessInMessage(sender, received, convo);
+        _scheduleProcessInMessage(sender, received, convo).catch(err => console.error('Conversation scheduling failed:', err));
     }
 
     responseScheduledFor(sender) {
@@ -231,7 +231,7 @@ class ConversationManager {
                 this._stopMonitor();
                 this.activeConversation = null;
                 if (agent.self_prompter.isPaused() && !this.inConversation()) {
-                    _resumeSelfPrompter();
+                    _resumeSelfPrompter().catch(err => console.error('Self-prompter resume failed:', err));
                 }
             }
         }
@@ -242,7 +242,7 @@ class ConversationManager {
             this.endConversation(sender);
         }
         if (agent.self_prompter.isPaused()) {
-            _resumeSelfPrompter();
+            _resumeSelfPrompter().catch(err => console.error('Self-prompter resume failed:', err));
         }
     }
 

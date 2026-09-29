@@ -37,7 +37,7 @@ const argv = yargs(args)
     })
     .argv;
 
-(async () => {
+async function main() {
     try {
         console.log('Connecting to MindServer');
         await serverProxy.connect(argv.name, argv.port);
@@ -51,4 +51,9 @@ const argv = yargs(args)
         console.error(error.stack);
         process.exit(1);
     }
-})();
+}
+
+main().catch(error => {
+    console.error('Unhandled startup failure:', error);
+    process.exit(1);
+});;

@@ -4,7 +4,7 @@ import * as mc from '../utils/mcdata.js';
 import settings from './settings.js';
 import convoManager from './conversation.js';
 
-async function say(agent, message) {
+function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
     if (agent.shut_up || !settings.narrate_behavior) return;
     agent.openChat(message);
@@ -303,7 +303,14 @@ const modes_list = [
     }
 ];
 
-async function execute(mode, agent, func, timeout=-1) {
+function execute(mode, agent, func, timeout=-1) {
+    runModeAction(mode, agent, func, timeout).catch(err => {
+        mode.active = false;
+        console.error(`Mode ${mode.name} failed:`, err);
+    });
+}
+
+async function runModeAction(mode, agent, func, timeout=-1) {
     if (agent.self_prompter.isActive())
         agent.self_prompter.stopLoop();
     let interrupted_action = agent.actions.currentActionLabel;
@@ -328,6 +335,7 @@ async function execute(mode, agent, func, timeout=-1) {
         Your behavior log: ${logs}\nRespond accordingly.`);
     }
 }
+
 
 let _agent = null;
 const modes_map = {};

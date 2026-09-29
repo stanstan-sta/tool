@@ -16,7 +16,7 @@ export default [
         ...globals.browser,
         ...globals.node,
       },
-      ecmaVersion: 2021,
+      ecmaVersion: "latest",
       sourceType: "module",
     },
     rules: {
@@ -38,7 +38,7 @@ export default [
         ...globals.node,
         ...globals.browser,
       },
-      ecmaVersion: 2021,
+      ecmaVersion: "latest",
       sourceType: "module",
     },
   },

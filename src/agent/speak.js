@@ -23,7 +23,14 @@ export function speak(text, speak_model) {
     }
 
     speakingQueue.push(item);
-    if (!isSpeaking) processQueue();
+    if (!isSpeaking) scheduleProcessQueue();
+}
+
+function scheduleProcessQueue() {
+    processQueue().catch(err => {
+        console.error('[TTS] queue error', err);
+        isSpeaking = false;
+    });
 }
 
 async function fetchRemoteAudio(txt, model) {
@@ -64,7 +71,7 @@ async function processQueue() {
     const { text: txt, model, audioData } = item;
     if (txt.trim() === '') {
         isSpeaking = false;
-        processQueue();
+        scheduleProcessQueue();
         return;
     }
 
@@ -78,7 +85,7 @@ async function processQueue() {
     } catch (err) {
         console.error('[TTS] preprocess error', err);
         isSpeaking = false;
-        processQueue();
+        scheduleProcessQueue();
         return;
     }
 
@@ -95,7 +102,7 @@ async function processQueue() {
         exec(cmd, err => {
             if (err) console.error('TTS error', err);
             isSpeaking = false;
-            processQueue();
+            scheduleProcessQueue();
         });
 
     } 
@@ -106,7 +113,7 @@ async function processQueue() {
         if (!audioData) {
             console.error('[TTS] No audio data ready');
             isSpeaking = false;
-            processQueue();
+            scheduleProcessQueue();
             return;
         }
 
@@ -122,12 +129,12 @@ async function processQueue() {
                     console.error('[TTS] ffplay error', err);
                     try { await fs.unlink(tmpPath); } catch {}
                     isSpeaking = false;
-                    processQueue();
+                    scheduleProcessQueue();
                 });
                 player.on('exit', async () => {
                     try { await fs.unlink(tmpPath); } catch {}
                     isSpeaking = false;
-                    processQueue();
+                    scheduleProcessQueue();
                 });
 
             } else {
@@ -138,13 +145,13 @@ async function processQueue() {
                 player.stdin.end();
                 player.on('exit', () => {
                     isSpeaking = false;
-                    processQueue();
+                    scheduleProcessQueue();
                 });
             }
         } catch (e) {
             console.error('[TTS] Audio error', e);
             isSpeaking = false;
-            processQueue();
+            scheduleProcessQueue();
         }
     }
 }

@@ -1609,8 +1609,8 @@ export async function tillAndSow(bot, x, y, z, seedType=null) {
                 seedType = seedType.replace(remove, '');
             }
         }
-        placeBlock(bot, 'farmland', x, y, z);
-        placeBlock(bot, seedType, x, y+1, z);
+        await placeBlock(bot, 'farmland', x, y, z);
+        await placeBlock(bot, seedType, x, y+1, z);
         return true;
     }
 

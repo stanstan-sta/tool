@@ -139,12 +139,13 @@ export class ActionManager {
             // Log the full stack trace
             console.error(err.stack);
             await this.stop();
-            err = err.toString();
+            const errText = String(err);
+            const errStack = err && err.stack ? String(err.stack) : errText;
 
             let message = this.getBotOutputSummary() +
                 '!!Code threw exception!!\n' +
-                'Error: ' + err + '\n' +
-                'Stack trace:\n' + err.stack+'\n';
+                'Error: ' + errText + '\n' +
+                'Stack trace:\n' + errStack + '\n';
 
             let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();

@@ -16,7 +16,7 @@ const argv = yargs(args)
     .option('port', { alias: 'p', type: 'number' })
     .argv;
 
-(async () => {
+async function main() {
     // Graceful shutdown. Without this, Node on Windows may ignore SIGINT
     // while we're mid-await on an HTTP call, causing the parent's restart
     // flow to time out. With it, SIGINT reliably exits even mid-request.
@@ -43,4 +43,9 @@ const argv = yargs(args)
         console.error(error.stack);
         process.exit(1);
     }
-})();
+}
+
+main().catch(error => {
+    console.error('Unhandled startup failure:', error);
+    process.exit(1);
+});;
