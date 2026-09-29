@@ -17,7 +17,7 @@ export class VLLM {
         else
             vllm_config.baseURL = 'http://0.0.0.0:8000/v1';
 
-        vllm_config.apiKey = ""
+        vllm_config.apiKey = "";
 
         this.vllm = new OpenAIApi(vllm_config);
     }
@@ -38,13 +38,13 @@ export class VLLM {
 
         let res = null;
         try {
-            console.log('Awaiting openai api response...')
+            console.log('Awaiting openai api response...');
             // console.log('Messages:', messages);
             // todo set max_tokens, temperature, top_p, etc. in pack
             let completion = await this.vllm.chat.completions.create(pack);
             if (completion.choices[0].finish_reason == 'length')
                 throw new Error('Context length exceeded');
-            console.log('Received.')
+            console.log('Received.');
             res = completion.choices[0].message.content;
         }
         catch (err) {
