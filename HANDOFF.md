@@ -6,10 +6,12 @@ This section supersedes older status summaries below; historical findings are re
 
 **Verified after the follow-up:**
 - clean `npm ci` with all six `patch-package` patches applying;
-- **333/333 Node tests pass** when the protected legacy `test/server_data.test.js` is excluded, matching the established test convention for this branch;
+- **334/334 Node tests pass** when the protected legacy `test/server_data.test.js` is excluded, matching the established test convention for this branch; the added regression covers construction of the vLLM adapter with the pinned OpenAI SDK;
 - `npx eslint src test main.js` is clean after resolving the historical repo-wide lint backlog; `bridge_agent.js` is clean independently;
 - Fabric bridge Java tests complete successfully under **JDK 21**; an earlier CI failure was only the runner using Java 17, not a Java test failure;
 - the official `openai` dependency is now pinned to **7.23.0** so the code's `Responses` API and `AzureOpenAI` import actually exist. The upgrade workflow smoke-tested AzureOpenAI, Responses, Chat Completions and Embeddings surfaces, then reran the Node suite and lint;
+- post-review startup regression fix: `src/models/vllm.js` now supplies a non-empty local placeholder API key (`vllm-local`) because OpenAI SDK 7.x rejects an empty key at client construction; clean `npm ci`, the focused constructor test, the full 334-test Node suite and repo-wide lint all pass;
+- runtime requirement is now explicit and consistent: README, `package.json` and the root lockfile require **Node >=22.0.0**, matching `openai@7.23.0`'s declared engine;
 - no live Minecraft/model session was performed. Source/unit/build verification is not a substitute for live-game validation.
 
 **P3 source issues closed in the current beta follow-up:**
