@@ -1,0 +1,45 @@
+name: One-off typed memory validation
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/typed-memory-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.event.head_commit.message == 'Implement typed durable memory schema'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Clean install
+        run: npm ci
+      - name: Validate default profile JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('profiles/defaults/_default.json','utf8'))"
+      - name: Focused memory regressions
+        run: node --test test/history_memory_filter.test.js test/memory_schema_validation.test.js
+      - name: Full Node suite
+        shell: bash
+        run: |
+          mapfile -t tests < <(find test -maxdepth 1 -name '*.test.js' ! -name 'server_data.test.js' -print | sort)
+          node --test "${tests[@]}"
+      - name: Repository lint
+        run: npx eslint src test main.js
+      - name: Commit validated files and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/typed-memory-once.yml
+          git add src/agent/history.js profiles/defaults/_default.json test/history_memory_filter.test.js
+          git commit -m "Validate typed durable memory schema [skip typed-memory-once]"
+          git push origin HEAD:beta

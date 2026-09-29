@@ -4,7 +4,7 @@ import settings from './settings.js';
 
 
 const MEMORY_FILTER_INSTRUCTION =
-    'Memory-filtered transcript. Save only stable user preferences, explicit reminders, corrected facts, or confirmed successful outcomes. Ignore action proposals, queued/failed bridge actions, transient state, inventory, coordinates, docs, and anything the bot merely said it would do.';
+    'Memory-filtered transcript. Save only stable user preferences, explicit reminders, corrected facts, durable world/user facts, or confirmed successful outcomes. Ignore action proposals, queued/failed bridge actions, transient state, inventory, coordinates, docs, and anything the bot merely said it would do. Return only the requested typed memory JSON.';
 
 // A9: persisted memory is replayed into prompts, so it must never carry
 // instruction-like content. validateMemoryText returns the text when it is a
@@ -29,6 +29,74 @@ export function validateMemoryText(text) {
     if (trimmed.length > MEMORY_MAX_STORED_CHARS) return null;
     if (MEMORY_INSTRUCTION_PATTERNS.some(pattern => pattern.test(trimmed))) return null;
     return trimmed;
+}
+
+const MEMORY_SCHEMA_VERSION = 1;
+const MEMORY_MAX_FACTS = 8;
+const MEMORY_MAX_FACT_CHARS = 160;
+const MEMORY_FACT_KINDS = new Set(['preference', 'reminder', 'correction', 'fact', 'outcome']);
+
+function normalizeMemoryFactText(text) {
+    if (typeof text !== 'string') return null;
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized || normalized.length > MEMORY_MAX_FACT_CHARS) return null;
+    return validateMemoryText(normalized);
+}
+
+export function validateMemorySchema(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (value.version !== MEMORY_SCHEMA_VERSION || !Array.isArray(value.facts)) return null;
+
+    const facts = [];
+    const seen = new Set();
+    for (const raw of value.facts) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const kind = String(raw.kind || '').toLowerCase();
+        if (!MEMORY_FACT_KINDS.has(kind)) continue;
+        const text = normalizeMemoryFactText(raw.text);
+        if (!text) continue;
+        const key = `${kind}:\0${text.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        facts.push({ kind, text });
+        if (facts.length >= MEMORY_MAX_FACTS) break;
+    }
+    return { version: MEMORY_SCHEMA_VERSION, facts };
+}
+
+export function renderMemorySchema(schema) {
+    const validated = validateMemorySchema(schema);
+    if (!validated || validated.facts.length === 0) return '';
+    return validated.facts.map(fact => fact.text).join('\n');
+}
+
+export function parseMemorySummary(text) {
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+    try {
+        return validateMemorySchema(JSON.parse(trimmed));
+    } catch {
+        return null;
+    }
+}
+
+function migrateLegacyMemory(text) {
+    const validated = validateMemoryText(text);
+    if (!validated) return { version: MEMORY_SCHEMA_VERSION, facts: [] };
+    const compact = validated.replace(/\s+/g, ' ').trim();
+    if (compact.length <= MEMORY_MAX_FACT_CHARS) {
+        return { version: MEMORY_SCHEMA_VERSION, facts: [{ kind: 'fact', text: compact }] };
+    }
+
+    const facts = [];
+    for (const part of compact.split(/(?<=[.!?])\s+/)) {
+        const factText = normalizeMemoryFactText(part);
+        if (!factText) continue;
+        facts.push({ kind: 'fact', text: factText });
+        if (facts.length >= MEMORY_MAX_FACTS) break;
+    }
+    return { version: MEMORY_SCHEMA_VERSION, facts };
 }
 
 function parseJsonObject(text) {
@@ -118,7 +186,9 @@ export class History {
 
         this.turns = [];
 
-        // Natural language memory as a summary of recent messages + previous memory
+        // Typed durable memory is persisted in memory_schema. The rendered
+        // string remains the compatibility interface used by existing prompts.
+        this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
         this.memory = '';
 
         // Maximum number of messages to keep in context before saving chunk to memory
@@ -146,18 +216,15 @@ export class History {
             ...sanitized,
         ]);
 
-        const validated = validateMemoryText(summary);
-        if (validated === null) {
-            // Never persist instruction-like summaries; keep prior memory.
-            console.warn("Rejected instruction-like memory summary; keeping previous memory.");
+        const schema = parseMemorySummary(summary);
+        if (schema === null) {
+            // Typed parsing is fail-closed: malformed or instruction-like
+            // summaries never replace the last known-good durable memory.
+            console.warn("Rejected malformed or unsafe typed memory summary; keeping previous memory.");
             return;
         }
-        this.memory = validated;
-
-        if (this.memory.length > 500) {
-            this.memory = this.memory.slice(0, 500);
-            this.memory += '...(Memory truncated to 500 chars. Compress it more next time)';
-        }
+        this.memory_schema = schema;
+        this.memory = renderMemorySchema(schema);
 
         console.log("Memory updated to: ", this.memory);
     }
@@ -213,6 +280,7 @@ export class History {
             const data = {
                 ...existing,
                 memory: this.memory,
+                memory_schema: this.memory_schema,
                 turns: this.turns,
                 self_prompting_state: selfPrompter?.state ?? null,
                 self_prompt: selfPrompter
@@ -242,31 +310,49 @@ export class History {
                 // W1: a corrupt file must not crash the agent (both bridge and
                 // legacy init call load() without a try/catch). Skip + warn.
                 console.warn(`Discarding corrupt memory file ${this.memory_fp}; starting with empty memory.`);
+                this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
                 this.memory = '';
                 this.turns = [];
                 return null;
             }
             if (!data || typeof data !== 'object' || Array.isArray(data)) {
                 console.warn(`Discarding unexpected-shape memory file ${this.memory_fp}; starting with empty memory.`);
+                this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
                 this.memory = '';
                 this.turns = [];
                 return null;
             }
-            // A9: stored memory is untrusted input. Non-string, overlong, or
-            // instruction-like content is discarded, never replayed.
-            this.memory = validateMemoryText(data.memory) ?? '';
-            if (data.memory !== undefined && data.memory !== null && data.memory !== '' && !this.memory) {
-                console.warn('Discarded invalid stored memory; starting with empty memory.');
+            // A9: prefer the versioned typed schema. If no schema exists,
+            // migrate the legacy plain-text memory into typed facts. If a
+            // schema is present but malformed, fail closed instead of falling
+            // back to a potentially attacker-controlled legacy string.
+            if (data.memory_schema !== undefined) {
+                const schema = validateMemorySchema(data.memory_schema);
+                if (schema) {
+                    this.memory_schema = schema;
+                    this.memory = renderMemorySchema(schema);
+                } else {
+                    console.warn('Discarded invalid stored memory schema; starting with empty memory.');
+                    this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
+                    this.memory = '';
+                }
+            } else {
+                this.memory_schema = migrateLegacyMemory(data.memory);
+                this.memory = renderMemorySchema(this.memory_schema);
+                if (data.memory !== undefined && data.memory !== null && data.memory !== '' && !this.memory) {
+                    console.warn('Discarded invalid legacy stored memory; starting with empty memory.');
+                }
             }
             // W1: stored turns are untrusted prompt input. System-role and
             // malformed entries are dropped so they can never replay as
             // system-role instructions; user/assistant flows are preserved.
             this.turns = sanitizeLoadedTurns(data.turns);
             console.log('Loaded memory:', this.memory);
-            return { ...data, memory: this.memory, turns: this.turns };
+            return { ...data, memory: this.memory, memory_schema: this.memory_schema, turns: this.turns };
         } catch (error) {
             // W1: never let a malformed file crash the agent; fall back empty.
             console.warn(`Discarding unreadable memory file ${this.memory_fp}; starting with empty memory.`);
+            this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
             this.memory = '';
             this.turns = [];
             return null;
@@ -275,6 +361,7 @@ export class History {
 
     clear() {
         this.turns = [];
+        this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
         this.memory = '';
     }
 }
