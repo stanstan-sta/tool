@@ -107,33 +107,30 @@ public class BridgeHttpServer {
                 respond(ex, 400, "{\"success\":false,\"error\":\"Missing 'command' field\"}");
                 return;
             }
+            command = CommandExecutor.normalizeRawBaritoneCommand(command);
+            if (!command.startsWith("chat:") && !RawCommandPolicy.isAllowed(command)) {
+                respond(ex, 422, "{\"success\":false,\"accepted\":false,\"error\":\"raw_command_forbidden\",\"queued\":0}");
+                return;
+            }
             if (!isClientConnected()) {
                 respond(ex, 503, "{\"success\":false,\"error\":\"client_not_connected\",\"queued\":0}");
                 return;
             }
-            // Chat and message commands execute immediately — don't queue them.
-            if (command.startsWith("chat:") || command.startsWith("whisper:") || command.startsWith("/")) {
+            // Chat executes immediately; all other commands have passed the raw policy.
+            if (command.startsWith("chat:")) {
                 CommandExecutor.execute(command);
                 respond(ex, 200, "{\"success\":true,\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
                 return;
             }
-            // For Baritone-style commands (#...), normalize and check raw command policy
-            String normalized = CommandExecutor.normalizeRawBaritoneCommand(command);
-            if (normalized.startsWith("#")) {
-                if (!RawCommandPolicy.isAllowed(normalized)) {
-                    respond(ex, 422, "{\"success\":false,\"accepted\":false,\"error\":\"raw_command_forbidden\",\"queued\":0,\"output\":\"Command not allowed: " + jsonEscape(command) + "\"}");
-                    return;
-                }
-            }
             // Queue the normalized command
             TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(normalized, null)));
+                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(command, null)));
             if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
                 int httpStatus = "QUEUE_FULL".equals(eq.error()) ? 503 : 400;
                 respond(ex, httpStatus, "{\"success\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
                 return;
             }
-            respond(ex, 200, "{\"success\":true,\"queued\":" + eq.queued() + ",\"output\":\"Command sent: " + jsonEscape(normalized) + "\"}");
+            respond(ex, 200, "{\"success\":true,\"queued\":" + eq.queued() + ",\"output\":\"Command sent: " + jsonEscape(command) + "\"}");
         } catch (PayloadTooLargeException e) {
             respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
         }
@@ -169,91 +166,17 @@ public class BridgeHttpServer {
             }
 
             String rawType = extractJsonString(actionJson, "type");
-            boolean tracked = BridgeActionRegistry.isSelfExecuting(rawType);
-            long trackingId = -1L;
-            if (tracked) {
-                trackingId = TaskQueue.getInstance().createActiveTrackingTask("#" + rawType, rawType);
-                if (trackingId < 0L) {
-                    respond(ex, 409, "{\"success\":false,\"accepted\":false,\"error\":\"Queue is busy\"}");
-                    return;
-                }
-            }
-
-            CommandExecutor.TranslatedAction result = CommandExecutor.translateTypedJson(actionJson);
-
-            if (result == null) {
-                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-                respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Invalid typed action\"}");
+            com.mindcraft.bridge.workers.ActionRegistry.ActionSpec spec =
+                    com.mindcraft.bridge.workers.ActionRegistry.get().getSpec(rawType);
+            if (spec == null || !com.mindcraft.bridge.workers.ActionRegistry.get().isExternallyRoutable(rawType)) {
+                respond(ex, 400, "{\"success\":false,\"accepted\":false,\"error\":\"Unknown action type\"}");
                 return;
             }
-
-            if (!result.ok()) {
-                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-                respond(ex, 400, "{"
-                    + "\"success\":false,"
-                    + "\"accepted\":false,"
-                    + "\"queued\":0,"
-                    + "\"failure_code\":\"" + jsonEscape(result.failureCode()) + "\","
-                    + "\"error\":\"" + jsonEscape(result.message()) + "\","
-                    + "\"results\":[" + resultJson(result) + "]"
-                    + "}");
-                return;
-            }
-
-            // Generic worker routing — same as processTypedBatchAction
-            if (result.genericWorker()) {
-                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-                TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                    .enqueueWorkerAction(result.actionType(), actionJson);
-                if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
-                    respond(ex, "QUEUE_FULL".equals(eq.error()) ? 503 : 400,
-                        "{\"success\":false,\"accepted\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
-                    return;
-                }
-                respond(ex, 200, "{"
-                    + "\"success\":true,"
-                    + "\"accepted\":true,"
-                    + "\"queued\":1,"
-                    + "\"task_ids\":" + taskIdsJson(eq.taskIds()) + ","
-                    + "\"results\":[" + resultJson(result) + "],"
-                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
-                    + "}");
-                return;
-            }
-
-            if ("self_executing".equals(result.lifecycle())) {
-                if (trackingId < 0L) {
-                    respond(ex, 500, "{\"success\":false,\"accepted\":false,\"error\":\"Missing tracking task\"}");
-                    return;
-                }
-                respond(ex, 200, "{"
-                    + "\"success\":true,"
-                    + "\"accepted\":true,"
-                    + "\"queued\":1,"
-                    + "\"task_ids\":[" + trackingId + "],"
-                    + "\"results\":[" + resultJson(result) + "],"
-                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
-                    + "}");
-                return;
-            }
-
-            if ("immediate".equals(result.lifecycle())) {
-                if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-                respond(ex, 200, "{"
-                    + "\"success\":true,"
-                    + "\"accepted\":true,"
-                    + "\"queued\":0,"
-                    + "\"task_ids\":[],"
-                    + "\"results\":[" + resultJson(result) + "],"
-                    + "\"output\":\"" + jsonEscape(result.legacyOutput()) + "\""
-                    + "}");
-                return;
-            }
-
-            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-            String rawCommand = result.command();
-            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(rawCommand, result.actionType())));
+            String lifecycle = spec.lifecycle().name().toLowerCase(java.util.Locale.ROOT);
+            CommandExecutor.TranslatedAction result = new CommandExecutor.TranslatedAction(
+                    true, rawType, lifecycle, null, null, "queued");
+            TaskQueue.EnqueueResult eq = TaskQueue.getInstance().enqueueTypedActions(
+                    java.util.List.of(new TaskQueue.TypedAction(rawType, actionJson)));
             if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
                 respond(ex, "QUEUE_FULL".equals(eq.error()) ? 503 : 400,
                     "{\"success\":false,\"accepted\":false,\"error\":\"" + jsonEscape(eq.error()) + "\",\"queued\":0}");
@@ -265,7 +188,7 @@ public class BridgeHttpServer {
                 + "\"queued\":" + eq.queued() + ","
                 + "\"task_ids\":" + taskIdsJson(eq.taskIds()) + ","
                 + "\"results\":[" + resultJson(result) + "],"
-                + "\"output\":\"Action sent: " + jsonEscape(result.legacyOutput()) + "\""
+                + "\"output\":\"Action queued: " + jsonEscape(rawType) + "\""
                 + "}");
         } catch (PayloadTooLargeException e) {
             respond(ex, 413, "{\"success\":false,\"error\":\"PAYLOAD_TOO_LARGE\"}");
@@ -294,27 +217,14 @@ public class BridgeHttpServer {
                 hadActionsArray = true;
                 String[] actionObjects = splitJsonArray(actionsArray);
 
-                // Buffer for contiguous craft actions so they share one planning pass
-                java.util.List<String> craftBuffer = new java.util.ArrayList<>();
-
                 for (String actionObj : actionObjects) {
                     if (actionObj == null || actionObj.isBlank()) continue;
                     String actionType = extractJsonString(actionObj, "type");
-
-                    // Flush craft buffer before any non-craft barrier action
-                    if (!craftBuffer.isEmpty() && !"craft".equals(actionType)) {
-                        totalQueued += flushCraftBatch(craftBuffer, results, allTaskIds);
-                        craftBuffer.clear();
-                    }
 
                     if ("cancel".equals(actionType)) {
                         TaskQueue.getInstance().cancelAll();
                         cancelled = true;
                         results.add(new CommandExecutor.TranslatedAction(true, "cancel", "immediate", null, null, "cancelled"));
-                        continue;
-                    }
-                    if ("craft".equals(actionType)) {
-                        craftBuffer.add(actionObj);
                         continue;
                     }
                     int pq = processTypedBatchAction(actionObj, results, allTaskIds);
@@ -325,10 +235,6 @@ public class BridgeHttpServer {
                     totalQueued += pq;
                 }
 
-                // Flush any remaining buffered craft actions
-                if (!craftBuffer.isEmpty()) {
-                    totalQueued += flushCraftBatch(craftBuffer, results, allTaskIds);
-                }
             }
 
             // Try "commands" array (raw command strings)
@@ -414,70 +320,26 @@ public class BridgeHttpServer {
             java.util.List<CommandExecutor.TranslatedAction> results,
             java.util.List<Long> taskIds) {
         String actionType = extractJsonString(actionObj, "type");
-        boolean tracked = BridgeActionRegistry.isSelfExecuting(actionType);
-        long trackingId = -1L;
-        if (tracked) {
-            trackingId = TaskQueue.getInstance().createActiveTrackingTask("#" + actionType, actionType);
-            if (trackingId < 0L) {
-                results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
-                        null, "queue_busy", "Queue is busy"));
-                return 0;
-            }
-        }
-
-        CommandExecutor.TranslatedAction ta = CommandExecutor.translateTypedJson(actionObj);
-        if (ta == null) {
-            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-            results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
-                    null, "invalid_action", "Invalid typed action"));
+        com.mindcraft.bridge.workers.ActionRegistry.ActionSpec spec =
+                com.mindcraft.bridge.workers.ActionRegistry.get().getSpec(actionType);
+        if (spec == null || !com.mindcraft.bridge.workers.ActionRegistry.get().isExternallyRoutable(actionType)) {
+            results.add(new CommandExecutor.TranslatedAction(false, actionType, null, null,
+                    "unknown_action", "Unknown action type: " + actionType));
             return 0;
         }
-
-        results.add(ta);
-        if (!ta.ok()) {
-            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-            return 0;
+        String lifecycle = spec.lifecycle().name().toLowerCase(java.util.Locale.ROOT);
+        CommandExecutor.TranslatedAction accepted = new CommandExecutor.TranslatedAction(
+                true, actionType, lifecycle, null, null, "queued");
+        TaskQueue.EnqueueResult eq = TaskQueue.getInstance().enqueueTypedActions(
+                java.util.List.of(new TaskQueue.TypedAction(actionType, actionObj)));
+        if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
+            results.add(new CommandExecutor.TranslatedAction(false, actionType, null, null,
+                    "QUEUE_FULL", eq.error()));
+            return -1;
         }
-
-        // Generic worker routing — enqueue through TaskQueue instead of inline thread spawn
-        if (ta.genericWorker()) {
-            if (trackingId >= 0L) TaskQueue.getInstance().dismissActiveTask(trackingId);
-            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                .enqueueWorkerAction(ta.actionType(), actionObj);
-            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
-                results.remove(results.size() - 1);
-                results.add(new CommandExecutor.TranslatedAction(false, actionType, null,
-                    null, "QUEUE_FULL", eq.error()));
-                return 0;
-            }
-            taskIds.addAll(eq.taskIds());
-            return 1;
-        }
-
-        if ("self_executing".equals(ta.lifecycle())) {
-            if (trackingId >= 0L) {
-                taskIds.add(trackingId);
-                return 1;
-            }
-            return 0;
-        }
-
-        if (trackingId >= 0L) {
-            TaskQueue.getInstance().dismissActiveTask(trackingId);
-        }
-
-        if ("queued".equals(ta.lifecycle()) && ta.command() != null) {
-            TaskQueue.EnqueueResult eq = TaskQueue.getInstance()
-                    .enqueueDetailed(java.util.List.of(new TaskQueue.QueuedCommand(ta.command(), ta.actionType())));
-            if (eq.status() == TaskQueue.EnqueueStatus.REJECTED) {
-                results.add(new CommandExecutor.TranslatedAction(false, ta.actionType(), null,
-                        null, "QUEUE_FULL", eq.error()));
-                return -1;
-            }
-            taskIds.addAll(eq.taskIds());
-            return eq.queued();
-        }
-        return 0;
+        results.add(accepted);
+        taskIds.addAll(eq.taskIds());
+        return eq.queued();
     }
 
     /**
@@ -860,6 +722,8 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
+        String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
+        if (rejectStaleGeneration(ex, body)) return;
         TaskQueue.getInstance().skip();
         respond(ex, 200, "{\"success\":true,\"action\":\"skipped\"}");
     }
@@ -869,6 +733,8 @@ public class BridgeHttpServer {
             respond(ex, 405, "{\"error\":\"Method Not Allowed\"}");
             return;
         }
+        String body = readBodyLimited(ex, BridgeConfig.get().maxRequestBytes);
+        if (rejectStaleGeneration(ex, body)) return;
         TaskQueue.getInstance().resume();
         respond(ex, 200, "{\"success\":true,\"action\":\"resumed\"}");
     }

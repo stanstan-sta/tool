@@ -133,20 +133,31 @@ test('BridgeAgent turns a verified batch into a skill and starts curriculum goal
         const historyEntries = [];
         Object.assign(agent, {
             name: 'Miku',
-            _pendingVerification: null,
+            _taskRecord: null,
+            _taskSeq: 0,
+            _lastTaskLabel: '',
+            _lastTaskAttempt: 0,
+            _generation: 1,
+            _pendingContinuation: false,
+            _lastHadActions: false,
             _rewardLogPath: join(dir, 'reward.log'),
-            _currentTaskText: 'make me a crafting table',
+            _currentTaskText: '',
             _lastState: { connected: true, inventory: [] },
             history: { add(role, content) { historyEntries.push({ role, content }); } },
             skillLibrary: lib,
+            bridge: {
+                async getState() { return { connected: true, queue: { status: 'idle', pending: 0 }, inventory: [{ item: 'minecraft:crafting_table', count: 1 }] }; },
+                async getQueueState() { return { status: 'idle', pending: 0, paused: false }; },
+            },
         });
-        agent._armVerification(craftTable);
-        assert.equal(agent._pendingVerification.task, 'make me a crafting table');
+        const record = agent._startTaskRecord('make me a crafting table', 'player', 1);
+        assert.equal(record.label, 'make me a crafting table');
+        assert.equal(agent._trackDispatchResult(record, craftTable, { success: true, queued: 1 }).accepted, true);
         agent._lastState = { connected: true, inventory: [{ item: 'minecraft:crafting_table', count: 1 }] };
-        agent._settleVerification();
-        await new Promise(r => setTimeout(r, 20));
+        await agent._closeTaskWithVerification('plan-complete', agent._lastState, record.id);
+        assert.equal(record.closed, true);
         assert.equal(lib.data.skills.length, 1);
-        assert.match(historyEntries.at(-1).content, /Outcome met/);
+        assert.ok(historyEntries.some(entry => entry.role === 'system' && /Outcome verification met/.test(entry.content)));
         agent._currentTaskText = 'craft a crafting table';
         assert.match(await agent._retrieveSkillsForTask(), /PROVEN PLANS/);
 

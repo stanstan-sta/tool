@@ -44,9 +44,7 @@ function scorePackLexically(pack, query, context = {}) {
         if (containsToken(queryText, trigger)) score += 0.45;
     }
 
-    const actionSet = new Set(asArray(context.actions).map(normalizeToken));
     for (const action of asArray(pack.actions)) {
-        if (actionSet.has(normalizeToken(action))) score += 0.35;
         if (containsToken(queryText, action)) score += 0.25;
     }
 
@@ -63,12 +61,50 @@ function scorePackLexically(pack, query, context = {}) {
     return score;
 }
 
+function isPackEligible(pack, context = {}) {
+    const availableActions = asArray(context.actions);
+    if (availableActions.length === 0) return true;
+    const actionSet = new Set(availableActions.map(normalizeToken));
+    return asArray(pack.actions).some(action => actionSet.has(normalizeToken(action)));
+}
+
 export class BridgePromptPackRetriever {
     constructor(embeddingModel, packs = []) {
         this.embeddingModel = embeddingModel || null;
         this.packs = asArray(packs);
         this.packEmbeddings = new Map();
+        this._documentEmbeddingPromise = null;
         this.ready = false;
+    }
+
+    _ensurePackEmbeddings() {
+        if (!this.embeddingModel || this.packEmbeddings.size === this.packs.length) return;
+        if (this._documentEmbeddingPromise) return this._documentEmbeddingPromise;
+
+        this._documentEmbeddingPromise = (async () => {
+            try {
+                const docs = this.packs.map(pack => buildPackDocument(pack));
+                const embeddings = await this.embeddingModel.embed(docs, {
+                    intent: 'document',
+                    instruction: 'Represent Minecraft bridge prompt-pack guidance for retrieval.',
+                });
+                if (!Array.isArray(embeddings)) throw new Error('prompt-pack batch embedding was not an array');
+                this.packEmbeddings.clear();
+                embeddings.forEach((embedding, index) => {
+                    if (Array.isArray(embedding) && embedding.length > 0 && embedding.every(Number.isFinite)) {
+                        this.packEmbeddings.set(this.packs[index].id, embedding);
+                    }
+                });
+            } catch (err) {
+                // A provider outage should degrade this retrieval call only. Keep
+                // the model so the next call can retry after a transient error.
+                this.packEmbeddings.clear();
+                console.warn('BridgePromptPackRetriever: embedding init failed, using lexical routing:', err.message || err);
+            } finally {
+                this._documentEmbeddingPromise = null;
+            }
+        })();
+        return this._documentEmbeddingPromise;
     }
 
     async init() {
@@ -77,22 +113,11 @@ export class BridgePromptPackRetriever {
             return;
         }
         try {
-            const docs = this.packs.map(pack => buildPackDocument(pack));
-            const embeddings = await this.embeddingModel.embed(docs, {
-                intent: 'document',
-                instruction: 'Represent Minecraft bridge prompt-pack guidance for retrieval.',
-            });
-            if (!Array.isArray(embeddings)) throw new Error('prompt-pack batch embedding was not an array');
-            embeddings.forEach((embedding, index) => {
-                if (Array.isArray(embedding) && embedding.every(Number.isFinite)) {
-                    this.packEmbeddings.set(this.packs[index].id, embedding);
-                }
-            });
+            await this._ensurePackEmbeddings();
             this.ready = true;
-        } catch (err) {
-            console.warn('BridgePromptPackRetriever: embedding init failed, using lexical routing:', err.message || err);
-            this.embeddingModel = null;
-            this.packEmbeddings.clear();
+        } catch {
+            // _ensurePackEmbeddings handles provider failures and keeps the
+            // model available for a later retry.
             this.ready = true;
         }
     }
@@ -100,6 +125,10 @@ export class BridgePromptPackRetriever {
     async getRelevantPacks(query, options = {}) {
         const cleanQuery = normalizeText(query);
         if (!cleanQuery || this.packs.length === 0) return [];
+
+        if (this.embeddingModel && this.packEmbeddings.size !== this.packs.length) {
+            await this._ensurePackEmbeddings();
+        }
 
         let queryEmbedding = null;
         if (this.embeddingModel) {
@@ -113,12 +142,11 @@ export class BridgePromptPackRetriever {
                 }
             } catch (err) {
                 console.warn('BridgePromptPackRetriever: query embed failed, using lexical routing:', err.message || err);
-                this.embeddingModel = null;
                 queryEmbedding = null;
             }
         }
 
-        const scored = this.packs.map(pack => {
+        const scored = this.packs.filter(pack => isPackEligible(pack, options)).map(pack => {
             let relevance = scorePackLexically(pack, cleanQuery, options);
             const emb = this.packEmbeddings.get(pack.id);
             if (queryEmbedding && emb && emb.length === queryEmbedding.length) {
@@ -196,4 +224,3 @@ export function buildPromptPackQuery({ history = [], stateContext = '', activeTa
         failure ? `Recent failure: ${failure}` : '',
     ].filter(Boolean).join('\n');
 }
-

@@ -311,6 +311,14 @@
 <script>
 // ═══ Utilities ═══
 function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+// attr() escapes untrusted text for double-quoted HTML attribute values.
+// esc() alone is unsafe there: it leaves quotes intact, and entity decoding
+// runs before inline handlers execute, so profile/agent names must never be
+// built into handler source. Dynamic controls below carry exact names in
+// data-* attributes (read back via getAttribute) with listeners bound after
+// rendering; profile names in URL path segments go through profileUrl().
+function attr(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+function profileUrl(name) { return `/api/profiles/${encodeURIComponent(name)}`; }
 function toast(msg, type='ok') {
     const t = document.createElement('div');
     t.className = `toast ${type}`;
@@ -321,7 +329,22 @@ function toast(msg, type='ok') {
 function toggleSec(id) { document.getElementById(id).classList.toggle('open'); }
 
 // ═══ State ═══
-const socket = io({ path: '/socket.io' });
+let accessToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
+try {
+    accessToken = accessToken || sessionStorage.getItem('mindserver-token') || '';
+    if (accessToken) sessionStorage.setItem('mindserver-token', accessToken);
+} catch { /* Keep the access token in memory if browser storage is unavailable. */ }
+if (new URLSearchParams(location.hash.slice(1)).has('token')) {
+    history.replaceState(null, '', location.pathname + location.search);
+}
+function apiFetch(url, options = {}) {
+    const headers = new Headers(options.headers);
+    if (accessToken && new URL(url, location.href).origin === location.origin) {
+        headers.set('Authorization', `Bearer ${accessToken}`);
+    }
+    return fetch(url, { ...options, headers });
+}
+const socket = io({ path: '/socket.io', auth: { token: accessToken } });
 let settingsSpec = {};
 let profileData = null;
 let agents = [];
@@ -339,9 +362,12 @@ function setConn(connected) {
 }
 socket.on('connect', () => { setConn(true); socket.emit('listen-to-agents'); Object.keys(agentSettings).forEach(k => delete agentSettings[k]); });
 socket.on('disconnect', () => setConn(false));
-socket.on('connect_error', () => setConn(false));
+socket.on('connect_error', error => {
+    setConn(false);
+    if (error?.message === 'Unauthorized') toast('Open the dashboard using the access link printed in the MindServer console.', 'err');
+});
 
-fetch('/settings_spec.json').then(r => { if (!r.ok) throw new Error(); return r.json(); })
+apiFetch('/settings_spec.json').then(r => { if (!r.ok) throw new Error(); return r.json(); })
     .then(s => { settingsSpec = s; buildCreateForm(); })
     .catch(() => toast('Failed to load settings schema', 'err'));
 
@@ -450,7 +476,7 @@ async function showProfilePicker() {
     div.style.display = '';
     sel.innerHTML = '<option value="">Select...</option>';
     try {
-        const res = await fetch('/api/profiles');
+        const res = await apiFetch('/api/profiles');
         const list = await res.json();
         list.forEach(p => { const o = document.createElement('option'); o.value = p.path; o.textContent = `${p.name} (${p.model})`; sel.appendChild(o); });
     } catch (e) { toast('Failed to load profiles', 'err'); }
@@ -460,7 +486,7 @@ document.getElementById('profilePickerSelect').addEventListener('change', async 
     const p = e.target.value; if (!p) { profileData = null; document.getElementById('createBtn').disabled = true; return; }
     try {
         const name = p.replace('./profiles/', '').replace('.json', '').replace('./', '');
-        const res = await fetch(`/api/profiles/${name}`);
+        const res = await apiFetch(profileUrl(name));
         if (!res.ok) throw new Error('not found');
         profileData = await res.json();
         document.getElementById('createBtn').disabled = false;
@@ -492,45 +518,78 @@ function submitCreate() {
 
 // ═══ Agent cards ═══
 function renderAgentCard(agent) {
-    const name = esc(agent.name);
-    const last = esc(agentLastMsg[agent.name] || '');
-    const expanded = agent._expanded ? 'expanded' : '';
-    return `<div class="agent-card ${expanded}" id="agent-${name}">
-        <div class="agent-top" onclick="toggleAgent('${name}')">
+    const name = agent.name;
+    const q = attr(name);
+    return `<div class="agent-card ${agent._expanded ? 'expanded' : ''}" id="agent-${q}">
+        <div class="agent-top" data-agent-top="${q}">
             <span class="dot ${agent.in_game ? 'on' : 'off'}"></span>
-            <span class="agent-name">${name}</span>
-            <span class="agent-status-text">${esc(agentLastMsg[agent.name] || (agent.socket_connected && !agent.in_game ? 'joining...' : ''))}</span>
+            <span class="agent-name">${esc(name)}</span>
+            <span class="agent-status-text">${esc(agentLastMsg[name] || (agent.socket_connected && !agent.in_game ? 'joining...' : ''))}</span>
         </div>
         <div class="agent-detail">
             <div class="agent-stats">
-                <div class="stat"><div class="stat-label">Health</div><div class="stat-value" id="hp-${name}">-</div></div>
-                <div class="stat"><div class="stat-label">Hunger</div><div class="stat-value" id="hg-${name}">-</div></div>
-                <div class="stat"><div class="stat-label">Position</div><div class="stat-value" id="pos-${name}">-</div></div>
-                <div class="stat"><div class="stat-label">Biome</div><div class="stat-value" id="bio-${name}">-</div></div>
-                <div class="stat"><div class="stat-label">Mode</div><div class="stat-value" id="gm-${name}">-</div></div>
-                <div class="stat"><div class="stat-label">Items</div><div class="stat-value" id="inv-${name}">-</div></div>
+                <div class="stat"><div class="stat-label">Health</div><div class="stat-value" id="hp-${q}">-</div></div>
+                <div class="stat"><div class="stat-label">Hunger</div><div class="stat-value" id="hg-${q}">-</div></div>
+                <div class="stat"><div class="stat-label">Position</div><div class="stat-value" id="pos-${q}">-</div></div>
+                <div class="stat"><div class="stat-label">Biome</div><div class="stat-value" id="bio-${q}">-</div></div>
+                <div class="stat"><div class="stat-label">Mode</div><div class="stat-value" id="gm-${q}">-</div></div>
+                <div class="stat"><div class="stat-label">Items</div><div class="stat-value" id="inv-${q}">-</div></div>
             </div>
             <div class="agent-controls">
-                <input type="text" id="msg-${name}" placeholder="Message..." oninput="document.getElementById('send-${name}').disabled=!this.value.trim()" onkeydown="if(event.key==='Enter')sendMsg('${name}')" ${!agent.in_game?'disabled':''}>
-                <button class="btn btn-sm btn-primary" id="send-${name}" disabled onclick="sendMsg('${name}')">Send</button>
-                <button class="btn btn-sm" onclick="socket.emit('send-message','${name}',{from:'ADMIN',message:'!stop'})" ${!agent.in_game?'disabled':''}>Stop</button>
-                <button class="btn btn-sm" onclick="socket.emit('restart-agent','${name}')" ${!agent.in_game?'disabled':''}>Restart</button>
-                <button class="btn btn-sm" onclick="socket.emit('clear-agent-memory','${name}',false)" ${!agent.in_game?'disabled':''}>Clear</button>
-                <button class="btn btn-sm" onclick="socket.emit('compact-agent-memory','${name}','manual')" ${!agent.in_game?'disabled':''}>Compact</button>
-                <button class="btn btn-sm" onclick="editMemory('${name}')" ${!agent.in_game?'disabled':''}>Pins</button>
-                <button class="btn btn-sm" onclick="socket.emit('stop-agent','${name}')" ${!agent.in_game?'disabled':''}>${agent.in_game?'Disconnect':'Connect'}</button>
-                <button class="btn btn-sm btn-danger" onclick="socket.emit('destroy-agent','${name}')">Remove</button>
+                <input type="text" id="msg-${q}" data-msg="${q}" placeholder="Message..." ${!agent.in_game?'disabled':''}>
+                <button class="btn btn-sm btn-primary" id="send-${q}" data-act="send" data-agent="${q}" disabled>Send</button>
+                <button class="btn btn-sm" data-act="stop" data-agent="${q}" ${!agent.in_game?'disabled':''}>Stop</button>
+                <button class="btn btn-sm" data-act="restart" data-agent="${q}" ${!agent.in_game?'disabled':''}>Restart</button>
+                <button class="btn btn-sm" data-act="clear" data-agent="${q}" ${!agent.in_game?'disabled':''}>Clear</button>
+                <button class="btn btn-sm" data-act="compact" data-agent="${q}" ${!agent.in_game?'disabled':''}>Compact</button>
+                <button class="btn btn-sm" data-act="pins" data-agent="${q}" ${!agent.in_game?'disabled':''}>Pins</button>
+                <button class="btn btn-sm" data-act="stop-agent" data-agent="${q}" ${!agent.in_game?'disabled':''}>${agent.in_game?'Disconnect':'Connect'}</button>
+                <button class="btn btn-sm btn-danger" data-act="destroy" data-agent="${q}">Remove</button>
             </div>
-            <div class="agent-inventory" id="invGrid-${name}"></div>
-            <div class="inline-settings" id="settings-${name}"></div>
+            <div class="agent-inventory" id="invGrid-${q}"></div>
+            <div class="inline-settings" id="settings-${q}"></div>
         </div>
     </div>`;
+}
+
+// Handlers for dynamically rendered agent cards are bound here, after
+// rendering, with closures over the exact agent name. getAttribute returns
+// the decoded original string, which is passed to socket events unchanged.
+function agentAction(act, name) {
+    if (act === 'send') sendMsg(name);
+    else if (act === 'stop') socket.emit('send-message', name, { from: 'ADMIN', message: '!stop' });
+    else if (act === 'restart') socket.emit('restart-agent', name);
+    else if (act === 'clear') socket.emit('clear-agent-memory', name, false);
+    else if (act === 'compact') socket.emit('compact-agent-memory', name, 'manual');
+    else if (act === 'pins') editMemory(name);
+    else if (act === 'stop-agent') socket.emit('stop-agent', name);
+    else if (act === 'destroy') socket.emit('destroy-agent', name);
+}
+
+function bindAgentCards() {
+    const container = document.getElementById('agentList');
+    container.querySelectorAll('[data-agent-top]').forEach(top => {
+        top.addEventListener('click', () => toggleAgent(top.getAttribute('data-agent-top')));
+    });
+    container.querySelectorAll('[data-msg]').forEach(input => {
+        const name = input.getAttribute('data-msg');
+        input.addEventListener('input', () => {
+            const btn = document.getElementById('send-' + name);
+            if (btn) btn.disabled = !input.value.trim();
+        });
+        input.addEventListener('keydown', ev => { if (ev.key === 'Enter') sendMsg(name); });
+    });
+    container.querySelectorAll('[data-act]').forEach(btn => {
+        const act = btn.getAttribute('data-act');
+        const name = btn.getAttribute('data-agent');
+        btn.addEventListener('click', () => agentAction(act, name));
+    });
 }
 
 function toggleAgent(name) {
     const agent = agents.find(a => a.name === name); if (!agent) return;
     agent._expanded = !agent._expanded;
-    const card = document.getElementById(`agent-${esc(name)}`);
+    const card = document.getElementById(`agent-${name}`);
     if (card) card.classList.toggle('expanded');
     if (agent._expanded) loadAgentSettings(name);
 }
@@ -542,6 +601,7 @@ socket.on('agents-status', async (list) => {
     const container = document.getElementById('agentList');
     if (!agents.length) { container.innerHTML = '<div class="empty">No agents. Click "+ New" to create one.</div>'; return; }
     container.innerHTML = agents.map(renderAgentCard).join('');
+    bindAgentCards();
 });
 
 socket.on('state-update', (states) => {
@@ -567,17 +627,17 @@ socket.on('bot-output', (agentName, msg) => {
     appendLog(agentName, msg);
     if (agentName && agents.find(a => a.name === agentName)) {
         agentLastMsg[agentName] = msg;
-        const card = document.getElementById(`agent-${esc(agentName)}`);
-        if (card) { const st = card.querySelector('.agent-status-text'); if (st) st.textContent = esc(msg); }
+        const card = document.getElementById(`agent-${agentName}`);
+        if (card) { const st = card.querySelector('.agent-status-text'); if (st) st.textContent = msg; }
     }
 });
 
 // ═══ Agent controls ═══
 function sendMsg(name) {
-    const input = document.getElementById(`msg-${esc(name)}`); if (!input || !input.value.trim()) return;
+    const input = document.getElementById(`msg-${name}`); if (!input || !input.value.trim()) return;
     socket.emit('send-message', name, { from: 'ADMIN', message: input.value });
     input.value = '';
-    document.getElementById(`send-${esc(name)}`).disabled = true;
+    document.getElementById(`send-${name}`).disabled = true;
 }
 function editMemory(name) {
     currentAgentName = name;
@@ -595,7 +655,7 @@ function saveMemory() {
 
 // ═══ Inline agent settings ═══
 async function loadAgentSettings(name) {
-    const container = document.getElementById(`settings-${esc(name)}`);
+    const container = document.getElementById(`settings-${name}`);
     if (!container) return;
     container.innerHTML = 'Loading...';
     return new Promise(resolve => {
@@ -615,9 +675,9 @@ async function loadAgentSettings(name) {
             apiRow.className = 'setting-row';
             apiRow.innerHTML = '<label>API Provider</label>';
             const apiSel = document.createElement('select');
-            apiSel.id = `api-${esc(name)}`;
+            apiSel.id = `api-${name}`;
             apiSel.innerHTML = '<option value="">(none)</option>';
-            try { const r = await fetch('/api/model_prefixes'); if (r.ok) { const ps = await r.json(); ps.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; apiSel.appendChild(o); }); } } catch {}
+            try { const r = await apiFetch('/api/model_prefixes'); if (r.ok) { const ps = await r.json(); ps.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; apiSel.appendChild(o); }); } } catch {}
             const modelStr = typeof prof.model === 'object' ? JSON.stringify(prof.model) : (prof.model || '');
             const slash = modelStr.indexOf('/');
             if (slash > 0) { const prefix = modelStr.substring(0, slash); if (Array.from(apiSel.options).some(o => o.value === prefix)) { apiSel.value = prefix; } }
@@ -629,7 +689,7 @@ async function loadAgentSettings(name) {
             modelRow.className = 'setting-row';
             const modelLabel = document.createElement('label'); modelLabel.textContent = 'Model';
             const modelInput = document.createElement('input'); modelInput.type = 'text';
-            modelInput.id = `model-${esc(name)}`;
+            modelInput.id = `model-${name}`;
             modelInput.value = slash > 0 && apiSel.value ? modelStr.substring(slash + 1) : modelStr;
             modelInput.oninput = () => updateHint(name);
             modelRow.appendChild(modelLabel); modelRow.appendChild(modelInput);
@@ -637,25 +697,25 @@ async function loadAgentSettings(name) {
             // Personality
             const persRow = document.createElement('div'); persRow.className = 'setting-row full';
             persRow.innerHTML = '<label>Personality</label>';
-            const persTa = document.createElement('textarea'); persTa.id = `pers-${esc(name)}`; persTa.value = prof.personality || '';
+            const persTa = document.createElement('textarea'); persTa.id = `pers-${name}`; persTa.value = prof.personality || '';
             persRow.appendChild(persTa);
             grid.appendChild(persRow);
             // Conversing
             const convRow = document.createElement('div'); convRow.className = 'setting-row full';
             convRow.innerHTML = '<label>Conversing</label>';
-            const convTa = document.createElement('textarea'); convTa.id = `conv-${esc(name)}`; convTa.value = prof.conversing || '';
+            const convTa = document.createElement('textarea'); convTa.id = `conv-${name}`; convTa.value = prof.conversing || '';
             convRow.appendChild(convTa);
             grid.appendChild(convRow);
             profDiv.appendChild(grid);
             container.appendChild(profDiv);
             // Hint
-            const hint = document.createElement('div'); hint.id = `hint-${esc(name)}`; hint.className = 'settings-desc'; hint.style.marginBottom = '8px';
+            const hint = document.createElement('div'); hint.id = `hint-${name}`; hint.className = 'settings-desc'; hint.style.marginBottom = '8px';
             profDiv.appendChild(hint);
             updateHint(name);
             // Other settings
             const otherDiv = document.createElement('div');
-            otherDiv.id = `other-settings-${esc(name)}`;
-            renderSettings(otherDiv, `as-${esc(name)}`, settings, null);
+            otherDiv.id = `other-settings-${name}`;
+            renderSettings(otherDiv, `as-${name}`, settings, null);
             container.appendChild(otherDiv);
             // Save button
             const btnRow = document.createElement('div');
@@ -666,7 +726,7 @@ async function loadAgentSettings(name) {
             const saveBtn = document.createElement('button');
             saveBtn.className = 'btn btn-sm btn-primary'; saveBtn.textContent = 'Save to Disk & Restart';
             saveBtn.onclick = () => saveAgentSettings(name);
-            const status = document.createElement('span'); status.id = `saveStatus-${esc(name)}`; status.className = 'muted'; status.style.fontSize = '12px';
+            const status = document.createElement('span'); status.id = `saveStatus-${name}`; status.className = 'muted'; status.style.fontSize = '12px';
             btnRow.appendChild(saveBtn); btnRow.appendChild(status);
             container.appendChild(btnRow);
             resolve();
@@ -675,33 +735,33 @@ async function loadAgentSettings(name) {
 }
 
 function updateHint(name) {
-    const api = document.getElementById(`api-${esc(name)}`)?.value || '';
-    const model = document.getElementById(`model-${esc(name)}`)?.value || '';
-    const hint = document.getElementById(`hint-${esc(name)}`);
+    const api = document.getElementById(`api-${name}`)?.value || '';
+    const model = document.getElementById(`model-${name}`)?.value || '';
+    const hint = document.getElementById(`hint-${name}`);
     if (hint) hint.textContent = api ? `→ ${api}/${model || '<model>'}` : '';
 }
 
 function saveAgentSettings(name) {
     const settings = agentSettings[name] || {};
     const prof = settings.profile || {};
-    const api = document.getElementById(`api-${esc(name)}`)?.value || '';
-    const modelRaw = document.getElementById(`model-${esc(name)}`)?.value || '';
+    const api = document.getElementById(`api-${name}`)?.value || '';
+    const modelRaw = document.getElementById(`model-${name}`)?.value || '';
     const effective = api ? `${api}/${modelRaw}` : modelRaw;
     try { prof.model = JSON.parse(effective); } catch { prof.model = effective || prof.model; }
-    prof.personality = document.getElementById(`pers-${esc(name)}`)?.value;
-    const conv = document.getElementById(`conv-${esc(name)}`)?.value;
+    prof.personality = document.getElementById(`pers-${name}`)?.value;
+    const conv = document.getElementById(`conv-${name}`)?.value;
     prof.conversing = conv || undefined;
     const newSettings = { profile: prof };
     Object.keys(settingsSpec).forEach(key => {
         if (key === 'profile') return;
-        const input = document.getElementById(`as-${esc(name)}-${key}`); if (!input) return;
+        const input = document.getElementById(`as-${name}-${key}`); if (!input) return;
         const t = settingsSpec[key].type;
         if (t === 'boolean') newSettings[key] = input.checked;
         else if (t === 'number') newSettings[key] = Number(input.value);
         else if (t === 'array' || t === 'object') { try { newSettings[key] = JSON.parse(input.value); } catch { newSettings[key] = input.value; } }
         else newSettings[key] = input.value;
     });
-    const status = document.getElementById(`saveStatus-${esc(name)}`);
+    const status = document.getElementById(`saveStatus-${name}`);
     status.textContent = 'Saving...'; status.style.color = 'var(--text-muted)';
     socket.emit('set-agent-settings', name, newSettings, (r) => {
         if (r && r.success) { status.textContent = 'Saved & restarting'; status.style.color = 'var(--success)'; toast(`Settings saved for '${name}'`); setTimeout(() => status.textContent = '', 3000); }
@@ -728,7 +788,7 @@ function clearConsole() { document.getElementById('consoleLog').innerHTML = ''; 
 // ═══ Profiles ═══
 async function loadProfiles() {
     try {
-        const res = await fetch('/api/profiles'); if (!res.ok) throw new Error();
+        const res = await apiFetch('/api/profiles'); if (!res.ok) throw new Error();
         allProfiles = await res.json();
         document.getElementById('profileCount').textContent = `(${allProfiles.length})`;
         renderProfileList();
@@ -740,34 +800,46 @@ function renderProfileList() {
     const list = document.getElementById('profileList');
     if (!allProfiles.length) { list.innerHTML = '<div class="empty">No profiles</div>'; return; }
     list.innerHTML = allProfiles.map(p => `
-        <div class="profile-item ${selectedProfile === p.name ? 'active' : ''}" onclick="selectProfile('${esc(p.name)}')">
+        <div class="profile-item ${selectedProfile === p.name ? 'active' : ''}" data-profile="${attr(p.name)}">
             <div style="flex:1;min-width:0">
                 <div class="profile-name">${esc(p.name)}</div>
                 <div class="profile-model">${esc(p.model)}</div>
             </div>
             ${startupProfiles.includes(p.path) ? '<span class="profile-badge">boot</span>' : ''}
         </div>`).join('');
+    list.querySelectorAll('[data-profile]').forEach(item => {
+        item.addEventListener('click', () => selectProfile(item.getAttribute('data-profile')));
+    });
 }
 
 async function selectProfile(name) {
     selectedProfile = name;
     renderProfileList();
     try {
-        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const res = await apiFetch(profileUrl(name)); if (!res.ok) throw new Error();
         const data = await res.json();
         const running = agents.some(a => a.name === data.name);
         document.getElementById('profileEditor').innerHTML = `
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
                 <strong style="flex:1;font-size:14px">${esc(name)}</strong>
-                <button class="btn btn-sm" onclick="cloneProfile('${esc(name)}')">Clone</button>
-                <button class="btn btn-sm" onclick="launchProfile('${esc(name)}')" ${running?'disabled':''}>Launch</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteProfile('${esc(name)}')" ${running?'disabled':''}>Delete</button>
+                <button class="btn btn-sm" data-pact="clone">Clone</button>
+                <button class="btn btn-sm" data-pact="launch" ${running?'disabled':''}>Launch</button>
+                <button class="btn btn-sm btn-danger" data-pact="delete" ${running?'disabled':''}>Delete</button>
             </div>
             <textarea id="profJson">${esc(JSON.stringify(data, null, 2))}</textarea>
             <div class="profile-editor-actions">
-                <button class="btn btn-sm btn-primary" onclick="saveProfile('${esc(name)}')">Save to Disk</button>
+                <button class="btn btn-sm btn-primary" data-pact="save">Save to Disk</button>
                 <span id="profSaveStatus" class="muted" style="font-size:12px;"></span>
             </div>`;
+        document.getElementById('profileEditor').querySelectorAll('[data-pact]').forEach(btn => {
+            const act = btn.getAttribute('data-pact');
+            btn.addEventListener('click', async () => {
+                if (act === 'clone') await cloneProfile(name);
+                else if (act === 'launch') await launchProfile(name);
+                else if (act === 'delete') await deleteProfile(name);
+                else if (act === 'save') await saveProfile(name);
+            });
+        });
     } catch (e) { toast('Load failed', 'err'); }
 }
 
@@ -777,7 +849,7 @@ async function saveProfile(name) {
     let parsed;
     try { parsed = JSON.parse(ta.value); } catch (e) { status.textContent = 'Invalid JSON: ' + e.message; status.style.color = 'var(--danger)'; return; }
     try {
-        const res = await fetch(`/api/profiles/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+        const res = await apiFetch(profileUrl(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
         const r = await res.json();
         if (res.ok && r.success) { status.textContent = 'Saved'; status.style.color = 'var(--success)'; toast(`Profile '${name}' saved`); loadProfiles(); }
         else { status.textContent = r.error || 'Failed'; status.style.color = 'var(--danger)'; toast(r?.error || 'Save failed', 'err'); }
@@ -802,7 +874,7 @@ async function createProfile() {
     let parsed;
     try { parsed = JSON.parse(ta.value); } catch (e) { status.textContent = 'Invalid JSON: ' + e.message; status.style.color = 'var(--danger)'; return; }
     try {
-        const res = await fetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+        const res = await apiFetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
         const r = await res.json();
         if (res.ok && r.success) { toast(`Profile '${parsed.name}' created`); loadProfiles(); selectProfile(parsed.name); }
         else { status.textContent = r.error || 'Failed'; status.style.color = 'var(--danger)'; toast(r?.error || 'Failed', 'err'); }
@@ -811,7 +883,7 @@ async function createProfile() {
 
 async function cloneProfile(name) {
     try {
-        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const res = await apiFetch(profileUrl(name)); if (!res.ok) throw new Error();
         const data = await res.json(); data.name = name + '_copy';
         document.getElementById('profileEditor').innerHTML = `
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -826,7 +898,7 @@ async function cloneProfile(name) {
 async function deleteProfile(name) {
     if (!confirm(`Delete '${name}'?`)) return;
     try {
-        const res = await fetch(`/api/profiles/${name}`, { method: 'DELETE' });
+        const res = await apiFetch(profileUrl(name), { method: 'DELETE' });
         const r = await res.json();
         if (res.ok && r.success) { toast(`Deleted '${name}'`); selectedProfile = null; document.getElementById('profileEditor').innerHTML = '<div class="empty">Select a profile to edit</div>'; loadProfiles(); }
         else toast(r?.error || 'Delete failed', 'err');
@@ -835,7 +907,7 @@ async function deleteProfile(name) {
 
 async function launchProfile(name) {
     try {
-        const res = await fetch(`/api/profiles/${name}`); if (!res.ok) throw new Error();
+        const res = await apiFetch(profileUrl(name)); if (!res.ok) throw new Error();
         const prof = await res.json();
         socket.emit('create-agent', { profile: prof, launch_mode: 'fabric_ui' }, (r) => {
             if (r && r.success) { toast(`Agent '${prof.name}' launched`); toggleSec('sec-agents'); document.getElementById('sec-agents').classList.add('open'); }
@@ -847,7 +919,7 @@ async function launchProfile(name) {
 // ═══ Startup profiles ═══
 async function loadStartupProfiles() {
     try {
-        const res = await fetch('/api/startup-profiles'); if (!res.ok) return;
+        const res = await apiFetch('/api/startup-profiles'); if (!res.ok) return;
         startupProfiles = await res.json();
         renderStartupList(); renderProfileList();
     } catch (e) {}
@@ -861,15 +933,18 @@ function renderStartupList() {
         return `<div class="startup-item">
             <span class="path">${esc(p.path)}</span>
             <span class="info">${esc(p.name)}</span>
-            <div class="toggle ${on?'on':''}" onclick="toggleStartup('${esc(p.path)}')"></div>
+            <div class="toggle ${on?'on':''}" data-startup="${attr(p.path)}"></div>
         </div>`;
     }).join('');
+    container.querySelectorAll('[data-startup]').forEach(t => {
+        t.addEventListener('click', () => toggleStartup(t.getAttribute('data-startup')));
+    });
 }
 
 async function toggleStartup(path) {
     const updated = startupProfiles.includes(path) ? startupProfiles.filter(p => p !== path) : [...startupProfiles, path];
     try {
-        const res = await fetch('/api/startup-profiles', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+        const res = await apiFetch('/api/startup-profiles', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
         const r = await res.json();
         if (res.ok && r.success) { startupProfiles = updated; renderStartupList(); renderProfileList(); toast('Startup profiles updated — restart to apply'); }
         else toast(r?.error || 'Failed', 'err');
@@ -881,14 +956,14 @@ async function loadApiKeys() {
     const list = document.getElementById('keyList');
     list.innerHTML = '<span class="muted">Loading...</span>';
     try {
-        const res = await fetch('/api/keys'); if (!res.ok) throw new Error();
+        const res = await apiFetch('/api/keys'); if (!res.ok) throw new Error();
         const data = await res.json();
         list.innerHTML = '';
         Object.keys(data).sort().forEach(k => {
             const info = data[k];
             const row = document.createElement('div');
             row.className = 'key-row';
-            row.innerHTML = `<span class="key-label">${esc(k)}</span><input type="password" id="key-${esc(k)}" placeholder="${info.set?'(unchanged)':'Enter...'}"><span class="key-status" style="color:${info.set?'var(--success)':'var(--danger)'}">${info.set?`set (${info.mask})`:'not set'}</span>`;
+            row.innerHTML = `<span class="key-label">${esc(k)}</span><input type="password" id="key-${attr(k)}" placeholder="${info.set?'(unchanged)':'Enter...'}"><span class="key-status" style="color:${info.set?'var(--success)':'var(--danger)'}">${info.set?`set (${esc(info.mask)})`:'not set'}</span>`;
             list.appendChild(row);
         });
     } catch (e) { list.innerHTML = '<span class="error-text">Failed to load</span>'; }
@@ -901,7 +976,7 @@ async function saveApiKeys() {
     if (!Object.keys(updates).length) { status.textContent = 'No changes'; return; }
     status.textContent = 'Saving...';
     try {
-        const res = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+        const res = await apiFetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
         if (!res.ok) throw new Error();
         status.textContent = 'Saved!'; toast('API keys saved');
         document.querySelectorAll('#keyList input').forEach(i => i.value = '');
@@ -912,7 +987,7 @@ async function saveApiKeys() {
 // ═══ Debug stats ═══
 async function fetchDebug() {
     try {
-        const res = await fetch('/api/debug_stats');
+        const res = await apiFetch('/api/debug_stats');
         const data = await res.json();
         const models = data.models?.length ? data.models.map(m => `${m.name}(${m.model})`).join(', ') : 'none';
         document.getElementById('debugInfo').textContent = `Models: ${models} | VRAM: ${data.memory || '?'}`;

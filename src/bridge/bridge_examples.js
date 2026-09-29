@@ -97,7 +97,35 @@ export class BridgeExampleRetriever {
     constructor(embedding_model) {
         this.embedding_model = embedding_model || null;
         this.snippet_embeddings = {}; // intent -> vector
+        this._documentEmbeddingPromise = null;
         this.ready = false;
+    }
+
+    _ensureDocumentEmbeddings() {
+        if (!this.embedding_model || Object.keys(this.snippet_embeddings).length === BRIDGE_EXAMPLE_LIBRARY.length) return;
+        if (this._documentEmbeddingPromise) return this._documentEmbeddingPromise;
+
+        this._documentEmbeddingPromise = (async () => {
+            try {
+                const promises = BRIDGE_EXAMPLE_LIBRARY.map(async (ex) => {
+                    const embedding = await this.embedding_model.embed(ex.text, { intent: 'document' });
+                    if (!Array.isArray(embedding) || embedding.length === 0 || !embedding.every(Number.isFinite)) {
+                        throw new Error(`invalid embedding for ${ex.intent}`);
+                    }
+                    return [ex.intent, embedding];
+                });
+                const embeddings = await Promise.all(promises);
+                this.snippet_embeddings = Object.fromEntries(embeddings);
+            } catch (err) {
+                // Keep the provider reference: a later request may recover from
+                // a transient failure and rebuild the document vectors.
+                this.snippet_embeddings = {};
+                console.warn('BridgeExampleRetriever: embedding init failed, using word-overlap:', err.message || err);
+            } finally {
+                this._documentEmbeddingPromise = null;
+            }
+        })();
+        return this._documentEmbeddingPromise;
     }
 
     async init() {
@@ -106,15 +134,11 @@ export class BridgeExampleRetriever {
             return;
         }
         try {
-            const promises = BRIDGE_EXAMPLE_LIBRARY.map(async (ex) => {
-                this.snippet_embeddings[ex.intent] = await this.embedding_model.embed(ex.text, { intent: 'document' });
-            });
-            await Promise.all(promises);
+            await this._ensureDocumentEmbeddings();
             this.ready = true;
-        } catch (err) {
-            console.warn('BridgeExampleRetriever: embedding init failed, using word-overlap:', err.message || err);
-            this.embedding_model = null;
-            this.snippet_embeddings = {};
+        } catch {
+            // _ensureDocumentEmbeddings handles provider failures and retains
+            // the model for a later retry.
             this.ready = true;
         }
     }
@@ -122,7 +146,8 @@ export class BridgeExampleRetriever {
     pickRelevant(query, k = 3) {
         if (!query || BRIDGE_EXAMPLE_LIBRARY.length === 0) return [];
         let scored;
-        if (!this.embedding_model) {
+        const haveDocumentEmbeddings = Object.keys(this.snippet_embeddings).length > 0;
+        if (!this.embedding_model || !haveDocumentEmbeddings) {
             scored = BRIDGE_EXAMPLE_LIBRARY.map(ex => ({
                 ex,
                 score: wordOverlapScore(query, ex.text)
@@ -148,13 +173,16 @@ export class BridgeExampleRetriever {
             });
         }
         scored.sort((a, b) => b.score - a.score);
-        return scored.slice(0, Math.max(0, k)).map(s => s.ex);
+        return scored.filter(s => s.score > 0).slice(0, Math.max(0, k)).map(s => s.ex);
     }
 
     async getRelevantSnippets(query, k = 3) {
         if (!query) return [];
         if (this.embedding_model) {
             try {
+                if (Object.keys(this.snippet_embeddings).length !== BRIDGE_EXAMPLE_LIBRARY.length) {
+                    await this._ensureDocumentEmbeddings();
+                }
                 this._lastQueryVec = await this.embedding_model.embed(query, {
                     intent: 'query',
                     instruction: 'Given a Minecraft player request, retrieve the most relevant bridge action example.'
@@ -163,9 +191,15 @@ export class BridgeExampleRetriever {
                     || !this._lastQueryVec.every(Number.isFinite)) {
                     throw new Error('invalid embedding');
                 }
+                if (Object.values(this.snippet_embeddings).some(vector => vector.length !== this._lastQueryVec.length)) {
+                    this.snippet_embeddings = {};
+                    await this._ensureDocumentEmbeddings();
+                    if (!Object.values(this.snippet_embeddings).some(vector => vector.length === this._lastQueryVec.length)) {
+                        this._lastQueryVec = null;
+                    }
+                }
             } catch (err) {
                 console.warn('BridgeExampleRetriever: query embed failed, falling back:', err.message || err);
-                this.embedding_model = null;
                 this._lastQueryVec = null;
             }
         } else {

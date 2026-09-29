@@ -1,11 +1,13 @@
 import { Server } from 'socket.io';
 import express from 'express';
 import http from 'http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as mindcraft from './mindcraft.js';
-import { readFileSync, writeFileSync, readdirSync, existsSync, unlinkSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, unlinkSync, mkdirSync } from 'fs';
 import settings from '../../settings.js';
+import { readStartupProfile, validateProfile } from './startup_profiles.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mindserver is:
@@ -15,7 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let io;
 let server;
-const agent_connections = {};
+const agent_connections = Object.create(null);
 const agent_listeners = [];
 
 const settings_spec = JSON.parse(readFileSync(path.join(__dirname, 'public/settings_spec.json'), 'utf8'));
@@ -27,6 +29,68 @@ const SETTINGS_LOCAL_PATH = path.join(__dirname, '../../settings_local.json');
 const NON_PERSISTED_KEYS = new Set(['profile', 'profile_path', 'profiles', 'task']);
 
 const PROFILES_DIR = path.join(__dirname, '../../profiles');
+const AGENT_ACK_TIMEOUT_MS = 1000;
+const accessToken = randomBytes(32).toString('hex');
+
+export const getAccessToken = () => accessToken;
+
+function validAccessToken(token, expectedToken = accessToken) {
+    if (typeof token !== 'string' || typeof expectedToken !== 'string') return false;
+    const supplied = Buffer.from(token);
+    const expected = Buffer.from(expectedToken);
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+function emitWithAck(socket, event, timeoutMs, signal) {
+    return new Promise((resolve, reject) => {
+        if (!socket || socket.connected === false) {
+            reject(new Error('Agent is not connected.'));
+            return;
+        }
+        if (signal?.aborted) {
+            reject(new Error('Agent request was cancelled.'));
+            return;
+        }
+
+        let settled = false;
+        const cleanup = () => {
+            socket.off?.('disconnect', onDisconnect);
+            signal?.removeEventListener('abort', onAbort);
+        };
+        const finish = (error, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            if (error) reject(error);
+            else resolve(value);
+        };
+        const onDisconnect = () => finish(new Error('Agent disconnected before acknowledging.'));
+        const onAbort = () => finish(new Error('Agent request was cancelled.'));
+
+        socket.on?.('disconnect', onDisconnect);
+        signal?.addEventListener('abort', onAbort, { once: true });
+        try {
+            // Use Socket.IO's built-in timeout so the internal ack entry in
+            // socket.acks is removed on timeout. A manual setTimeout around a
+            // plain socket.emit(event, cb) would reject our Promise but leave
+            // the ack callback retained in socket.acks until the client finally
+            // acks or disconnects (unbounded retention under a hung agent).
+            socket.timeout(timeoutMs).emit(event, (err, response) => {
+                if (err) {
+                    if (err && typeof err.message === 'string' && /timed out/i.test(err.message)) {
+                        finish(new Error('Agent acknowledgement timed out.'));
+                    } else {
+                        finish(err);
+                    }
+                    return;
+                }
+                finish(null, response);
+            });
+        } catch (error) {
+            finish(error);
+        }
+    });
+}
 
 function sanitizeProfileName(name) {
     const cleaned = String(name || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
@@ -35,18 +99,40 @@ function sanitizeProfileName(name) {
     return cleaned;
 }
 
-function validateProfile(profile) {
-    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
-        throw new Error('Profile must be a JSON object.');
-    }
-    if (!profile.name || typeof profile.name !== 'string' || !profile.name.trim()) {
-        throw new Error('Profile must have a non-empty "name" string.');
-    }
-    return true;
-}
-
 function profileFilePath(name) {
     return path.join(PROFILES_DIR, `${sanitizeProfileName(name)}.json`);
+}
+
+function sameProfilePath(first, second) {
+    if (typeof first !== 'string' || !first || typeof second !== 'string' || !second) return false;
+    const normalize = p => {
+        const absolute = path.resolve(__dirname, '../..', p);
+        return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+    };
+    return normalize(first) === normalize(second);
+}
+
+function readKeyFile(filePath) {
+    let data;
+    try { data = JSON.parse(readFileSync(filePath, 'utf8')); }
+    catch (error) {
+        if (error.code === 'ENOENT') return {};
+        throw error;
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data) || Object.values(data).some(value => typeof value !== 'string')) {
+        throw new Error('Invalid key file format.');
+    }
+    return data;
+}
+
+function writeKeyFile(filePath, keys) {
+    const temporary = `${filePath}.${randomBytes(12).toString('hex')}.tmp`;
+    try {
+        writeFileSync(temporary, JSON.stringify(keys, null, 4), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        renameSync(temporary, filePath);
+    } finally {
+        if (existsSync(temporary)) unlinkSync(temporary);
+    }
 }
 
 function readStartupProfiles() {
@@ -54,7 +140,6 @@ function readStartupProfiles() {
 }
 
 function persistStartupProfiles(profiles) {
-    settings.profiles = profiles;
     let existing = {};
     if (existsSync(SETTINGS_LOCAL_PATH)) {
         try { existing = JSON.parse(readFileSync(SETTINGS_LOCAL_PATH, 'utf8')) || {}; }
@@ -62,6 +147,7 @@ function persistStartupProfiles(profiles) {
     }
     existing.profiles = profiles;
     writeFileSync(SETTINGS_LOCAL_PATH, JSON.stringify(existing, null, 4), 'utf8');
+    settings.profiles = profiles;
 }
 
 // Persist the top-level (non-profile) settings the UI sent so they survive a
@@ -100,8 +186,18 @@ class AgentConnection {
 }
 
 export function registerAgent(settings) {
+    agent_connections[settings.profile.name]?.socket?.disconnect(true);
     let agentConnection = new AgentConnection(settings);
     agent_connections[settings.profile.name] = agentConnection;
+}
+
+// A launch credential is consumed by the handshake and rotated on every spawn.
+export function issueAgentToken(agentName) {
+    const agent = agent_connections[agentName];
+    if (!agent) throw new Error('Agent is not registered.');
+    agent.socket?.disconnect(true);
+    agent.processToken = randomBytes(32).toString('hex');
+    return agent.processToken;
 }
 
 export function logoutAgent(agentName) {
@@ -116,6 +212,30 @@ export function createMindServer(host_public = false, port = 8080) {
     const app = express();
     server = http.createServer(app);
     io = new Server(server);
+    io.use((socket, next) => {
+        const { token, agentName } = socket.handshake.auth || {};
+        if (validAccessToken(token)) {
+            socket.data.role = 'owner';
+            return next();
+        }
+        const agent = typeof agentName === 'string' && agent_connections[agentName];
+        if (agent && validAccessToken(token, agent.processToken)) {
+            agent.processToken = null;
+            socket.data.role = 'agent';
+            socket.data.agentName = agentName;
+            socket.data.agent = agent;
+            return next();
+        }
+        next(new Error('Unauthorized'));
+    });
+    app.use('/api', (req, res, next) => {
+        const authorization = req.headers.authorization;
+        if (!authorization?.startsWith('Bearer ') || !validAccessToken(authorization.slice(7))) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        res.set('Cache-Control', 'no-store');
+        next();
+    });
 
     // Serve static files
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -123,12 +243,37 @@ export function createMindServer(host_public = false, port = 8080) {
 
     // Socket.io connection handling
     io.on('connection', (socket) => {
-        let curAgentName = null;
+        let curAgentName = socket.data.agentName || null;
+        if (socket.data.role === 'owner') socket.join('dashboard');
+        else socket.data.agent.socket = socket;
+        // Contain request-handler failures here; truly uncaught parent errors
+        // must not leave the process serving from potentially corrupt state.
+        const on = (event, handler) => socket.on(event, (...args) => {
+            if (event !== 'disconnect' && socket.data.role === 'agent') {
+                const agent = agent_connections[curAgentName];
+                const current = agent === socket.data.agent && agent?.socket === socket;
+                const ownEvent = ['get-settings', 'connect-agent-process', 'login-agent', 'bot-output'].includes(event) && args[0] === curAgentName;
+                // Legacy benchmark tasks intentionally stop the whole run on completion.
+                const taskShutdown = event === 'shutdown' && typeof agent?.settings.task?.task_id === 'string' && agent.settings.task.task_id.length > 0;
+                if (!current || !(ownEvent || event === 'chat-message' || taskShutdown)) {
+                    const callback = args[args.length - 1];
+                    if (typeof callback === 'function') callback({ success: false, error: 'Forbidden' });
+                    return;
+                }
+            }
+            const failed = error => {
+                console.error(`[mindserver] ${event} handler failed:`, error);
+                const callback = args[args.length - 1];
+                if (typeof callback === 'function') callback({ success: false, error: 'Request failed.' });
+            };
+            try { Promise.resolve(handler(...args)).catch(failed); }
+            catch (error) { failed(error); }
+        });
         console.log('Client connected');
 
         agentsStatusUpdate(socket);
 
-        socket.on('create-agent', async (settings, callback) => {
+        on('create-agent', async (settings, callback) => {
             console.log('API create agent...');
             for (let key in settings_spec) {
                 if (!(key in settings)) {
@@ -180,7 +325,7 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('get-settings', (agentName, callback) => {
+        on('get-settings', (agentName, callback) => {
             if (agent_connections[agentName]) {
                 callback({ settings: agent_connections[agentName].settings });
             } else {
@@ -188,25 +333,32 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('get-agent-memory', (agentName, callback) => {
+        on('get-agent-memory', (agentName, callback) => {
             const agent = agent_connections[agentName];
             if (agent && agent.socket) {
-                agent.socket.emit('get-agent-memory', (memory) => {
-                    callback({ success: true, memory: memory ?? '' });
-                });
+                const agentSocket = agent.socket;
+                return emitWithAck(agentSocket, 'get-agent-memory', AGENT_ACK_TIMEOUT_MS)
+                    .then((memory) => {
+                        if (agent_connections[agentName] !== agent || agent.socket !== agentSocket || agentSocket.connected === false) {
+                            callback({ success: false, error: `Agent '${agentName}' disconnected before responding.` });
+                            return;
+                        }
+                        callback({ success: true, memory: memory ?? '' });
+                    }, (error) => callback({ success: false, error: error.message }));
             } else {
                 callback({ success: false, error: `Agent '${agentName}' not found or not connected.` });
             }
         });
 
-        socket.on('connect-agent-process', (agentName) => {
+        on('connect-agent-process', (agentName) => {
             if (agent_connections[agentName]) {
                 agent_connections[agentName].socket = socket;
+                curAgentName = agentName;
                 agentsStatusUpdate();
             }
         });
 
-        socket.on('login-agent', (agentName) => {
+        on('login-agent', (agentName) => {
             if (agent_connections[agentName]) {
                 agent_connections[agentName].socket = socket;
                 agent_connections[agentName].in_game = true;
@@ -218,11 +370,12 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('disconnect', () => {
-            if (agent_connections[curAgentName]) {
+        on('disconnect', () => {
+            const registered = agent_connections[curAgentName];
+            if (registered && registered.socket === socket) {
                 console.log(`Agent ${curAgentName} disconnected`);
-                agent_connections[curAgentName].in_game = false;
-                agent_connections[curAgentName].socket = null;
+                registered.in_game = false;
+                registered.socket = null;
                 agentsStatusUpdate();
             }
             if (agent_listeners.includes(socket)) {
@@ -230,7 +383,7 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('chat-message', (agentName, json) => {
+        on('chat-message', (agentName, json) => {
             if (!agent_connections[agentName]) {
                 console.warn(`Agent ${agentName} tried to send a message but is not logged in`);
                 return;
@@ -239,7 +392,7 @@ export function createMindServer(host_public = false, port = 8080) {
             agent_connections[agentName].socket.emit('chat-message', curAgentName, json);
         });
 
-        socket.on('set-agent-settings', (agentName, settings, callback) => {
+        on('set-agent-settings', (agentName, settings, callback) => {
             try {
                 const agent = agent_connections[agentName];
                 if (!agent) {
@@ -248,13 +401,15 @@ export function createMindServer(host_public = false, port = 8080) {
                     return;
                 }
                 if (settings.profile) {
-                    try { validateProfile(settings.profile); }
+                    try {
+                        validateProfile(settings.profile);
+                        if (settings.profile.name !== agentName) throw new Error('Cannot rename an existing agent through its settings.');
+                    }
                     catch (err) {
                         if (callback) callback({ success: false, error: err.message });
                         return;
                     }
                 }
-                agent.setSettings(settings);
                 if (agent.profile_path && settings.profile) {
                     try {
                         writeFileSync(agent.profile_path, JSON.stringify(settings.profile, null, 4), 'utf8');
@@ -265,6 +420,7 @@ export function createMindServer(host_public = false, port = 8080) {
                         return;
                     }
                 }
+                agent.setSettings(settings);
                 persistGlobalSettings(settings);
                 mindcraft.startAgent(agentName);
                 if (callback) callback({ success: true });
@@ -274,7 +430,7 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('restart-agent', (agentName) => {
+        on('restart-agent', (agentName) => {
             try {
                 console.log(`Restarting agent: ${agentName}`);
                 mindcraft.startAgent(agentName);
@@ -283,15 +439,15 @@ export function createMindServer(host_public = false, port = 8080) {
             }
         });
 
-        socket.on('stop-agent', (agentName) => {
+        on('stop-agent', (agentName) => {
             mindcraft.stopAgent(agentName);
         });
 
-        socket.on('start-agent', (agentName) => {
+        on('start-agent', (agentName) => {
             mindcraft.startAgent(agentName);
         });
 
-        socket.on('destroy-agent', (agentName) => {
+        on('destroy-agent', (agentName) => {
             if (agent_connections[agentName]) {
                 mindcraft.destroyAgent(agentName);
                 delete agent_connections[agentName];
@@ -299,14 +455,14 @@ export function createMindServer(host_public = false, port = 8080) {
             agentsStatusUpdate();
         });
 
-        socket.on('stop-all-agents', () => {
+        on('stop-all-agents', () => {
             console.log('Killing all agents');
             for (let agentName in agent_connections) {
                 mindcraft.stopAgent(agentName);
             }
         });
 
-        socket.on('shutdown', () => {
+        on('shutdown', () => {
             console.log('Shutting down');
             for (let agentName in agent_connections) {
                 mindcraft.stopAgent(agentName);
@@ -319,7 +475,7 @@ export function createMindServer(host_public = false, port = 8080) {
             
         });
 
-		socket.on('send-message', (agentName, data) => {
+		on('send-message', (agentName, data) => {
 			if (!agent_connections[agentName]) {
 				console.warn(`Agent ${agentName} not in game, cannot send message via MindServer.`);
 				return;
@@ -331,32 +487,32 @@ export function createMindServer(host_public = false, port = 8080) {
 			}
 		});
 
-        socket.on('clear-agent-memory', (agentName, preserveImportant = false) => {
+        on('clear-agent-memory', (agentName, preserveImportant = false) => {
             const agent = agent_connections[agentName];
             if (agent?.socket) {
                 agent.socket.emit('clear-agent-memory', preserveImportant);
             }
         });
 
-        socket.on('compact-agent-memory', (agentName, reason = 'manual') => {
+        on('compact-agent-memory', (agentName, reason = 'manual') => {
             const agent = agent_connections[agentName];
             if (agent?.socket) {
                 agent.socket.emit('compact-agent-memory', reason);
             }
         });
 
-        socket.on('set-important-memory', (agentName, memoryText) => {
+        on('set-important-memory', (agentName, memoryText) => {
             const agent = agent_connections[agentName];
             if (agent?.socket) {
                 agent.socket.emit('set-important-memory', memoryText);
             }
         });
 
-        socket.on('bot-output', (agentName, message) => {
-            io.emit('bot-output', agentName, message);
+        on('bot-output', (agentName, message) => {
+            io.to('dashboard').emit('bot-output', agentName, message);
         });
 
-        socket.on('listen-to-agents', () => {
+        on('listen-to-agents', () => {
             addListener(socket);
         });
     });
@@ -365,38 +521,16 @@ export function createMindServer(host_public = false, port = 8080) {
         try {
             const keysPath = path.join(__dirname, '../../keys.json');
             const examplePath = path.join(__dirname, '../../keys.example.json');
-            let keys = {};
-            let exampleKeys = {};
-            try {
-                const data = readFileSync(keysPath, 'utf8');
-                keys = JSON.parse(data);
-            } catch (e) { /* keys.json may not exist yet */ }
-            try {
-                const data = readFileSync(examplePath, 'utf8');
-                exampleKeys = JSON.parse(data);
-            } catch (e) { /* no example either */ }
-
-            const result = {};
+            const keys = readKeyFile(keysPath);
+            const exampleKeys = readKeyFile(examplePath);
+            const result = Object.create(null);
             for (const k of Object.keys(exampleKeys)) {
-                const val = keys[k];
-                if (val && typeof val === 'string' && val.length > 0) {
-                    const mask = val.length > 8 ? val.substring(0, 4) + '...' + val.substring(val.length - 4) : '***';
-                    result[k] = { set: true, mask };
-                } else {
-                    result[k] = { set: false, mask: null };
-                }
-            }
-            // Include any extra keys not in example
-            for (const k of Object.keys(keys)) {
-                if (!result[k]) {
-                    const val = keys[k];
-                    const mask = val.length > 8 ? val.substring(0, 4) + '...' + val.substring(val.length - 4) : '***';
-                    result[k] = { set: true, mask };
-                }
+                const set = Object.hasOwn(keys, k) && keys[k].length > 0;
+                result[k] = { set, mask: set ? '***' : null };
             }
             res.json(result);
         } catch (err) {
-            console.error('Failed to load keys:', err);
+            console.error('Failed to load keys:', err.code || err.name);
             res.status(500).json({ error: 'Failed to load keys' });
         }
     });
@@ -404,12 +538,13 @@ export function createMindServer(host_public = false, port = 8080) {
     app.post('/api/keys', express.json(), async (req, res) => {
         try {
             const keysPath = path.join(__dirname, '../../keys.json');
-            let keys = {};
-            try {
-                const data = readFileSync(keysPath, 'utf8');
-                keys = JSON.parse(data);
-            } catch (e) { /* may not exist */ }
+            const allowed = readKeyFile(path.join(__dirname, '../../keys.example.json'));
             const updates = req.body;
+            if (!updates || typeof updates !== 'object' || Array.isArray(updates) ||
+                Object.entries(updates).some(([key, value]) => !Object.hasOwn(allowed, key) || typeof value !== 'string')) {
+                return res.status(400).json({ error: 'Expected known key names with string values.' });
+            }
+            const keys = readKeyFile(keysPath);
             for (const [k, v] of Object.entries(updates)) {
                 if (typeof v === 'string' && v.length > 0) {
                     keys[k] = v;
@@ -417,10 +552,10 @@ export function createMindServer(host_public = false, port = 8080) {
                     delete keys[k];
                 }
             }
-            writeFileSync(keysPath, JSON.stringify(keys, null, 4), 'utf8');
+            writeKeyFile(keysPath, keys);
             res.json({ success: true });
         } catch (err) {
-            console.error('Failed to save keys:', err);
+            console.error('Failed to save keys:', err.code || err.name);
             res.status(500).json({ error: 'Failed to save keys' });
         }
     });
@@ -531,14 +666,21 @@ export function createMindServer(host_public = false, port = 8080) {
             const safeName = sanitizeProfileName(req.params.name);
             const profile = req.body;
             validateProfile(profile);
+            if (profile.name !== req.params.name) {
+                return res.status(400).json({ error: 'Profile name must match the requested profile. Use Clone to create a different profile.' });
+            }
             const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
             if (!existsSync(filePath)) {
                 return res.status(404).json({ error: `Profile '${safeName}' not found.` });
             }
+            const existingProfile = JSON.parse(readFileSync(filePath, 'utf8'));
+            if (existingProfile.name !== profile.name) {
+                return res.status(409).json({ error: 'Stored profile identity does not match the requested profile.' });
+            }
             writeFileSync(filePath, JSON.stringify(profile, null, 4), 'utf8');
             console.log(`Updated profile ${safeName} at ${filePath}`);
             const agentName = profile.name;
-            if (agent_connections[agentName] && agent_connections[agentName].profile_path === filePath) {
+            if (agent_connections[agentName] && sameProfilePath(agent_connections[agentName].profile_path, filePath)) {
                 agent_connections[agentName].settings.profile = profile;
             }
             res.json({ success: true });
@@ -555,8 +697,8 @@ export function createMindServer(host_public = false, port = 8080) {
                 return res.status(404).json({ error: `Profile '${safeName}' not found.` });
             }
             for (const agentName in agent_connections) {
-                if (agent_connections[agentName].profile_path === filePath) {
-                    return res.status(409).json({ error: `Profile is in use by agent '${agentName}'. Stop the agent first.` });
+                if (sameProfilePath(agent_connections[agentName].profile_path, filePath)) {
+                    return res.status(409).json({ error: `Profile is in use by agent '${agentName}'. Remove the agent first.` });
                 }
             }
             unlinkSync(filePath);
@@ -580,15 +722,10 @@ export function createMindServer(host_public = false, port = 8080) {
 
     app.put('/api/startup-profiles', express.json(), async (req, res) => {
         try {
-            const profiles = req.body;
-            if (!Array.isArray(profiles)) {
+            if (!Array.isArray(req.body)) {
                 return res.status(400).json({ error: 'Expected a JSON array of profile paths.' });
             }
-            for (const p of profiles) {
-                if (typeof p !== 'string') {
-                    return res.status(400).json({ error: 'All entries must be strings.' });
-                }
-            }
+            const profiles = [...new Set(req.body.map(p => readStartupProfile(p).path))];
             persistStartupProfiles(profiles);
             console.log(`Updated startup profiles: ${profiles.join(', ')}`);
             res.json({ success: true, profiles });
@@ -665,36 +802,57 @@ function agentsStatusUpdate(socket) {
 
 
 let listenerInterval = null;
+let activeListenerPoll = null;
 function addListener(listener_socket) {
+    if (agent_listeners.includes(listener_socket)) return;
     agent_listeners.push(listener_socket);
     if (agent_listeners.length === 1) {
         listenerInterval = setInterval(async () => {
+            if (activeListenerPoll) return;
+            const poll = { controller: new AbortController() };
+            activeListenerPoll = poll;
             const states = {};
-            for (let agentName in agent_connections) {
-                let agent = agent_connections[agentName];
-                if (agent.in_game) {
-                    try {
-                        const state = await new Promise((resolve) => {
-                            agent.socket.emit('get-full-state', (s) => resolve(s));
-                        });
-                        states[agentName] = state;
-                    } catch (e) {
-                        states[agentName] = { error: String(e) };
+            try {
+                const requests = Object.entries(agent_connections)
+                    .filter(([, agent]) => agent.in_game)
+                    .map(async ([agentName, agent]) => {
+                        const agentSocket = agent.socket;
+                        try {
+                            const state = await emitWithAck(agentSocket, 'get-full-state', AGENT_ACK_TIMEOUT_MS, poll.controller.signal);
+                            if (poll.controller.signal.aborted || agent_connections[agentName] !== agent || agent.socket !== agentSocket || agentSocket?.connected === false) return;
+                            states[agentName] = state;
+                        } catch (error) {
+                            if (poll.controller.signal.aborted || agent_connections[agentName] !== agent || agent.socket !== agentSocket) return;
+                            states[agentName] = { error: error.message };
+                        }
+                    });
+                await Promise.all(requests);
+                if (!poll.controller.signal.aborted && activeListenerPoll === poll) {
+                    for (let listener of agent_listeners) {
+                        listener.emit('state-update', states);
                     }
                 }
-            }
-            for (let listener of agent_listeners) {
-                listener.emit('state-update', states);
+            } finally {
+                if (activeListenerPoll === poll) activeListenerPoll = null;
             }
         }, 1000);
     }
 }
 
 function removeListener(listener_socket) {
-    agent_listeners.splice(agent_listeners.indexOf(listener_socket), 1);
+    let removed = false;
+    for (let i = agent_listeners.length - 1; i >= 0; i--) {
+        if (agent_listeners[i] === listener_socket) {
+            agent_listeners.splice(i, 1);
+            removed = true;
+        }
+    }
+    if (!removed) return;
     if (agent_listeners.length === 0) {
         clearInterval(listenerInterval);
         listenerInterval = null;
+        activeListenerPoll?.controller.abort();
+        activeListenerPoll = null;
     }
 }
 

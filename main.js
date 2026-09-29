@@ -5,6 +5,7 @@ import { hideBin } from 'yargs/helpers';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readStartupProfile, validateProfile } from './src/mindcraft/startup_profiles.js';
 
 // Persisted overrides written by the web UI (top-level settings only; profile
 // fields live in each profile JSON). Merged over the settings.js defaults so UI
@@ -14,7 +15,15 @@ const SETTINGS_LOCAL_PATH = path.join(path.dirname(fileURLToPath(import.meta.url
 if (existsSync(SETTINGS_LOCAL_PATH)) {
     try {
         const local = JSON.parse(readFileSync(SETTINGS_LOCAL_PATH, 'utf8'));
-        if (local && typeof local === 'object') {
+        if (local && typeof local === 'object' && !Array.isArray(local)) {
+            if (Object.hasOwn(local, 'profiles')) {
+                const profiles = [];
+                for (const profilePath of Array.isArray(local.profiles) ? local.profiles : []) {
+                    try { profiles.push(readStartupProfile(profilePath).path); }
+                    catch (err) { console.error(`Ignoring invalid saved startup profile '${profilePath}':`, err.message); }
+                }
+                local.profiles = [...new Set(profiles)];
+            }
             Object.assign(settings, local);
             console.log(`Loaded ${Object.keys(local).length} persisted setting(s) from settings_local.json`);
         }
@@ -23,15 +32,21 @@ if (existsSync(SETTINGS_LOCAL_PATH)) {
     }
 }
 
-// Keep the MindServer alive through handler bugs. Socket.IO does not catch
-// throws inside listeners — an uncaught exception in any socket.on() callback
-// will otherwise kill the parent process and take all agents down with it.
-process.on('uncaughtException', (err) => {
-    console.error('[mindserver] uncaughtException:', err);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('[mindserver] unhandledRejection:', reason);
-});
+// Socket request failures are contained by MindServer's listener boundary.
+// Errors escaping that boundary are fatal: stop children and exit nonzero.
+let shuttingDown = false;
+function fatalError(kind, error) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[mindserver] ${kind}:`, error);
+    try { Mindcraft.shutdown(1); }
+    catch (shutdownError) {
+        console.error('[mindserver] shutdown failed:', shutdownError);
+        process.exit(1);
+    }
+}
+process.on('uncaughtException', err => fatalError('uncaughtException', err));
+process.on('unhandledRejection', reason => fatalError('unhandledRejection', reason));
 
 function parseArguments() {
     return yargs(hideBin(process.argv))
@@ -102,9 +117,14 @@ if (process.env.SETTINGS_JSON) {
 
 Mindcraft.init(false, settings.mindserver_port, settings.auto_open_ui);
 
-for (let profile of settings.profiles) {
-    const profile_json = JSON.parse(readFileSync(profile, 'utf8'));
-    settings.profile = profile_json;
-    settings.profile_path = profile;
-    Mindcraft.createAgent(settings);
+for (const profile of Array.isArray(settings.profiles) ? settings.profiles : []) {
+    try {
+        const profile_json = JSON.parse(readFileSync(profile, 'utf8'));
+        validateProfile(profile_json);
+        settings.profile = profile_json;
+        settings.profile_path = profile;
+        Mindcraft.createAgent(settings).catch(err => console.error(`Failed to start profile '${profile}':`, err.message));
+    } catch (err) {
+        console.error(`Skipping invalid startup profile '${profile}':`, err.message);
+    }
 }

@@ -41,10 +41,14 @@ const BLOCK_TO_ITEM_OVERRIDES = {
 };
 
 function blockIdToItemId(blockId) {
-    const raw = String(blockId || '').replace(/^minecraft:/, '').toLowerCase();
+    const raw = blockStateId(blockId).replace(/^minecraft:/, '').toLowerCase();
     const qualified = `minecraft:${raw}`;
     if (BLOCK_TO_ITEM_OVERRIDES[qualified]) return BLOCK_TO_ITEM_OVERRIDES[qualified];
     return raw;
+}
+
+function blockStateId(descriptor) {
+    return String(descriptor || '').split('[', 1)[0];
 }
 
 export function tallySchematicMaterials(schematic) {
@@ -79,62 +83,164 @@ function isTwoCellItem(item) {
 
 /**
  * Recursively roll up a shopping list into its raw-resource prerequisites.
- * Given placed-block counts, this walks the wiki recipe graph, and returns
- * a new Map of items to bundles at each tier:
+ * Inventory is reserved at each finished/intermediate tier before the
+ * remaining demand is expanded through the wiki recipe graph.
  *
  *   { raw: Map<item, count>, crafts: Map<item, count> }
  *
- * `raw` is the set of items that have no recipe (logs, cobblestone, ores,
- * sand, etc.) — these are what we need to mine/smelt to satisfy the build.
- * `crafts` is every intermediate (planks, sticks, doors, chests, etc.) that
- * we'll have to craft from raws.
+ * `raw` and `crafts` contain acquisition deltas. `shortages` combines them
+ * in dependency order, while `targets` contains Java-compatible total
+ * inventory goals. Cyclic crafting routes are rejected per dependency path,
+ * allowing a non-cyclic alternative such as raw-iron smelting to be chosen.
  *
  * The rollup uses `wiki.data.recipes.crafting` and smelting; if an item has
  * no recipe and no smelt, it's treated as raw.
  */
-export function rollUpMaterials(placedCounts, wikiData) {
+export function rollUpMaterials(placedCounts, wikiData, inventory = []) {
     const craftRecipes = wikiData?.recipes?.crafting || {};
     const smeltRecipes = wikiData?.recipes?.smelting || {};
-
     const raw = new Map();
     const crafts = new Map();
+    const available = inventoryCounts(inventory);
+    const initial = new Map(available);
+    const production = new Map();
+    const demand = new Map();
+    const dependencies = new Map();
+    const order = [];
+    const ordered = new Set();
 
-    // Queue of items still to resolve.
-    const todo = [];
-    for (const [item, count] of placedCounts.entries()) {
-        todo.push({ item, count });
-    }
+    const rememberProduction = (bucket, item, count) => {
+        bucket.set(item, (bucket.get(item) || 0) + count);
+        production.set(item, (production.get(item) || 0) + count);
+        if (!ordered.has(item)) {
+            ordered.add(item);
+            order.push(item);
+        }
+    };
 
-    while (todo.length > 0) {
-        const { item, count } = todo.shift();
-        if (count <= 0) continue;
+    const restoreMap = (target, snapshot) => {
+        target.clear();
+        for (const [key, value] of snapshot.entries()) target.set(key, value);
+    };
 
+    const expand = (item, requested, path) => {
+        if (requested <= 0) return true;
+        demand.set(item, (demand.get(item) || 0) + requested);
+
+        const owned = available.get(item) || 0;
+        const used = Math.min(owned, requested);
+        if (used > 0) available.set(item, owned - used);
+        const missing = requested - used;
+        if (missing <= 0) return true;
+        if (path.includes(item)) return false;
+
+        const candidates = [];
         const craftRecipe = craftRecipes[item];
-        if (craftRecipe && craftRecipe.ingredients) {
-            // Record this craft-intermediate.
-            crafts.set(item, (crafts.get(item) || 0) + count);
-            const output = craftRecipe.output || 1;
-            const batches = Math.ceil(count / output);
-            for (const [ingredient, perBatch] of Object.entries(craftRecipe.ingredients)) {
-                const resolved = resolveIngredientChoice(ingredient, placedCounts);
-                todo.push({ item: resolved, count: batches * perBatch });
-            }
-            continue;
+        if (craftRecipe?.ingredients) {
+            candidates.push({
+                ingredients: Object.entries(craftRecipe.ingredients),
+                output: Number(craftRecipe.output) || 1,
+            });
         }
-
         const smeltRecipe = smeltRecipes[item];
-        if (smeltRecipe && smeltRecipe.input) {
-            crafts.set(item, (crafts.get(item) || 0) + count);
-            todo.push({ item: smeltRecipe.input, count });
-            // Fuel is handled by the mod's planner at craft time; not folded in here.
-            continue;
+        if (smeltRecipe?.input) {
+            candidates.push({
+                ingredients: [[smeltRecipe.input, 1]],
+                output: Number(smeltRecipe.output) || 1,
+            });
         }
 
-        // No recipe or smelt: treat as raw.
-        raw.set(item, (raw.get(item) || 0) + count);
+        if (candidates.length === 0) {
+            rememberProduction(raw, item, missing);
+            return true;
+        }
+
+        for (const recipe of candidates) {
+            const snapshots = {
+                available: new Map(available),
+                raw: new Map(raw),
+                crafts: new Map(crafts),
+                production: new Map(production),
+                demand: new Map(demand),
+                dependencies: new Map([...dependencies].map(([key, values]) => [key, new Set(values)])),
+                order: [...order],
+                ordered: new Set(ordered),
+            };
+            const batches = Math.ceil(missing / recipe.output);
+            const nextPath = [...path, item];
+            let valid = true;
+            for (const [ingredient, perBatch] of recipe.ingredients) {
+                const resolved = resolveIngredientChoice(ingredient, placedCounts);
+                if (!expand(resolved, batches * perBatch, nextPath)) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) {
+                const produced = batches * recipe.output;
+                rememberProduction(crafts, item, produced);
+                const itemDependencies = dependencies.get(item) || new Set();
+                for (const [ingredient] of recipe.ingredients) {
+                    itemDependencies.add(resolveIngredientChoice(ingredient, placedCounts));
+                }
+                dependencies.set(item, itemDependencies);
+                const surplus = produced - missing;
+                if (surplus > 0) available.set(item, (available.get(item) || 0) + surplus);
+                return true;
+            }
+            restoreMap(available, snapshots.available);
+            restoreMap(raw, snapshots.raw);
+            restoreMap(crafts, snapshots.crafts);
+            restoreMap(production, snapshots.production);
+            restoreMap(demand, snapshots.demand);
+            dependencies.clear();
+            for (const [key, values] of snapshots.dependencies) dependencies.set(key, new Set(values));
+            order.splice(0, order.length, ...snapshots.order);
+            ordered.clear();
+            for (const value of snapshots.ordered) ordered.add(value);
+        }
+        return false;
+    };
+
+    for (const [item, count] of placedCounts.entries()) {
+        if (!expand(item, count, [])) {
+            throw new Error(`No acyclic material recipe for ${item}`);
+        }
     }
 
-    return { raw, crafts };
+    const sorted = [];
+    const visited = new Set();
+    const visit = (item) => {
+        if (visited.has(item)) return;
+        visited.add(item);
+        for (const dependency of dependencies.get(item) || []) {
+            if (production.has(dependency)) visit(dependency);
+        }
+        sorted.push(item);
+    };
+    for (const item of order) visit(item);
+
+    const shortages = new Map();
+    const targets = new Map();
+    for (const item of sorted) {
+        const target = demand.get(item) || 0;
+        const shortage = Math.max(0, target - (initial.get(item) || 0));
+        if (shortage <= 0) continue;
+        shortages.set(item, shortage);
+        targets.set(item, target);
+    }
+
+    return { raw, crafts, shortages, targets, order: sorted };
+}
+
+function inventoryCounts(inventory) {
+    const counts = new Map();
+    for (const stack of inventory || []) {
+        if (!stack || !stack.item) continue;
+        const item = String(stack.item).replace(/^minecraft:/, '').toLowerCase();
+        counts.set(item, (counts.get(item) || 0) + (Number(stack.count) || 0));
+    }
+    return counts;
 }
 
 /**
@@ -162,12 +268,7 @@ function resolveIngredientChoice(ingredient, placedCounts) {
  * of item → shortage count (only items we need more of).
  */
 export function computeMaterialShortages(required, inventory) {
-    const have = new Map();
-    for (const stack of inventory || []) {
-        if (!stack || !stack.item) continue;
-        const name = String(stack.item).replace(/^minecraft:/, '').toLowerCase();
-        have.set(name, (have.get(name) || 0) + (Number(stack.count) || 0));
-    }
+    const have = inventoryCounts(inventory);
     const shortages = new Map();
     for (const [item, needed] of required.entries()) {
         const owned = have.get(item) || 0;
@@ -177,19 +278,19 @@ export function computeMaterialShortages(required, inventory) {
 }
 
 /**
- * Produce a list of craft actions that will gather/craft the shortages, in the
- * order they should run. Order doesn't strictly matter — the bridge planner
- * inside CommandExecutor handles prerequisites per-craft — but keeping bulky
- * blocks last avoids stash overflow.
+ * Produce craft actions for acquisition deltas. Java interprets action counts
+ * as total inventory goals, so existing inventory is added back to each goal.
+ * The map's dependency order is preserved.
  */
-export function planBuildMaterialActions(shortages) {
+export function planBuildMaterialActions(shortages, inventory = []) {
+    const have = inventoryCounts(inventory);
     const out = [];
     for (const [item, count] of shortages.entries()) {
         out.push({
             type: 'craft',
             provider: 'baritone_chat',
             item,
-            count,
+            count: (have.get(item) || 0) + count,
         });
     }
     return out;
@@ -206,13 +307,12 @@ export function packageMaterialSchematic(schematic, origin, inventory, wikiData)
         blocks: schematic.blocksU16.toString('base64'),
     };
     const placed = tallySchematicMaterials(schematic);
-    const { raw, crafts } = wikiData ? rollUpMaterials(placed, wikiData) : { raw: placed, crafts: new Map() };
-    // Combine raw + crafts into one required-map keyed by item.
-    const required = new Map();
-    for (const [k, v] of raw.entries()) required.set(k, (required.get(k) || 0) + v);
-    for (const [k, v] of crafts.entries()) required.set(k, (required.get(k) || 0) + v);
-    const shortages = computeMaterialShortages(required, inventory);
-    const prereqs = planBuildMaterialActions(shortages);
+    const plan = wikiData
+        ? rollUpMaterials(placed, wikiData, inventory)
+        : { raw: placed, crafts: new Map(), shortages: computeMaterialShortages(placed, inventory) };
+    const { raw, crafts, shortages } = plan;
+    const required = plan.targets || new Map(shortages);
+    const prereqs = planBuildMaterialActions(shortages, inventory);
     return { schematicAction, required, shortages, prereqs };
 }
 
@@ -373,9 +473,26 @@ export function validateHouse(boxRead, expected) {
         if (x < 0 || x >= w || y < 0 || y >= h || z < 0 || z >= l) return null;
         return blocks[(y * l + z) * w + x];
     };
-    const isAir = (id) => id === 'minecraft:air' || id === 'minecraft:cave_air' || id === 'minecraft:void_air';
-    const isDoor = (id) => id && id.endsWith('_door');
-    const isGlass = (id) => id && (id.endsWith('_glass') || id === 'minecraft:glass' || id.endsWith('_glass_pane'));
+    const isAir = (descriptor) => {
+        const id = blockStateId(descriptor);
+        return id === 'minecraft:air' || id === 'minecraft:cave_air' || id === 'minecraft:void_air';
+    };
+    const isDoor = (descriptor) => blockStateId(descriptor).endsWith('_door');
+    const isGlass = (descriptor) => {
+        const id = blockStateId(descriptor);
+        return id.endsWith('_glass') || id === 'minecraft:glass' || id.endsWith('_glass_pane');
+    };
+    const templateName = String(expected?.template || expected?.name || '').replace(/^saved:/, '').toLowerCase();
+    const pit = templateName === 'pit' || templateName.startsWith('pit_');
+    const requirements = {
+        bed: true,
+        craft: true,
+        furnace: !pit,
+        chest: !pit,
+        light: true,
+        window: !pit,
+        ...(expected?.requirements || {}),
+    };
 
     const failures = [];
 
@@ -471,7 +588,7 @@ export function validateHouse(boxRead, expected) {
             for (let x = 0; x < w; x++) {
                 const id = at(x, y, z);
                 if (!id) continue;
-                const short = id.replace(/^minecraft:/, '');
+                const short = blockStateId(id).replace(/^minecraft:/, '');
                 if (short.endsWith('_bed') || short === 'bed') fixtures.bed = true;
                 else if (short === 'crafting_table') fixtures.craft = true;
                 else if (short === 'furnace' || short === 'blast_furnace' || short === 'smoker') fixtures.furnace = true;
@@ -480,11 +597,11 @@ export function validateHouse(boxRead, expected) {
             }
         }
     }
-    if (!fixtures.bed)     failures.push('no_bed');
-    if (!fixtures.craft)   failures.push('no_crafting_table');
-    if (!fixtures.furnace) failures.push('no_furnace');
-    if (!fixtures.chest)   failures.push('no_storage');
-    if (fixtures.torch === 0) failures.push('no_light_source');
+    if (requirements.bed && !fixtures.bed)         failures.push('no_bed');
+    if (requirements.craft && !fixtures.craft)     failures.push('no_crafting_table');
+    if (requirements.furnace && !fixtures.furnace) failures.push('no_furnace');
+    if (requirements.chest && !fixtures.chest)     failures.push('no_storage');
+    if (requirements.light && fixtures.torch === 0) failures.push('no_light_source');
 
     // ─── Layer 3: style coherence ────────────────────────────────────────
     const nonAirUses = new Map();
@@ -494,14 +611,15 @@ export function validateHouse(boxRead, expected) {
             for (let x = 0; x < w; x++) {
                 const id = at(x, y, z);
                 if (!id || isAir(id)) continue;
-                nonAirUses.set(id, (nonAirUses.get(id) || 0) + 1);
+                const blockId = blockStateId(id);
+                nonAirUses.set(blockId, (nonAirUses.get(blockId) || 0) + 1);
                 if (isGlass(id)) windows++;
             }
         }
     }
     const distinctBlocks = nonAirUses.size;
     if (distinctBlocks >= 10) failures.push(`palette_too_noisy:${distinctBlocks}`);
-    if (windows === 0) failures.push('no_window');
+    if (requirements.window && windows === 0) failures.push('no_window');
 
     // Symmetry: for each y layer, how often the XZ slice is a palindrome on X.
     let symmetricLayers = 0;
@@ -519,8 +637,12 @@ export function validateHouse(boxRead, expected) {
     const symmetryRatio = totalLayers > 0 ? symmetricLayers / totalLayers : 0;
     if (symmetryRatio < 0.4) failures.push(`low_symmetry:${symmetryRatio.toFixed(2)}`);
 
-    // Total checks across all three layers (5 + 5 + 3 style = 13).
-    const totalChecks = 13;
+    // Five structural checks, enabled fixture checks, palette coherence,
+    // optional windows, and symmetry.
+    const totalChecks = 5
+        + ['bed', 'craft', 'furnace', 'chest', 'light'].filter(key => requirements[key]).length
+        + 2
+        + (requirements.window ? 1 : 0);
     const passCount = totalChecks - failures.length;
     const score = passCount / totalChecks;
     return {
@@ -534,6 +656,7 @@ export function validateHouse(boxRead, expected) {
             distinctBlocks,
             windows,
             symmetryRatio: Number(symmetryRatio.toFixed(2)),
+            requirements,
         },
     };
 }
@@ -587,7 +710,8 @@ const NATURAL_GROUND = new Set([
 ]);
 
 function isAirLike(id) {
-    return id === 'minecraft:air' || id === 'minecraft:cave_air' || id === 'minecraft:void_air';
+    const blockId = blockStateId(id);
+    return blockId === 'minecraft:air' || blockId === 'minecraft:cave_air' || blockId === 'minecraft:void_air';
 }
 
 /**
@@ -605,11 +729,12 @@ function topSurfaceY(scan, x, z) {
         const id = scan.blocks[(dy * l + dz) * w + dx];
         if (!id) continue;
         if (isAirLike(id)) continue;
-        if (LIQUID_BLOCKS.has(id)) continue;
+        const blockId = blockStateId(id);
+        if (LIQUID_BLOCKS.has(blockId)) continue;
         // Skip foliage that would count as "above ground".
-        if (id === 'minecraft:short_grass' || id === 'minecraft:tall_grass'
-                || id === 'minecraft:fern' || id === 'minecraft:large_fern'
-                || id === 'minecraft:snow') continue;
+        if (blockId === 'minecraft:short_grass' || blockId === 'minecraft:tall_grass'
+                || blockId === 'minecraft:fern' || blockId === 'minecraft:large_fern'
+                || blockId === 'minecraft:snow') continue;
         return oy + dy;
     }
     return null;
@@ -673,10 +798,12 @@ export async function surveyBuildSite(bridge, schematic, candidateOrigin, state)
             for (let dy = 0; dy < scan.size[1]; dy++) {
                 const id = scan.blocks[(dy * l + dz) * w + dx];
                 if (!id) continue;
-                if (LIQUID_BLOCKS.has(id)) liquidHits++;
-                if (DANGER_BLOCKS.has(id)) dangerHits++;
+                const blockId = blockStateId(id);
+                if (LIQUID_BLOCKS.has(blockId)) liquidHits++;
+                if (DANGER_BLOCKS.has(blockId)) dangerHits++;
                 // "Placed": non-air, non-natural. Doors, planks, stone bricks, etc.
-                if (!isAirLike(id) && !NATURAL_GROUND.has(id) && !LIQUID_BLOCKS.has(id) && !DANGER_BLOCKS.has(id)) {
+                if (!isAirLike(id) && !NATURAL_GROUND.has(blockId)
+                        && !LIQUID_BLOCKS.has(blockId) && !DANGER_BLOCKS.has(blockId)) {
                     placedHits++;
                 }
             }
@@ -815,13 +942,10 @@ function categorizeReason(reason) {
 }
 
 /**
- * Rotate a schematic 90° around the Y axis (swap X and Z). Blocks are
- * re-indexed but block IDs are not updated — Minecraft's direction-bearing
- * blocks (stairs, doors, beds) will keep their default facing. For our
- * current templates that's fine because defaults pick a sensible south-facing
- * orientation regardless.
+ * Rotate a schematic 90° around the Y axis (swap X and Z), including the
+ * facing/axis properties in palette entries.
  */
-function rotateSchematicY(schematic) {
+export function rotateSchematicY(schematic) {
     const { size, palette, blocksU16 } = schematic;
     const newSizeX = size.z;
     const newSizeZ = size.x;
@@ -842,9 +966,24 @@ function rotateSchematicY(schematic) {
         ...schematic,
         name: schematic.name + '_rot90',
         size: { x: newSizeX, y: size.y, z: newSizeZ },
-        palette,
+        palette: palette.map(rotateBlockStateY),
         blocksU16: newBuf,
     };
+}
+
+function rotateBlockStateY(descriptor) {
+    const value = String(descriptor || 'minecraft:air');
+    const bracket = value.indexOf('[');
+    if (bracket < 0 || !value.endsWith(']')) return value;
+    const properties = value.slice(bracket + 1, -1).split(',').map(entry => entry.split('=', 2));
+    const facing = { north: 'east', east: 'south', south: 'west', west: 'north' };
+    const rotated = properties.map(([key, propertyValue]) => {
+        if (key === 'facing' && facing[propertyValue]) return [key, facing[propertyValue]];
+        if (key === 'axis' && propertyValue === 'x') return [key, 'z'];
+        if (key === 'axis' && propertyValue === 'z') return [key, 'x'];
+        return [key, propertyValue];
+    });
+    return `${value.slice(0, bracket)}[${rotated.map(([key, propertyValue]) => `${key}=${propertyValue}`).join(',')}]`;
 }
 
 // ─── Saved templates (Option B: "build one like that") ────────────────────

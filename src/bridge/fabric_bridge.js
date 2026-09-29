@@ -13,9 +13,7 @@
  *   #follow player <name>  — Baritone: follow a player
  *   #cancel                — Baritone: cancel current task
  *   #explore               — Baritone: explore the world
- *   /say <text>            — Minecraft slash command
  *   chat: <text>           — Send public chat message
- *   whisper: <player> <msg>— Whisper to a player
  */
 import { buildFabricStateLines } from './state_summary.js';
 
@@ -190,12 +188,17 @@ export class FabricBridge {
      * Skip the currently-failed task and advance the queue.
      * @returns {Promise<{success: boolean, error?: string}>}
      */
-    async skipQueue() {
+    async skipQueue(generation = null) {
         try {
-            const res = await fetch(`${this.url}/queue/skip`, {
+            const options = {
                 method: 'POST',
                 signal: AbortSignal.timeout(3000),
-            });
+            };
+            if (Number.isSafeInteger(generation)) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify({ generation });
+            }
+            const res = await fetch(`${this.url}/queue/skip`, options);
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {
@@ -207,12 +210,17 @@ export class FabricBridge {
      * Resume a paused queue (retries the failed task).
      * @returns {Promise<{success: boolean, error?: string}>}
      */
-    async resumeQueue() {
+    async resumeQueue(generation = null) {
         try {
-            const res = await fetch(`${this.url}/queue/resume`, {
+            const options = {
                 method: 'POST',
                 signal: AbortSignal.timeout(3000),
-            });
+            };
+            if (Number.isSafeInteger(generation)) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify({ generation });
+            }
+            const res = await fetch(`${this.url}/queue/resume`, options);
             if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
             return await res.json();
         } catch (err) {

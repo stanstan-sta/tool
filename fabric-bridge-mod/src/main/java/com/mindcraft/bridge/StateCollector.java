@@ -90,8 +90,25 @@ public class StateCollector {
 
     private static void routeBaritoneToTaskQueue(String content) {
         String clean = stripChatFormatting(content);
-        if (clean == null || !clean.contains("[Baritone]")) return;
-        if (clean.contains("All queued tasks complete")) {
+        if (!shouldRouteBaritoneStatus(true, clean)) return;
+        if (clean.contains("Bridge task complete:")) {
+            String token = clean.substring(clean.indexOf("Bridge task complete:")
+                    + "Bridge task complete:".length()).trim();
+            TaskQueue.getInstance().onBaritoneComplete(token);
+        } else if (clean.contains("Bridge task failed:")) {
+            String detail = clean.substring(clean.indexOf("Bridge task failed:")
+                    + "Bridge task failed:".length()).trim();
+            int separator = detail.indexOf(" - ");
+            String token = separator >= 0 ? detail.substring(0, separator).trim() : detail;
+            String reason = separator >= 0 ? detail.substring(separator + 3).trim() : "unknown";
+            TaskQueue.getInstance().onBaritoneFailed(token, reason);
+        } else if (clean.contains("Bridge task cancelled:")) {
+            String detail = clean.substring(clean.indexOf("Bridge task cancelled:")
+                    + "Bridge task cancelled:".length()).trim();
+            int separator = detail.indexOf(" - ");
+            String token = separator >= 0 ? detail.substring(0, separator).trim() : detail;
+            TaskQueue.getInstance().onBaritoneFailed(token, "cancelled");
+        } else if (clean.contains("All queued tasks complete")) {
             TaskQueue.getInstance().onBaritoneComplete();
         } else if (clean.contains("Task failed:")) {
             String reason = clean.substring(clean.indexOf("Task failed:") + "Task failed:".length()).trim();
@@ -113,7 +130,12 @@ public class StateCollector {
     // Only the local Baritone logger may supply task-control events. Neither
     // player CHAT nor server GAME messages establish that provenance.
     static boolean shouldRouteBaritoneStatus(boolean trustedLocalLogger, String content) {
-        return trustedLocalLogger && content != null && stripChatFormatting(content).contains("[Baritone]");
+        if (!trustedLocalLogger || content == null) return false;
+        String clean = stripChatFormatting(content);
+        // The local logger is the provenance boundary. Baritone's display prefix
+        // is optional (useMessageTag) and configurable (shortBaritonePrefix).
+        return clean.contains("[Baritone]") || clean.contains("Bridge task complete:")
+                || clean.contains("Bridge task failed:") || clean.contains("Bridge task cancelled:");
     }
 
     static Consumer<Object> wrapBaritoneLogger(Consumer<Object> original, Consumer<String> statusSink) {

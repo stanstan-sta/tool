@@ -94,8 +94,9 @@ public class CommandExecutor {
         // Self-executing actions
         if ("craft".equals(type)) {
             String result = executeCraftAction(actionJson);
-            if (result == null) {
-                return new TranslatedAction(false, type, "self_executing", null, "craft_failed", "Craft action returned null");
+            if (result == null || !result.startsWith("craft: queued")) {
+                return new TranslatedAction(false, type, "self_executing", null, "craft_failed",
+                        result == null ? "Craft action returned null" : result);
             }
             return selfExecuting(type, result);
         }
@@ -140,13 +141,13 @@ public class CommandExecutor {
             return immediate(type, executeEquipBestAction(actionJson));
         }
         if ("use_item".equals(type)) {
-            return immediate(type, executeUseItemAction(actionJson));
+            return selfExecuting(type, executeUseItemAction(actionJson));
         }
         if ("consume".equals(type)) {
-            return immediate(type, executeConsumeAction(actionJson));
+            return selfExecuting(type, executeConsumeAction(actionJson));
         }
         if ("drop_items".equals(type)) {
-            return immediate(type, executeDropItemsAction(actionJson));
+            return selfExecuting(type, executeDropItemsAction(actionJson));
         }
         if ("pickup_items".equals(type)) {
             return queued(type, executePickupItemsAction(actionJson));
@@ -158,7 +159,7 @@ public class CommandExecutor {
             return immediate(type, executeCloseScreenAction());
         }
         if ("transfer_items".equals(type)) {
-            return immediate(type, executeTransferItemsAction(actionJson));
+            return selfExecuting(type, executeTransferItemsAction(actionJson));
         }
         TranslatedAction bridgeAction = translateBridgeStateAction(type, actionJson);
         if (bridgeAction != null) {
@@ -1825,6 +1826,19 @@ public class CommandExecutor {
             goals.add(new CraftGoal(ItemIds.normalize(planKeys.get(i)), requests.get(i).count));
         }
         final String summary = describeMakePlan(plan.steps);
+        TaskQueue queue = TaskQueue.getInstance();
+        TaskQueue.TaskHandle craftOwner = TaskQueue.currentTaskHandle();
+        if (queue.isNestedCraftTask(craftOwner)) {
+            WorkerThreads.start("nested-craft-goals", () -> runNestedCraftGoals(craftOwner, () ->
+                    ClientThread.call(() -> {
+                        for (CraftGoal goal : goals) {
+                            MakeStep step = nextCraftStep(goal.itemName(), goal.count());
+                            if (step != null) return step;
+                        }
+                        return null;
+                    })));
+            return "craft: queued nested goal; " + summary;
+        }
         ClientThread.run(() -> {
             ClientPlayerEntity player = client.player;
             if (player != null) {
@@ -2037,15 +2051,28 @@ public class CommandExecutor {
             sendBridgeMessage("[Bridge] Craft plan exceeded max steps for " + ItemIds.strip(targetItem));
             return;
         }
+        MakeStep firstStep;
+        try {
+            firstStep = nextCraftStep(targetItem, targetCount);
+        } catch (IllegalStateException e) {
+            sendBridgeMessage("[Bridge] Craft plan failed: " + e.getMessage());
+            return;
+        }
+        if (firstStep == null) return;
+        sendBridgeMessage("[Bridge] make-continuation: next step = "
+                + firstStep.kind() + " " + firstStep.command());
+        if (firstStep.kind() == MakeStepKind.CRAFT) {
+            craftPostActionWithContinuation(firstStep.itemName(), firstStep.count(), continuation);
+        } else if (firstStep.command() != null && !firstStep.command().isBlank()) {
+            TaskQueue.getInstance().enqueueWithCallback(firstStep.command(), continuation);
+        }
+    }
+
+    // Called on the client thread so goal checks and planning use the same fresh inventory.
+    private static MakeStep nextCraftStep(String targetItem, int targetCount) {
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
-        if (player == null) {
-            sendBridgeMessage("[Bridge] Craft failed: not connected");
-            return;
-        }
-        if (InventoryDriver.countItem(player, targetItem) >= targetCount) {
-            sendBridgeMessage("[Bridge] make-continuation: goal already met for " + ItemIds.strip(targetItem));
-            return;
-        }
+        if (player == null) throw new IllegalStateException("craft: not connected");
+        if (InventoryDriver.countItem(player, targetItem) >= targetCount) return null;
         MakePlan plan = new MakePlan();
         snapshotInventory(player, plan);
         if (MinecraftClient.getInstance().world != null) {
@@ -2059,21 +2086,34 @@ public class CommandExecutor {
         makeItem(plan, targetItem, targetCount, 0);
         if (!plan.isSuccess() || plan.steps.isEmpty()) {
             String err = plan.errors.isEmpty() ? "no steps generated" : String.join("; ", plan.errors);
-            sendBridgeMessage("[Bridge] Craft plan failed for " + ItemIds.strip(targetItem) + ": " + err);
-            return;
+            throw new IllegalStateException("craft: " + ItemIds.strip(targetItem) + ": " + err);
         }
         List<MakeStep> coalesced = coalesceMakeSteps(plan.steps);
-        MakeStep firstStep = coalesced.get(0);
-        sendBridgeMessage("[Bridge] make-continuation: next step = "
-                + firstStep.kind() + " " + firstStep.command());
-        if (firstStep.kind() == MakeStepKind.CRAFT) {
-            // For CRAFT steps, the continuation must run AFTER the craft
-            // thread finishes (i.e., after completeActiveIf), not in the
-            // Baritone-idle callback. Pass continuation to craftPostAction
-            // so it fires when items are actually in inventory.
-            craftPostActionWithContinuation(firstStep.itemName(), firstStep.count(), continuation);
-        } else if (firstStep.command() != null && !firstStep.command().isBlank()) {
-            TaskQueue.getInstance().enqueueWithCallback(firstStep.command(), continuation);
+        return coalesced.get(0);
+    }
+
+    static void runNestedCraftGoals(TaskQueue.TaskHandle owner,
+                                   java.util.concurrent.Callable<MakeStep> nextStep) {
+        TaskQueue queue = TaskQueue.getInstance();
+        try {
+            for (int remaining = 50; remaining >= 0; remaining--) {
+                if (Thread.currentThread().isInterrupted() || queue.isCancellationRequested(owner)) return;
+                MakeStep step = nextStep.call();
+                if (step == null) {
+                    queue.complete(owner, "#craft", "craft-goals-met");
+                    return;
+                }
+                if (remaining == 0) throw new IllegalStateException("craft: exceeded max steps");
+                String command = step.kind() == MakeStepKind.CRAFT ? "#craft" : step.command();
+                Runnable callback = step.kind() == MakeStepKind.CRAFT
+                        ? () -> craftPostAction(step.itemName(), step.count()) : null;
+                long child = queue.startNestedCommand(owner, command, "craft", callback);
+                if (child < 0) throw new IllegalStateException("craft: could not start step");
+                TaskQueue.TaskTerminal outcome = queue.awaitTerminal(child, 120_000L);
+                if (!outcome.success()) throw new IllegalStateException("craft step: " + outcome.reason());
+            }
+        } catch (Exception e) {
+            queue.fail(owner, "#craft", e.getMessage());
         }
     }
 
@@ -3391,11 +3431,15 @@ public class CommandExecutor {
     }
 
     private static void craftPostActionWorkerWithContinuation(String itemName, int count, Runnable continuation) {
+        boolean succeeded = false;
+        String failure = "craft: output target not reached";
         try {
+        checkCraftCancellation();
         MinecraftClient client = MinecraftClient.getInstance();
 
         for (int wait = 0; wait < 20; wait++) {
             if (Boolean.TRUE.equals(ClientThread.call(() -> {
+                checkCraftCancellation();
                 ClientPlayerEntity player = client.player;
                 return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
             }))) {
@@ -3404,6 +3448,7 @@ public class CommandExecutor {
             sleep(50);
         }
         if (!Boolean.TRUE.equals(ClientThread.call(() -> {
+            checkCraftCancellation();
             ClientPlayerEntity player = client.player;
             return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
         }))) {
@@ -3426,8 +3471,10 @@ public class CommandExecutor {
             itemKey = itemKey.substring(10);
         }
         final String itemKeyForNormalize = itemKey;
-        String normalizedItemKey = ClientThread.call(() ->
-                normalizeCraftTargetForInventory(client.player, itemKeyForNormalize));
+        String normalizedItemKey = ClientThread.call(() -> {
+            checkCraftCancellation();
+            return normalizeCraftTargetForInventory(client.player, itemKeyForNormalize);
+        });
         if (!normalizedItemKey.equals(itemKey)) {
             sendBridgeMessage("[Bridge] Using " + normalizedItemKey + " instead of " + itemKey
                     + " based on inventory.");
@@ -3444,6 +3491,7 @@ public class CommandExecutor {
 
         for (int attempt = 0; attempt < maxAttempts && craftedTotal < count; attempt++) {
             if (!Boolean.TRUE.equals(ClientThread.call(() -> {
+                checkCraftCancellation();
                 ClientPlayerEntity player = client.player;
                 return player != null && player.currentScreenHandler instanceof CraftingScreenHandler;
             }))) {
@@ -3452,6 +3500,7 @@ public class CommandExecutor {
             }
 
             boolean filled = Boolean.TRUE.equals(ClientThread.call(() -> {
+                checkCraftCancellation();
                 ClientPlayerEntity player = client.player;
                 ClientPlayerInteractionManager im = client.interactionManager;
                 if (player == null || im == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
@@ -3469,6 +3518,7 @@ public class CommandExecutor {
             int resultCount = 0;
             for (int wait = 0; wait < 20; wait++) {
                 resultCount = ClientThread.call(() -> {
+                    checkCraftCancellation();
                     ClientPlayerEntity player = client.player;
                     ClientPlayerInteractionManager im = client.interactionManager;
                     if (player == null || im == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
@@ -3484,6 +3534,7 @@ public class CommandExecutor {
                 craftedTotal += resultCount;
             } else {
                 String gridState = ClientThread.call(() -> {
+                    checkCraftCancellation();
                     ClientPlayerEntity player = client.player;
                     if (player == null || !(player.currentScreenHandler instanceof CraftingScreenHandler)) {
                         return "table closed";
@@ -3497,6 +3548,7 @@ public class CommandExecutor {
         }
         final int finalCraftedTotal = craftedTotal;
         ClientThread.call(() -> {
+            checkCraftCancellation();
             ClientPlayerEntity player = client.player;
             if (player != null) {
                 player.closeHandledScreen();
@@ -3505,12 +3557,31 @@ public class CommandExecutor {
             }
             return null;
         });
+        succeeded = craftedTotal >= count;
+        } catch (RuntimeException e) {
+            failure = "craft: " + e.getMessage();
         } finally {
             sleep(250);
-            TaskQueue.getInstance().completeActiveIf("#craft");
-            if (continuation != null) {
-                continuation.run();
+            TaskQueue queue = TaskQueue.getInstance();
+            if (!queue.isCancellationRequested()) {
+                if (succeeded) {
+                    // Register further work before completion can dispatch the batch suffix.
+                    try {
+                        if (continuation != null) continuation.run();
+                        queue.completeActiveIf("#craft");
+                    } catch (RuntimeException e) {
+                        queue.failActiveIf("#craft", "craft continuation: " + e.getMessage());
+                    }
+                } else {
+                    queue.failActiveIf("#craft", failure);
+                }
             }
+        }
+    }
+
+    private static void checkCraftCancellation() {
+        if (Thread.currentThread().isInterrupted() || TaskQueue.getInstance().isCancellationRequested()) {
+            throw new IllegalStateException("craft: cancelled");
         }
     }
 
@@ -5309,47 +5380,17 @@ public class CommandExecutor {
 
             for (PlanStep step : plan.steps()) {
                 String fullJson = "{\"type\":\"" + step.actionType() + "\"," + step.payloadJson().substring(1);
-                TranslatedAction ta = CommandExecutor.translateTypedJson(fullJson);
-                if (!ta.ok()) {
+                long stepId = TaskQueue.getInstance().startNestedTypedAction(step.actionType(), fullJson);
+                if (stepId < 0L) {
                     TaskQueue.getInstance().failActiveIf("#obtain",
-                        "obtain: step failed - " + step.actionType() + ": " + ta.message());
+                            "obtain: could not start step - " + step.actionType());
                     return;
                 }
-
-                if (ta.genericWorker()) {
-                    Worker worker = ActionRegistry.get().getWorker(ta.actionType());
-                    if (worker == null) {
-                        TaskQueue.getInstance().failActiveIf("#obtain",
-                            "obtain: no worker for " + step.actionType());
-                        return;
-                    }
-                    WorkerContext workerCtx = new WorkerContext(
-                        TaskQueue.getInstance(),
-                        () -> TaskQueue.getInstance().isCancellationRequested(),
-                        fullJson,
-                        ta.actionType()
-                    );
-                    WorkerResult result = worker.execute(fullJson, workerCtx);
-                    if (result == null || !result.ok()) {
-                        TaskQueue.getInstance().failActiveIf("#obtain",
-                            "obtain: worker failed - " + step.actionType() + ": "
-                                + (result == null ? "null worker result" : result.error()));
-                        return;
-                    }
-                } else if ("self_executing".equals(ta.lifecycle())) {
-                    long stepId = TaskQueue.getInstance().createNestedTrackingTask(
-                        "#" + step.actionType(), step.actionType());
-                    if (!obtainWaitForStep(stepId)) {
-                        TaskQueue.getInstance().failActiveIf("#obtain",
-                            "obtain: step timed out - " + step.actionType());
-                        return;
-                    }
-                } else if ("queued".equals(ta.lifecycle()) && ta.command() != null) {
-                    TaskQueue.getInstance().suspendActiveTask();
-                    TaskQueue.getInstance().enqueueDetailed(java.util.List.of(
-                        new TaskQueue.QueuedCommand(ta.command(), ta.actionType())));
-                    obtainWaitForIdle();
-                    TaskQueue.getInstance().restoreSuspendedTask();
+                TaskQueue.TaskTerminal terminal = TaskQueue.getInstance().awaitTerminal(stepId, 120_000L);
+                if (!terminal.success()) {
+                    TaskQueue.getInstance().failActiveIf("#obtain",
+                            "obtain: step failed - " + step.actionType() + ": " + terminal.reason());
+                    return;
                 }
             }
 
@@ -5358,33 +5399,6 @@ public class CommandExecutor {
         }
 
         TaskQueue.getInstance().failActiveIf("#obtain", "obtain: no provider for " + item);
-    }
-
-    private static boolean obtainWaitForStep(long stepId) {
-        long deadline = System.currentTimeMillis() + 120_000L;
-        while (System.currentTimeMillis() < deadline) {
-            TaskQueue.QueueState state = TaskQueue.getInstance().getQueueState();
-            Long activeId = state.activeId();
-            if (activeId == null || activeId != stepId) return true;
-            if ("paused".equals(state.status())) return false;
-            try { Thread.sleep(100); } catch (InterruptedException e) {
-                Thread.currentThread().interrupt(); return false;
-            }
-        }
-        return false;
-    }
-
-    private static void obtainWaitForIdle() {
-        long deadline = System.currentTimeMillis() + 120_000L;
-        while (System.currentTimeMillis() < deadline) {
-            TaskQueue.QueueState state = TaskQueue.getInstance().getQueueState();
-            String status = state.status();
-            if ("idle".equals(status) || "disabled".equals(status)) return;
-            if ("paused".equals(status)) return;
-            try { Thread.sleep(100); } catch (InterruptedException e) {
-                Thread.currentThread().interrupt(); return;
-            }
-        }
     }
 
     private static boolean waitForQueueIdle(long timeoutMs) {
@@ -7384,7 +7398,11 @@ public class CommandExecutor {
     }
 
     public static void sleepQuietly(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public static boolean isHostile(net.minecraft.entity.Entity e) {
@@ -7433,7 +7451,7 @@ public class CommandExecutor {
                     String id;
                     try {
                         BlockState state = world.getBlockState(pos);
-                        id = net.minecraft.registry.Registries.BLOCK.getId(state.getBlock()).toString();
+                        id = BridgeSchematic.serializeState(state);
                     } catch (Throwable t) {
                         id = "minecraft:air";
                     }

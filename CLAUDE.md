@@ -41,7 +41,7 @@ node --test --test-name-pattern="<substr>" test/<file>.test.js   :: a single tes
 - bridge mode → `src/process/init_bridge_agent.js` → `BridgeAgent` (the supported path)
 - legacy → `src/process/init_agent.js` → `Agent` (Mineflayer)
 
-`main.js` installs `uncaughtException`/`unhandledRejection` handlers so a throwing Socket.IO listener can't take down the MindServer and all agents with it — keep that invariant in mind when touching server/listener code.
+`mindserver.js` contains synchronous throws and rejected promises at each Socket.IO listener boundary so a bad request cannot take down all agents. `main.js` treats errors escaping those boundaries as fatal, stops child agents, and exits nonzero. Preserve that distinction when touching server/listener code.
 
 Configuration precedence: `settings.js` defaults → env vars (`MINECRAFT_PORT`, `PROFILES`, `INSECURE_CODING`, `SETTINGS_JSON`, etc., handled in `main.js`) → CLI args (`--profiles`, `--task_path`+`--task_id`). A web console runs on `http://localhost:8080`.
 

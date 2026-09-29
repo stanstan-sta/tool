@@ -10,9 +10,10 @@ public final class ClientThread {
 
     public static <T> T call(Callable<T> action) {
         MinecraftClient client = MinecraftClient.getInstance();
+        TaskQueue.TaskHandle taskHandle = TaskQueue.currentTaskHandle();
         if (client.isOnThread()) {
             try {
-                return action.call();
+                return TaskQueue.withTaskHandle(taskHandle, action);
             } catch (Exception e) {
                 throw new RuntimeException("Minecraft client-thread action failed", e);
             }
@@ -20,7 +21,7 @@ public final class ClientThread {
         CompletableFuture<T> future = new CompletableFuture<>();
         client.execute(() -> {
             try {
-                future.complete(action.call());
+                future.complete(TaskQueue.withTaskHandle(taskHandle, action));
             } catch (Exception e) {
                 future.completeExceptionally(e);
             }

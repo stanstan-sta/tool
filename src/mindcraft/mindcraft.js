@@ -1,4 +1,4 @@
-import { createMindServer, registerAgent, numStateListeners } from './mindserver.js';
+import { createMindServer, registerAgent, numStateListeners, getAccessToken } from './mindserver.js';
 import { AgentProcess } from '../process/agent_process.js';
 import { prepareFabricRuntime } from '../runtime/fabric/create_agent_runtime.js';
 import open from 'open';
@@ -17,11 +17,13 @@ export async function init(host_public=false, port=8080, auto_open_ui=true) {
     mindserver = createMindServer(host_public, port);
     mindserver_port = port;
     connected = true;
+    const dashboardUrl = () => `http://localhost:${mindserver.address()?.port || port}/#token=${getAccessToken()}`;
+    mindserver.once('listening', () => console.log(`Dashboard access link: ${dashboardUrl()}`));
     if (auto_open_ui) {
         setTimeout(() => {
             // check if browser listener is already open
             if (numStateListeners() === 0) {
-                open('http://localhost:'+port);
+                open(dashboardUrl()).catch(error => console.error('Could not open dashboard:', error.message));
             }
         }, 500);
     }
@@ -90,13 +92,13 @@ export function destroyAgent(agentName) {
     }
 }
 
-export function shutdown() {
+export function shutdown(exitCode = 0) {
     console.log('Shutting down');
     for (let agentName in agent_processes) {
         agent_processes[agentName].stop();
     }
     setTimeout(() => {
-        process.exit(0);
+        process.exit(exitCode);
     }, 2000);
 }
 

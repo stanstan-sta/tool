@@ -189,6 +189,7 @@ test('vision inspect screen slot question is answered from open-screen slots wit
             add: (role, content) => addedHistory.push({ role, content }),
         };
         agent.bridge = {
+            getState: () => Promise.resolve({ ...agent._lastState, queue: { status: 'idle' } }),
             async getScreenshot() {
                 throw new Error('slot-backed screen inspect should not capture a screenshot');
             },
@@ -207,7 +208,9 @@ test('vision inspect screen slot question is answered from open-screen slots wit
         assert.equal(result.success, true);
         assert.equal(result.queued, 0);
         assert.equal(result.output, 'Open screen slots: GenericContainerScreenHandler (sync 4): slot 0: 3x oak_log, slot 1: 2x iron_ingot');
-        assert.equal(addedHistory[0].content, 'Vision inspect (inspect_screen_with_vision): Open screen slots: GenericContainerScreenHandler (sync 4): slot 0: 3x oak_log, slot 1: 2x iron_ingot');
+        assert.equal(addedHistory[0].role, 'user');
+        assert.match(addedHistory[0].content, /untrusted data/);
+        assert.match(addedHistory[0].content, /slot 0: 3x oak_log, slot 1: 2x iron_ingot/);
     });
 });
 
@@ -229,6 +232,7 @@ test('look_and_inspect dispatches look_at before screenshot and vision prompt', 
             add: (role, content) => addedHistory.push({ role, content }),
         };
         agent.bridge = {
+            getState: () => Promise.resolve({ connected: true, queue: { status: 'idle' } }),
             async sendBatch(actions) {
                 events.push({ type: 'look', actions });
                 return { success: true, queued: 0, output: 'look_at: set' };
@@ -264,7 +268,8 @@ test('look_and_inspect dispatches look_at before screenshot and vision prompt', 
         assert.equal(result.success, true);
         assert.equal(result.queued, 0);
         assert.equal(result.output, 'The target area has a chest.');
-        assert.equal(addedHistory[0].content, 'Vision inspect (look_and_inspect): The target area has a chest.');
+        assert.equal(addedHistory[0].role, 'user');
+        assert.match(addedHistory[0].content, /The target area has a chest/);
     });
 });
 
@@ -274,6 +279,7 @@ test('vision inspect relays unsupported marker without screenshot capture', asyn
     agent.prompter = { vision_model: {} };
     agent.history = { add() {} };
     agent.bridge = {
+        getState: () => Promise.resolve({ connected: true, queue: { status: 'idle' } }),
         async getScreenshot() {
             throw new Error('should not capture without vision support');
         },

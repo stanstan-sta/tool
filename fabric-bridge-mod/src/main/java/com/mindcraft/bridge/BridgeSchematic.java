@@ -4,12 +4,18 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.Registries;
+import net.minecraft.state.property.Property;
 import net.minecraft.util.Identifier;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * In-memory schematic that implements Baritone's
@@ -27,6 +33,8 @@ import java.util.List;
 public final class BridgeSchematic {
 
     private BridgeSchematic() {}
+
+    record StateDescriptor(String blockId, Map<String, String> properties) {}
 
     /**
      * Build a proxy of {@code baritone.api.schematic.ISchematic} from the given
@@ -53,7 +61,7 @@ public final class BridgeSchematic {
         // Resolve palette once, in advance. Missing identifiers fall back to air.
         BlockState[] paletteStates = new BlockState[paletteIds.size()];
         for (int i = 0; i < paletteIds.size(); i++) {
-            paletteStates[i] = resolveBlock(paletteIds.get(i));
+            paletteStates[i] = resolveState(paletteIds.get(i));
         }
 
         Class<?> iface;
@@ -78,18 +86,76 @@ public final class BridgeSchematic {
         }
     }
 
-    private static BlockState resolveBlock(String id) {
-        if (id == null || id.isBlank()) return Blocks.AIR.getDefaultState();
-        String normalized = id.contains(":") ? id : ("minecraft:" + id);
+    static BlockState resolveState(String descriptor) {
+        BlockState parsed = parseState(descriptor);
+        return parsed != null ? parsed : Blocks.AIR.getDefaultState();
+    }
+
+    static BlockState parseState(String descriptor) {
+        StateDescriptor parsedDescriptor = parseDescriptor(descriptor);
+        if (parsedDescriptor == null) return null;
         try {
-            Identifier ident = Identifier.tryParse(normalized);
-            if (ident == null) return Blocks.AIR.getDefaultState();
+            Identifier ident = Identifier.tryParse(parsedDescriptor.blockId());
+            if (ident == null) return null;
             Block block = Registries.BLOCK.get(ident);
-            if (block == null || block == Blocks.AIR) return Blocks.AIR.getDefaultState();
-            return block.getDefaultState();
+            if (block == null) return null;
+            BlockState state = block.getDefaultState();
+            for (Map.Entry<String, String> assignment : parsedDescriptor.properties().entrySet()) {
+                Property<?> property = block.getStateManager().getProperty(assignment.getKey());
+                if (property == null) return null;
+                state = withParsedProperty(state, property, assignment.getValue());
+                if (state == null) return null;
+            }
+            return state;
         } catch (Throwable t) {
-            return Blocks.AIR.getDefaultState();
+            return null;
         }
+    }
+
+    static StateDescriptor parseDescriptor(String descriptor) {
+        if (descriptor == null || descriptor.isBlank()) return null;
+        String value = descriptor.trim();
+        int bracket = value.indexOf('[');
+        String id = bracket >= 0 ? value.substring(0, bracket) : value;
+        String normalized = id.contains(":") ? id : ("minecraft:" + id);
+        if (Identifier.tryParse(normalized) == null) return null;
+        Map<String, String> properties = new LinkedHashMap<>();
+        if (bracket < 0) return new StateDescriptor(normalized, properties);
+        if (!value.endsWith("]") || bracket == value.length() - 1) return null;
+        String assignments = value.substring(bracket + 1, value.length() - 1);
+        if (assignments.isBlank()) return new StateDescriptor(normalized, properties);
+        for (String assignment : assignments.split(",")) {
+            String[] parts = assignment.split("=", 2);
+            if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) return null;
+            if (properties.put(parts[0].trim(), parts[1].trim()) != null) return null;
+        }
+        return new StateDescriptor(normalized, properties);
+    }
+
+    private static <T extends Comparable<T>> BlockState withParsedProperty(
+            BlockState state, Property<T> property, String value) {
+        Optional<T> parsed = property.parse(value);
+        return parsed.map(entry -> state.with(property, entry)).orElse(null);
+    }
+
+    static String serializeState(BlockState state) {
+        if (state == null) return "minecraft:air";
+        String id = Registries.BLOCK.getId(state.getBlock()).toString();
+        List<Map.Entry<Property<?>, Comparable<?>>> entries = new ArrayList<>(state.getEntries().entrySet());
+        entries.sort(Comparator.comparing(entry -> entry.getKey().getName()));
+        if (entries.isEmpty()) return id;
+        StringBuilder out = new StringBuilder(id).append('[');
+        for (int i = 0; i < entries.size(); i++) {
+            if (i > 0) out.append(',');
+            Map.Entry<Property<?>, Comparable<?>> entry = entries.get(i);
+            out.append(entry.getKey().getName()).append('=').append(propertyValue(entry));
+        }
+        return out.append(']').toString();
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static String propertyValue(Map.Entry<Property<?>, Comparable<?>> entry) {
+        return ((Property) entry.getKey()).name(entry.getValue());
     }
 
     /**

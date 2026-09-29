@@ -454,7 +454,7 @@ test('BridgeAgent refreshes semantic examples into non-structured prompt before 
         }
     };
     // Static rules live in the stable prefix (conversing); per-turn retrieved
-    // content is appended as a trailing system message to the messages array.
+    // content is appended as labelled user data to the messages array.
     let capturedMessages = null;
     agent.prompter = {
         profile: { conversing: 'STABLE PREFIX\n\nCORE ACTION RULES placeholder' },
@@ -466,11 +466,13 @@ test('BridgeAgent refreshes semantic examples into non-structured prompt before 
 
     const response = await agent._runPromptConvoNow(1, 'smoke', [...agent.history.turns], { mode: 'queue' });
 
-    // The dynamic block was appended as the final system message.
-    const trailing = capturedMessages[capturedMessages.length - 1];
-    assert.equal(trailing.role, 'system');
+    // Retrieved memory/examples cannot gain system-role authority.
+    const trailing = capturedMessages.find(message => message.content.startsWith('Retrieved context'));
+    assert.equal(trailing.role, 'user');
+    assert(trailing.content.includes('untrusted data'));
+    const retrieved = JSON.parse(trailing.content.split('```json\n')[1].split('\n```')[0]);
     assert(trailing.content.includes('BRIDGE EXAMPLES'));
-    assert(trailing.content.includes('Sleep: {"reply":"Going to bed."'));
+    assert(retrieved.includes('Sleep: {"reply":"Going to bed."'));
     assert(trailing.content.includes('BRIDGE GUIDANCE PACKS'));
     assert(trailing.content.includes('Use sleep_try for simple sleep requests.'));
     // The retrieved content reaches the model (full prompt = prefix + messages).

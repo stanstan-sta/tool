@@ -28,16 +28,15 @@ final class StructureValidator {
                         if (paletteIdx < 0 || paletteIdx >= paletteIds.size()) continue;
                         String expected = paletteIds.get(paletteIdx);
                         if (expected == null) continue;
-                        String stripped = ItemIds.strip(expected);
-                        if ("air".equals(stripped) || "cave_air".equals(stripped)
-                                || "void_air".equals(stripped)) continue;
+                        BlockState expectedState = BridgeSchematic.parseState(expected);
+                        if (expectedState != null && expectedState.isAir()) continue;
 
                         mutable.set(origin.getX() + x, origin.getY() + y, origin.getZ() + z);
-                        String actual = ItemIds.fromBlock(
-                                client.world.getBlockState(mutable).getBlock());
-                        if (!actual.equals(expected)) {
+                        BlockState actualState = client.world.getBlockState(mutable);
+                        if (expectedState == null || !actualState.equals(expectedState)) {
                             mismatches.add(new BlockMismatch(
-                                    mutable.toImmutable(), expected, actual));
+                                    mutable.toImmutable(), expected,
+                                    BridgeSchematic.serializeState(actualState)));
                         }
                     }
                 }

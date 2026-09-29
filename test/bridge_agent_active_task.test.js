@@ -880,7 +880,9 @@ test('cancel handoff provides current policy, idle state, recent history and use
         await agent._handleActiveTaskMessage('Alex', 'go back there instead', { queue: { status: 'executing', active: '#mine iron_ore' } }, 7);
         assert.match(sent[0].content, /Authoritative decision: cancel_replace/);
         assert.match(sent[0].content, /Cancellation succeeded/);
-        assert.match(sent[0].content, /Queue status: idle/);
+        assert.equal(sent[0].name, 'bridge_policy');
+        assert.equal(sent[1].role, 'user');
+        assert.match(sent[1].content, /\\"status\\":\\"idle\\"/);
         assert.ok(sent.some(turn => turn.content.includes('red house')));
         assert.deepEqual(sent.at(-1), { role: 'user', content: 'Alex: go back there instead' });
         assert.ok(!sent[0].content.includes('go back there instead'));

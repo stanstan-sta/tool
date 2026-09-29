@@ -34,6 +34,25 @@ function qualify(id) {
     return id.includes(':') ? id : `minecraft:${id}`;
 }
 
+function withState(id, properties) {
+    const qualified = qualify(id);
+    const bracket = qualified.indexOf('[');
+    const blockId = bracket >= 0 ? qualified.slice(0, bracket) : qualified;
+    const existing = {};
+    if (bracket >= 0 && qualified.endsWith(']')) {
+        for (const entry of qualified.slice(bracket + 1, -1).split(',')) {
+            const [key, value] = entry.split('=', 2);
+            if (key && value) existing[key.trim()] = value.trim();
+        }
+    }
+    const merged = { ...existing, ...properties };
+    const suffix = Object.entries(merged)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${key}=${value}`)
+        .join(',');
+    return suffix ? `${blockId}[${suffix}]` : blockId;
+}
+
 function resolvePalette(biome, override = {}) {
     const base = BIOME_PALETTES[biome] || BIOME_PALETTES.plains;
     return {
@@ -138,8 +157,8 @@ export function cabinTemplate(opts = {}) {
     // door in the template. Otherwise Baritone places the door, sees the upper
     // half in the world, sees air in the schematic, and breaks the door.
     const doorX = Math.floor(w / 2);
-    s.set(doorX, 1, 0, palette.door);
-    s.set(doorX, 2, 0, palette.door);
+    s.set(doorX, 1, 0, withState(palette.door, { facing: 'south', half: 'lower' }));
+    s.set(doorX, 2, 0, withState(palette.door, { facing: 'south', half: 'upper' }));
 
     // Roof cap (y=h-1): pitched via simple stepped shape = full cover of roof mat.
     for (let x = 0; x < w; x++) {
@@ -155,8 +174,8 @@ export function cabinTemplate(opts = {}) {
     const cx = Math.floor(w / 2);
     const cz = Math.floor(l / 2);
     // Bed (two blocks in +X direction from interior corner).
-    s.set(2, 1, 2, palette.bed);
-    s.set(3, 1, 2, palette.bed);
+    s.set(2, 1, 2, withState(palette.bed, { facing: 'east', part: 'foot' }));
+    s.set(3, 1, 2, withState(palette.bed, { facing: 'east', part: 'head' }));
     // Crafting table
     s.set(w - 3, 1, 2, palette.craft);
     // Furnace
@@ -239,14 +258,14 @@ export function towerTemplate(opts = {}) {
     // Ground floor door (south). Both halves must be marked as door — if we
     // leave the upper half as air, Baritone breaks the door the tick after
     // placing it (schematic said air, door's upper half is not-air).
-    s.set(2, 1, 0, palette.door);
-    s.set(2, 2, 0, palette.door);
+    s.set(2, 1, 0, withState(palette.door, { facing: 'south', half: 'lower' }));
+    s.set(2, 2, 0, withState(palette.door, { facing: 'south', half: 'upper' }));
 
     // Ground-floor fixtures
     s.set(1, 1, 1, palette.torch);
     s.set(w - 2, 1, 1, palette.torch);
-    s.set(1, 1, l - 2, palette.bed);
-    s.set(2, 1, l - 2, palette.bed);
+    s.set(1, 1, l - 2, withState(palette.bed, { facing: 'east', part: 'foot' }));
+    s.set(2, 1, l - 2, withState(palette.bed, { facing: 'east', part: 'head' }));
     s.set(w - 2, 1, l - 2, palette.craft);
 
     // Second floor (if present) — furnace + chest
@@ -298,13 +317,13 @@ export function pitTemplate(opts = {}) {
         for (let z = 0; z < l; z++) s.set(x, h - 1, z, palette.roof);
     }
     // Door (south). Both halves must be marked as door — see cabin template comment.
-    s.set(2, 1, 0, palette.door);
-    s.set(2, 2, 0, palette.door);
+    s.set(2, 1, 0, withState(palette.door, { facing: 'south', half: 'lower' }));
+    s.set(2, 2, 0, withState(palette.door, { facing: 'south', half: 'upper' }));
     // Corner torches + bed + crafting table
     s.set(1, 1, 1, palette.torch);
     s.set(w - 2, 1, 1, palette.torch);
-    s.set(1, 1, l - 2, palette.bed);
-    s.set(2, 1, l - 2, palette.bed);
+    s.set(1, 1, l - 2, withState(palette.bed, { facing: 'east', part: 'foot' }));
+    s.set(2, 1, l - 2, withState(palette.bed, { facing: 'east', part: 'head' }));
     s.set(w - 2, 1, l - 2, palette.craft);
 
     return {

@@ -69,11 +69,11 @@ public class ActionRegistry {
             new String[]{"item", "slot"}, new String[]{}, "Equip item to armor slot"));
         registerSpec(new ActionSpec("equip_best", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{}, new String[]{"slot"}, "Equip best weapon from inventory"));
-        registerSpec(new ActionSpec("use_item", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+        registerSpec(new ActionSpec("use_item", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"item"}, new String[]{}, "Use item in hand"));
-        registerSpec(new ActionSpec("consume", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+        registerSpec(new ActionSpec("consume", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"item"}, new String[]{}, "Consume food/potion"));
-        registerSpec(new ActionSpec("drop_items", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+        registerSpec(new ActionSpec("drop_items", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"item"}, new String[]{"count"}, "Drop items from inventory"));
         registerSpec(new ActionSpec("pickup_items", "bridge", ActionLifecycle.QUEUED, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{}, new String[]{"radius"}, "Pick up nearby items"));
@@ -81,7 +81,7 @@ public class ActionRegistry {
             new String[]{"x", "y", "z"}, new String[]{}, "Open block screen"));
         registerSpec(new ActionSpec("close_screen", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{}, new String[]{}, "Close open screen"));
-        registerSpec(new ActionSpec("transfer_items", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
+        registerSpec(new ActionSpec("transfer_items", "bridge", ActionLifecycle.SELF_EXECUTING, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"item", "count", "from_slot", "to_slot"}, new String[]{}, "Transfer items between slots"));
         registerSpec(new ActionSpec("screen_click_slot", "bridge", ActionLifecycle.IMMEDIATE, ActionVisibility.PUBLIC, DispatchKind.EXPLICIT,
             new String[]{"slot"}, new String[]{"button", "action", "sync_id"}, "Click a slot in the currently open screen"));

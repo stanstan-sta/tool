@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { logoutAgent } from '../mindcraft/mindserver.js';
+import { logoutAgent, issueAgentToken } from '../mindcraft/mindserver.js';
 
 export class AgentProcess {
     constructor(name, port, bridge_mode = false) {
@@ -27,6 +27,7 @@ export class AgentProcess {
         args.push('-p', this.port);
 
         const agentProcess = spawn('node', args, {
+            env: { ...process.env, MINDSERVER_TOKEN: issueAgentToken(this.name) },
             stdio: 'inherit',
             stderr: 'inherit',
         });

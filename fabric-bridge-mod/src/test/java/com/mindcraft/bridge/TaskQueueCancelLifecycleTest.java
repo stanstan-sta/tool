@@ -56,7 +56,8 @@ class TaskQueueCancelLifecycleTest {
     void trackingTaskCompleteActiveIfMatches() {
         long id = queue.createActiveTrackingTask("#test_cmd", "test_type");
         assertTrue(id > 0, "tracking task must be created");
-        assertTrue(queue.completeActiveIf("#test_cmd"), "completeActiveIf must match same command");
+        TaskQueue.TaskHandle handle = queue.captureActiveHandle("#test_cmd");
+        assertTrue(queue.complete(handle, "#test_cmd", "test"), "task handle must match same command");
         TaskQueue.QueueState state = queue.getQueueState();
         assertEquals("idle", state.status(), "task must be completed after match");
     }
@@ -66,7 +67,8 @@ class TaskQueueCancelLifecycleTest {
     void trackingTaskCompleteActiveIfMismatch() {
         long id = queue.createActiveTrackingTask("#cmd_x", "test_type");
         assertTrue(id > 0, "tracking task must be created");
-        assertFalse(queue.completeActiveIf("#cmd_y"), "completeActiveIf with wrong command must fail");
+        TaskQueue.TaskHandle handle = queue.captureActiveHandle("#cmd_x");
+        assertFalse(queue.complete(handle, "#cmd_y", "test"), "completion with wrong command must fail");
         TaskQueue.QueueState state = queue.getQueueState();
         assertEquals("executing", state.status(), "task must still be active after mismatch");
         queue.dismissActiveTask(id);
@@ -77,7 +79,8 @@ class TaskQueueCancelLifecycleTest {
     void trackingTaskFailActiveIfMatches() {
         long id = queue.createActiveTrackingTask("#test_cmd", "test_type");
         assertTrue(id > 0, "tracking task must be created");
-        assertTrue(queue.failActiveIf("#test_cmd", "test failure"), "failActiveIf must match same command");
+        TaskQueue.TaskHandle handle = queue.captureActiveHandle("#test_cmd");
+        assertTrue(queue.fail(handle, "#test_cmd", "test failure"), "task handle must match same command");
         TaskQueue.QueueState state = queue.getQueueState();
         assertEquals("paused", state.status(), "task must be paused after failure match");
         assertEquals("test failure", state.lastFailure(), "lastFailure must be set");
@@ -88,7 +91,8 @@ class TaskQueueCancelLifecycleTest {
     void trackingTaskFailActiveIfMismatch() {
         long id = queue.createActiveTrackingTask("#cmd_x", "test_type");
         assertTrue(id > 0, "tracking task must be created");
-        assertFalse(queue.failActiveIf("#cmd_y", "test failure"), "failActiveIf with wrong command must fail");
+        TaskQueue.TaskHandle handle = queue.captureActiveHandle("#cmd_x");
+        assertFalse(queue.fail(handle, "#cmd_y", "test failure"), "failure with wrong command must fail");
         TaskQueue.QueueState state = queue.getQueueState();
         assertEquals("executing", state.status(), "task must still be active after mismatch");
         queue.dismissActiveTask(id);

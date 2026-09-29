@@ -151,7 +151,8 @@ class ProviderLedgerAuditTest {
         assertEquals(TaskQueue.EnqueueStatus.QUEUED, movement.status());
         assertEquals(1, movement.queued());
 
-        assertTrue(queue.failActiveIf("#return_to_overworld", "portal_travel: dimension change timeout"));
+        TaskQueue.TaskHandle handle = queue.captureActiveHandle("#return_to_overworld");
+        assertTrue(queue.fail(handle, "#return_to_overworld", "portal_travel: dimension change timeout"));
         TaskQueue.QueueState state = queue.getQueueState();
 
         assertEquals("paused", state.status());
