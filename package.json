@@ -23,7 +23,7 @@
         "node-canvas-webgl": "0.3.0",
         "node-llama-cpp": "3.18.1",
         "open": "10.2.0",
-        "openai": "4.4.0",
+        "openai": "7.23.0",
         "prismarine-item": "1.15.0",
         "prismarine-viewer": "1.33.0",
         "replicate": "0.29.4",
