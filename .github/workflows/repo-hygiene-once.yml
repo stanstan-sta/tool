@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  generate-lock-and-autofix:
+  generate-lock-and-safe-autofix:
     if: github.event.head_commit.message == 'Run one-off repository hygiene'
     runs-on: ubuntu-latest
     steps:
@@ -25,10 +25,13 @@ jobs:
       - name: Install exact dependencies and generate lockfile
         run: npm install
 
-      - name: Apply safe ESLint autofixes
-        run: npx eslint src test main.js --fix || true
+      - name: Baseline tests after clean install
+        run: node --test test/*.test.js
 
-      - name: Run Node tests after autofix
+      - name: Apply layout-only ESLint autofixes
+        run: npx eslint src test main.js --fix --fix-type layout || true
+
+      - name: Run Node tests after safe autofix
         run: node --test test/*.test.js
 
       - name: Record remaining lint count
@@ -44,7 +47,7 @@ jobs:
           console.log(`Remaining ESLint errors: ${errors}; fixable: ${fixable}`);
           NODE
 
-      - name: Commit generated lockfile and autofixes
+      - name: Commit generated lockfile and safe autofixes
         shell: bash
         run: |
           rm -f eslint-after.json
@@ -55,5 +58,5 @@ jobs:
             echo "No generated changes."
             exit 0
           fi
-          git commit -m "Generate lockfile and apply ESLint autofixes [skip hygiene]"
+          git commit -m "Generate lockfile and apply safe ESLint autofixes [skip hygiene]"
           git push origin HEAD:beta
