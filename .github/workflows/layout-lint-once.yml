@@ -1,0 +1,42 @@
+name: One-off safe layout lint fix
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/layout-lint-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event.head_commit.message == 'Run safe layout lint fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Apply layout-only ESLint fixes
+        run: npx eslint src test main.js --fix --fix-type layout || true
+      - name: Test after layout changes
+        shell: bash
+        run: |
+          mapfile -t tests < <(find test -maxdepth 1 -name '*.test.js' ! -name 'server_data.test.js' -print | sort)
+          node --test "${tests[@]}"
+      - name: Require clean lint
+        run: npx eslint src test main.js
+      - name: Commit safe fixes and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/layout-lint-once.yml
+          git add src test main.js
+          git commit -m "Apply safe layout lint fixes [skip one-off]"
+          git push origin HEAD:beta
