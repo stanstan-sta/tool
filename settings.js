@@ -65,7 +65,7 @@ const settings = {
     "language": "en", // translate to/from this language
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
-    "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
+    "allow_insecure_coding": false, // legacy Mineflayer code generation is opt-in; generated code can control the bot and should not be enabled by default
     "allow_vision": true, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "use_baritone": true, // enable Baritone bridge commands (!baritoneGoto, !baritoneCancel, etc.). Requires a Baritone-enabled Minecraft client or server plugin.

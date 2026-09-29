@@ -193,6 +193,20 @@ npm run reinstall
 
 Delete `node_modules` and `package-lock.json`, then reinstall.
 
+### Optional System One server
+
+The System One helper no longer contains machine-specific executable or model paths in `package.json`.
+Set them in your environment before starting it:
+
+```bat
+set LLAMA_SERVER_PATH=C:\\path\\to\\llama-server.exe
+set DECIDER_MODEL_PATH=C:\\path\\to\\decider-2b-q8_0.gguf
+npm run system-one:serve
+```
+
+Optional environment variables are `SYSTEM_ONE_PORT`, `SYSTEM_ONE_HOST`, `SYSTEM_ONE_NGL`,
+`SYSTEM_ONE_CONTEXT`, and `SYSTEM_ONE_PARALLEL`.
+
 ## Main Config Files
 
 - `settings.js` - runtime mode, bridge URL, enabled profiles, chat settings, safety flags

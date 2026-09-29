@@ -1,7 +1,6 @@
 .vscode/
 .idea/
 node_modules/
-package-lock.json
 code_records/
 scratch.js
 bots/**/action-code/**
@@ -33,3 +32,9 @@ src/mindcraft-py/__pycache__/
 **/.gradle/
 *.log.gz
 test-results/
+
+# Generated build output / extracted dependency debris
+**/bin/
+fabric-bridge-mod/*.jar
+fabric-bridge-mod/META-INF/
+fabric-bridge-mod/temp_fabric_api_extract/

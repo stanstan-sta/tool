@@ -5,11 +5,17 @@ import 'ses';
 
 // For configuration, see https://github.com/endojs/endo/blob/master/packages/ses/docs/lockdown.md
 
+const sesLockdown = globalThis.lockdown;
+if (typeof sesLockdown !== 'function') {
+  throw new Error('SES failed to install globalThis.lockdown');
+}
+
 let lockeddown = false;
 export function lockdown() {
   if (lockeddown) return;
-  lockeddown = true;
-  lockdown({
+  // Call the SES global captured above. Calling `lockdown` here would recurse
+  // into this wrapper because the exported function shadows the SES global.
+  sesLockdown({
     // basic devex and quality of life improvements
     localeTaming: 'unsafe',
     consoleTaming: 'unsafe',
@@ -19,6 +25,7 @@ export function lockdown() {
     // (mineflayer dep "protodef" uses eval)
     evalTaming: 'unsafeEval',
   });
+  lockeddown = true;
 }
 
 export const makeCompartment = (endowments = {}) => {
