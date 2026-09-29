@@ -31,7 +31,6 @@ jobs:
         run: |
           set +e
           npx eslint src test main.js -f json > eslint-report.json
-          status=$?
           set -e
           node - <<'NODE'
           const fs = require('fs');
@@ -46,14 +45,13 @@ jobs:
               if (m.severity !== 2) continue;
               const key = m.ruleId || 'parse';
               byRule.set(key, (byRule.get(key) || 0) + 1);
+              console.log(`LINT ${row.filePath}:${m.line || 0}:${m.column || 0} [${key}] ${m.message}`);
             }
           }
           console.log('ESLint total errors:', total);
           console.log('By rule:', [...byRule.entries()].sort((a,b)=>b[1]-a[1]));
           console.log('Top files:', byFile.sort((a,b)=>b[1]-a[1]).slice(0,40));
-          if (total > 0) process.exit(2);
           NODE
-          exit $status
       - name: Fabric Java tests
         shell: bash
         run: |
@@ -62,3 +60,5 @@ jobs:
           ./gradlew test --no-daemon
       - name: Whitespace check
         run: git diff --check HEAD^ HEAD
+      - name: Final lint gate
+        run: npx eslint src test main.js
