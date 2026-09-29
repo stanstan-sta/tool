@@ -1,0 +1,55 @@
+name: One-off OpenAI SDK compatibility upgrade
+
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/openai-sdk-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    if: github.event.head_commit.message == 'Validate OpenAI SDK compatibility'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Upgrade official OpenAI SDK exactly
+        run: npm install openai@7.23.0 --save-exact
+      - name: Verify required SDK surfaces
+        run: |
+          node --input-type=module - <<'NODE'
+          import OpenAI, { AzureOpenAI } from 'openai';
+          const core = new OpenAI({ apiKey: 'test-key' });
+          if (typeof AzureOpenAI !== 'function') throw new Error('AzureOpenAI export missing');
+          if (typeof core.responses?.create !== 'function') throw new Error('Responses API surface missing');
+          if (typeof core.chat?.completions?.create !== 'function') throw new Error('Chat Completions surface missing');
+          if (typeof core.embeddings?.create !== 'function') throw new Error('Embeddings surface missing');
+          NODE
+      - name: Clean install from generated lockfile
+        run: |
+          rm -rf node_modules
+          npm ci
+      - name: Full Node suite
+        shell: bash
+        run: |
+          mapfile -t tests < <(find test -maxdepth 1 -name '*.test.js' ! -name 'server_data.test.js' -print | sort)
+          node --test "${tests[@]}"
+      - name: Lint
+        run: npx eslint src test main.js
+      - name: Commit SDK and lockfile
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/openai-sdk-once.yml
+          git add package.json package-lock.json
+          git commit -m "Upgrade OpenAI SDK for Azure and Responses compatibility [skip openai-once]"
+          git push origin HEAD:beta
