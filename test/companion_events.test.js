@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BridgeAgent } from '../src/bridge/bridge_agent.js';
+import settings from '../src/agent/settings.js';
 
 const COMPANION_EVENT = {
     v: 1, type: 'event', kind: 'player_death', player: 'Alex', cause: 'fall',
@@ -36,6 +37,8 @@ function companionAgent(polls, historyAdds) {
 }
 
 test('a drained companion event is observed exactly once (no loss, no double-act)', async () => {
+    const previous = settings.bridge_server_data_enabled;
+    settings.bridge_server_data_enabled = true;
     const historyAdds = [];
     const fullState = {
         connected: true, seq: 7, player_name: 'TestBot', unchanged: false,
@@ -62,9 +65,12 @@ test('a drained companion event is observed exactly once (no loss, no double-act
 
     assert.deepEqual(agent._lastState.server_events ?? [], [],
         'consumed companion events must not linger for re-observation');
+    settings.bridge_server_data_enabled = previous;
 });
 
 test('observation poll drains (it must be the explicit drain consumer)', async () => {
+    const previous = settings.bridge_server_data_enabled;
+    settings.bridge_server_data_enabled = true;
     const historyAdds = [];
     const seenOptions = [];
     const agent = Object.create(BridgeAgent.prototype);
@@ -103,4 +109,31 @@ test('observation poll drains (it must be the explicit drain consumer)', async (
     assert.ok(seenOptions.length >= 1);
     assert.notEqual(seenOptions[0].drainChat, false,
         'observation poll must drain so the event is seen; peek reads must stay non-destructive');
+    settings.bridge_server_data_enabled = previous;
+});
+
+test('server companion events are discarded without prompt/history injection when feature is disabled', async () => {
+    const previous = settings.bridge_server_data_enabled;
+    settings.bridge_server_data_enabled = false;
+    try {
+        const historyAdds = [];
+        const fullState = {
+            connected: true, seq: 11, player_name: 'TestBot', unchanged: false,
+            chat: [], chat_events: [], recent_events: [],
+            server_events: [{ ...COMPANION_EVENT }],
+            queue: { status: 'idle' },
+        };
+        const { agent } = companionAgent([fullState], historyAdds);
+        await agent._runObservationCycle();
+
+        assert.equal(
+            historyAdds.filter(e => typeof e.content === 'string' && e.content.includes('player_death')).length,
+            0,
+            'disabled server-data feature must not inject companion events into history',
+        );
+        assert.deepEqual(agent._lastState.server_events ?? [], [],
+            'already-drained events are discarded so unchanged merges cannot resurrect them');
+    } finally {
+        settings.bridge_server_data_enabled = previous;
+    }
 });

@@ -1816,28 +1816,37 @@ export class BridgeAgent {
             // resurrects the stale array.
             const companionEvents = getServerEvents(state);
             if (companionEvents.length > 0) {
-                this._seenCompanionEvents = this._seenCompanionEvents || new Set();
-                for (const raw of companionEvents) {
-                    let evt = raw;
-                    if (typeof evt === 'string') {
-                        try { evt = JSON.parse(evt); } catch { continue; }
-                    }
-                    if (!evt || typeof evt !== 'object') continue;
-                    const key = JSON.stringify(evt);
-                    if (this._seenCompanionEvents.has(key)) continue;
-                    this._seenCompanionEvents.add(key);
-                    if (this._seenCompanionEvents.size > 200) {
-                        const oldest = this._seenCompanionEvents.values().next().value;
-                        this._seenCompanionEvents.delete(oldest);
-                    }
-                    const label = String(evt.kind || evt.type || 'server_event');
-                    const detail = JSON.stringify(evt).slice(0, 2000);
-                    sendLogToUI(`${this.name}: companion event ${label}`);
-                    console.log(`${this.name} companion event: ${detail}`);
-                    if (this.history && typeof this.history.add === 'function') {
-                        this.history.add('user', untrustedContext(`Companion event ${label}`, detail));
+                // bridge_server_data_enabled is the explicit opt-in for all
+                // server-companion data. The observation poll still drains the
+                // mod queue, but disabled data is discarded instead of being
+                // injected into history or reasoning context.
+                if (settings.bridge_server_data_enabled === true) {
+                    this._seenCompanionEvents = this._seenCompanionEvents || new Set();
+                    for (const raw of companionEvents) {
+                        let evt = raw;
+                        if (typeof evt === 'string') {
+                            try { evt = JSON.parse(evt); } catch { continue; }
+                        }
+                        if (!evt || typeof evt !== 'object') continue;
+                        const key = JSON.stringify(evt);
+                        if (this._seenCompanionEvents.has(key)) continue;
+                        this._seenCompanionEvents.add(key);
+                        if (this._seenCompanionEvents.size > 200) {
+                            const oldest = this._seenCompanionEvents.values().next().value;
+                            this._seenCompanionEvents.delete(oldest);
+                        }
+                        const label = String(evt.kind || evt.type || 'server_event');
+                        const detail = JSON.stringify(evt).slice(0, 2000);
+                        sendLogToUI(`${this.name}: companion event ${label}`);
+                        console.log(`${this.name} companion event: ${detail}`);
+                        if (this.history && typeof this.history.add === 'function') {
+                            this.history.add('user', untrustedContext(`Companion event ${label}`, detail));
+                        }
                     }
                 }
+                // The response was a destructive observation read. Clear the
+                // merged copy even when the feature is disabled so a later
+                // unchanged poll cannot resurrect already-drained events.
                 state.server_events = [];
                 if (this._lastState) this._lastState.server_events = [];
             }
@@ -2490,23 +2499,43 @@ export class BridgeAgent {
         this.history.add(this.name, response);
 
         if (/"goal_done"\s*:\s*true/i.test(response)) {
-            // F3: verify the claim against current inventory before clearing.
-            // A text-only goal (no target) has no inventory check and keeps
-            // the historical claim-completes behavior.
+            // F3: target-bearing claims are verified against a fresh,
+            // non-destructive state read taken AFTER inference. The state
+            // passed into this tick can be seconds old by the time the model
+            // replies, so using it can falsely defer work that completed while
+            // inference was running.
             const claimed = this.goalManager.goal;
             const hasTarget = !!claimed?.target && Number(claimed.target.count) > 0;
+            let verificationState = state;
+            if (hasTarget) {
+                let fresh = null;
+                try {
+                    fresh = await this.bridge.getState(null, { drainChat: false });
+                } catch {
+                    // Fail closed below.
+                }
+                if (!this._isGenerationCurrent(generation) || this.goalManager?.goal !== claimed) return;
+                if (!fresh?.connected) {
+                    // A missing verification snapshot is not evidence that the
+                    // model lied. Preserve the goal and retry on a later tick.
+                    this.history.add('system', 'goal_done could not be verified because fresh state was unavailable.');
+                    return;
+                }
+                verificationState = fresh;
+            }
+
             let verified = !hasTarget;
             if (hasTarget) {
                 if (claimed.origin === 'curriculum' && typeof this.curriculum?.isGoalMet === 'function') {
-                    verified = this.curriculum.isGoalMet(claimed, state?.inventory);
+                    verified = this.curriculum.isGoalMet(claimed, verificationState?.inventory);
                 } else {
-                    verified = this.goalManager.checkCompletion(state);
+                    verified = this.goalManager.checkCompletion(verificationState);
                 }
             }
+
             if (!verified) {
                 // Never fabricate success from the LLM goal_done string: the
-                // open record retires with NO verification-as-success either
-                // way.
+                // open record retires with NO verification-as-success.
                 this._retireTaskRecord('goal-done-claimed');
                 if (claimed && claimed.origin === 'curriculum') {
                     // Cool the milestone down so it is not re-proposed
@@ -2522,8 +2551,6 @@ export class BridgeAgent {
             if (claimed && claimed.origin === 'curriculum') {
                 try { this.curriculum.markComplete(claimed.text); } catch { /* non-fatal */ }
             }
-            // Never fabricate success from the LLM goal_done string: the open
-            // record retires with NO verification-as-success either way.
             this._retireTaskRecord('goal-done-claimed');
             this._announceGoal(`Goal complete: ${claimed.text}`);
             this.goalManager.clear();

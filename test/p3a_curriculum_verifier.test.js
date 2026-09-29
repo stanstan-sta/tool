@@ -51,7 +51,7 @@ const idleState = () => ({
 });
 
 // Minimal harness running the REAL goal/curriculum/tick methods.
-function makeAgent({ goalManager, prompt = async () => '', curriculum = null } = {}) {
+function makeAgent({ goalManager, prompt = () => Promise.resolve(''), curriculum = null, freshState = null } = {}) {
     const agent = Object.create(BridgeAgent.prototype);
     const historyEntries = [];
     const llmCalls = [];
@@ -102,7 +102,7 @@ function makeAgent({ goalManager, prompt = async () => '', curriculum = null } =
         },
         bridge: {
             async cancelQueue() { return { success: true }; },
-            async getState() { return agent._lastState; },
+            async getState() { return freshState || agent._lastState; },
             async getQueueState() { return { status: 'idle', pending: 0, paused: false }; },
         },
     });
@@ -176,6 +176,62 @@ test('N1: mined-drop verification passes end to end', () => {
         expectFromActions(actions),
     );
     assert.equal(v.met, true, 'mining iron_ore verifies against raw_iron gains');
+});
+
+test('N1: mine then craft subtracts consumed intermediates instead of false-failing', () => {
+    const actions = [
+        { type: 'mine', target: 'oak_log', count: 3 },
+        { type: 'craft', item: 'oak_planks', count: 4 },
+    ];
+    const expectations = expectFromActions(actions);
+    assert.deepEqual(expectations, [
+        { item: 'oak_log', expectedGain: 2 },
+        { item: 'oak_planks', expectedGain: 4 },
+    ]);
+    const v = verifyOutcome(
+        snapshotInventory({ inventory: [] }),
+        { inventory: [{ item: 'oak_log', count: 2 }, { item: 'oak_planks', count: 4 }] },
+        expectations,
+    );
+    assert.equal(v.met, true, 'correct mine -> craft execution must be learnable');
+});
+
+test('N1: craft consumption is traced through transitive recipe intermediates', () => {
+    const actions = [
+        { type: 'mine', target: 'oak_log', count: 1 },
+        { type: 'craft', item: 'crafting_table', count: 1 },
+    ];
+    const expectations = expectFromActions(actions);
+    assert.deepEqual(expectations, [{ item: 'crafting_table', expectedGain: 1 }]);
+    const v = verifyOutcome(
+        snapshotInventory({ inventory: [] }),
+        { inventory: [{ item: 'crafting_table', count: 1 }] },
+        expectations,
+    );
+    assert.equal(v.met, true);
+});
+
+test('N1: common non-self block drops and variable gravel drops verify correctly', () => {
+    assert.deepEqual(
+        expectFromActions([{ type: 'mine', target: 'grass_block', count: 2 }]),
+        [{ item: 'dirt', expectedGain: 2 }],
+    );
+    const gravel = expectFromActions([{ type: 'mine', target: 'gravel', count: 2 }]);
+    assert.deepEqual(gravel, [{
+        item: 'gravel|flint',
+        items: ['gravel', 'flint'],
+        expectedGain: 2,
+    }]);
+    assert.equal(verifyOutcome(
+        snapshotInventory({ inventory: [] }),
+        { inventory: [{ item: 'gravel', count: 1 }, { item: 'flint', count: 1 }] },
+        gravel,
+    ).met, true);
+    assert.deepEqual(
+        expectFromActions([{ type: 'mine', target: 'oak_leaves', count: 8 }]),
+        [],
+        'RNG/tool-dependent leaf drops are unverifiable rather than false failures',
+    );
 });
 
 // ── N2: curriculum goals accept the same equivalents have() does ─────────────
@@ -297,6 +353,41 @@ test('F3: verified goal_done is not deferred', async () => {
         assert.equal(agent.curriculum.deferred.get(MILESTONES[0].text), undefined, 'met goals are never deferred');
     } finally {
         restoreSettings(s);
+    }
+});
+
+test('F3: goal_done verifies against fresh post-inference state', async () => {
+    const saved = savedSettings();
+    enableAll();
+    try {
+        const fresh = { ...idleState(), inventory: [{ item: 'oak_log', count: 8 }] };
+        const agent = makeAgent({
+            goalManager: seedCurriculumGoal(tempPath('goal-fresh'), MILESTONES[0]),
+            prompt: () => Promise.resolve('{"reply":"done","goal_done":true}'),
+            freshState: fresh,
+        });
+        await agent._runGoalTick(idleState(), 1);
+        assert.equal(agent.goalManager.goal, null, 'freshly satisfied goal completes');
+        assert.equal(agent.curriculum.deferred.get(MILESTONES[0].text), undefined);
+    } finally {
+        restoreSettings(saved);
+    }
+});
+
+test('F3: unavailable fresh verification preserves a target goal', async () => {
+    const saved = savedSettings();
+    enableAll();
+    try {
+        const agent = makeAgent({
+            goalManager: seedCurriculumGoal(tempPath('goal-unavailable'), MILESTONES[0]),
+            prompt: () => Promise.resolve('{"reply":"done","goal_done":true}'),
+        });
+        agent.bridge.getState = () => Promise.resolve(null);
+        await agent._runGoalTick(idleState(), 1);
+        assert.ok(agent.goalManager.goal, 'missing verification state is not treated as a false claim');
+        assert.equal(agent.curriculum.deferred.get(MILESTONES[0].text), undefined);
+    } finally {
+        restoreSettings(saved);
     }
 });
 

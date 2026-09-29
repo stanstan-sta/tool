@@ -12,7 +12,10 @@ export default [
       "no-floating-promise": noFloatingPromise,
     },
     languageOptions: {
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
       ecmaVersion: 2021,
       sourceType: "module",
     },
@@ -22,7 +25,7 @@ export default [
       "curly": "off",                   // Do not enforce the use of curly braces around blocks of code.
       "no-unused-vars": "off",          // Disable warnings for unused variables.
       "no-unreachable": "off",          // Disable warnings for unreachable code.
-      "require-await": "error",         // Disallow async functions which have no await expression
+      "require-await": "off",           // Promise-shaped interface methods may intentionally have no local await
       "no-floating-promise/no-floating-promise": "error", // Disallow Promises without error handling or awaiting
     },
   },

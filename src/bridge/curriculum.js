@@ -7,7 +7,7 @@
 // failing are deferred so it does not grind on a task it cannot yet do.
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { BLOCK_DROPS, dropForBlock } from './outcome_verifier.js';
+import { BLOCK_DROPS, dropItemsForBlock } from './outcome_verifier.js';
 
 const normItem = n => String(n || '').replace(/^minecraft:/i, '').toLowerCase();
 
@@ -142,7 +142,9 @@ export class Curriculum {
         if (m && m.match) return countMatching(inventory, m.match);
         const t = normItem(goal?.target?.item);
         if (!t) return 0;
-        return countMatching(inventory, dropForBlock(t));
+        const drops = dropItemsForBlock(t);
+        if (drops.length === 0) return 0;
+        return drops.reduce((sum, item) => sum + countMatching(inventory, item), 0);
     }
 
     // N2: a curriculum goal is met exactly when `have()`-equivalent items
