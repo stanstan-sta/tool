@@ -1,3 +1,38 @@
+# 2026-09-29 final autonomous review checkpoint
+
+This section supersedes older status summaries below; historical findings are retained for traceability.
+
+**Published main repository state:** `stanstan-sta/tool` branch `beta` includes the P3 W5/W6/W7 merge plus the follow-up review/fix pass. The follow-up independently found and fixed additional cross-feature regressions rather than accepting the worker report at face value.
+
+**Verified after the follow-up:**
+- clean `npm ci` with all six `patch-package` patches applying;
+- **333/333 Node tests pass** when the protected legacy `test/server_data.test.js` is excluded, matching the established test convention for this branch;
+- `npx eslint src test main.js` is clean after resolving the historical repo-wide lint backlog; `bridge_agent.js` is clean independently;
+- Fabric bridge Java tests complete successfully under **JDK 21**; an earlier CI failure was only the runner using Java 17, not a Java test failure;
+- the official `openai` dependency is now pinned to **7.23.0** so the code's `Responses` API and `AzureOpenAI` import actually exist. The upgrade workflow smoke-tested AzureOpenAI, Responses, Chat Completions and Embeddings surfaces, then reran the Node suite and lint;
+- no live Minecraft/model session was performed. Source/unit/build verification is not a substitute for live-game validation.
+
+**P3 source issues closed in the current beta follow-up:**
+- N1 outcome verification maps common block drops and no longer false-fails mine→craft plans by demanding intermediates that a later recipe consumed. Recipe consumption is traced transitively for generated intermediates; RNG/tool-dependent drops are treated as unverifiable instead of manufactured failures.
+- N2 equivalent-target curriculum completion, F2 persisted milestone completion, F3 goal-done verification/cooldown, N6 quiet-period enforcement and N7/F12 active safety gating are implemented by the W5 merge; F3 now verifies target-bearing claims against a fresh non-destructive post-inference state.
+- F4 transient embedding failures no longer permanently disable embeddings; mixed lexical/vector retrieval now applies the threshold that matches the score actually used.
+- F5 learned plans discard location/entity-dependent actions that cannot be replayed after coordinates/IDs are removed.
+- F6 stored skill/task text is bounded/normalised on load and is replayed only inside an explicit untrusted user-role fence. Corrupt `skills.json` is preserved under a `.corrupt.<timestamp>` name and persistence failures are logged/returned instead of silently disappearing.
+- F10 skill persistence uses atomic temp+rename writes, omits lesson embeddings and quantizes stored vectors; F11 `recordOutcome` updates are serialised; N12 skill context is task-only.
+- F16 companion events are visible to the observation consumer without being hidden by the `since` fast path, are consumed once, and are discarded rather than injected when `bridge_server_data_enabled` is false.
+- The SES lockdown wrapper, dependency/patch reproducibility, generated repository artifacts, machine-specific launcher paths, line endings and lockfile issues from the broader repository review are fixed.
+- Two legacy correctness bugs exposed during lint cleanup were fixed: exception stack handling in `action_manager.js` and an undeclared `res` in `npc/item_goal.js`. Detached async work now has explicit await/rejection ownership instead of floating promises.
+
+**Items that remain open by design/evidence rather than known unfixed source regressions:**
+- A9 memory replay is strongly filtered/fenced but the compacted summary is still free-form text rather than a fully typed fact schema.
+- N8/N9 retrieval thresholds (lexical 0.2 / cosine 0.35) remain measurement/tuning questions; no arbitrary threshold change was made without score-distribution evidence.
+- live Minecraft integration, live model behavior and Windows NTFS ACL isolation remain unvalidated.
+- the optional open-ended Voyager-style G-series roadmap and large-file refactor of `bridge_agent.js` are architectural work, not correctness fixes required for this checkpoint.
+
+**Baritone fork status at this checkpoint:** W8 commit `cf20fc42b643b63b688b75dd343621872f3c51ef` (tree also verified through no-op CI commit `62e2e8935fa6a090fd33263d34c88f0fdd82acd6`) passed its Gradle test task and full Gradle build under JDK 21 in an independent GitHub runner. It fixes the tracked-block registry mismatch/trapped chest, planks/stone expansion semantics, cache lookup synchronisation/compatibility, smelt step-index rewinds, multi-furnace reachability, vanilla sleep-window predicate and makes duplicate-Baritone mixin suppression explicit. The final publication to `morebaritone/1.21.11` is recorded below once performed; live-game validation remains outstanding.
+
+---
+
 # Handoff: Voyager self-improvement layer + review findings
 
 ## Status index — 2026-09-29
