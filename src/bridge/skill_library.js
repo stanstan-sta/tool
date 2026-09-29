@@ -431,7 +431,9 @@ export class SkillLibrary {
 
     failureCount(task) {
         const t = normaliseTask(task);
-        return this.data.lessons.filter(l => l.taskNorm === t && !l.resolvedAt).length;
+        return this.data.lessons
+            .filter(l => l.taskNorm === t && !l.resolvedAt)
+            .reduce((sum, lesson) => sum + Math.max(1, Number(lesson.occurrences) || 1), 0);
     }
 
     _prune() {
