@@ -199,8 +199,8 @@ The System One helper no longer contains machine-specific executable or model pa
 Set them in your environment before starting it:
 
 ```bat
-set LLAMA_SERVER_PATH=C:\\path\\to\\llama-server.exe
-set DECIDER_MODEL_PATH=C:\\path\\to\\decider-2b-q8_0.gguf
+set LLAMA_SERVER_PATH=C:\path\to\llama-server.exe
+set DECIDER_MODEL_PATH=C:\path\to\decider-2b-q8_0.gguf
 npm run system-one:serve
 ```
 
