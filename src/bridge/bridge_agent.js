@@ -2304,6 +2304,20 @@ export class BridgeAgent {
             return { accepted: false, reason: 'zero-queued' };
         }
         appendTaskBatch(record, sent);
+        if (!record.target) {
+            const inventoryTypes = new Set(['mine', 'craft', 'obtain', 'smelt', 'ensure_inventory']);
+            for (let i = sent.length - 1; i >= 0; i--) {
+                const action = sent[i] || {};
+                const type = String(action.type || '').toLowerCase();
+                if (!inventoryTypes.has(type)) continue;
+                const rawItem = action.item ?? action.target ?? action.block;
+                if (rawItem === undefined || rawItem === null || rawItem === '') continue;
+                const item = String(rawItem).replace(/^minecraft:/i, '').toLowerCase();
+                const count = Math.max(1, Number(action.count) || 1);
+                record.target = { item, count };
+                break;
+            }
+        }
         return { accepted: true, queued: Number(batchResult.queued) };
     }
 
