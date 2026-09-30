@@ -604,12 +604,8 @@ export class Agent {
     }
 
     async clearAllMemory(preserveImportant = false) {
-        const preservedMemory = preserveImportant ? this.history.memory : '';
         const preservedBank = preserveImportant ? this.memory_bank.getJson() : null;
-        this.history.clear();
-        if (preserveImportant) {
-            this.history.memory = preservedMemory;
-        }
+        this.history.clear(preserveImportant);
         if (!preserveImportant) {
             this.memory_bank.memory = {};
             this.memory_bank.chests = {};

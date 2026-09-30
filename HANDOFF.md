@@ -1,3 +1,26 @@
+# 2026-09-30 runtime bug-fix checkpoint
+
+**Beta checkpoint:** this commit includes the nine tested fixes below, their regression tests and this updated handoff, on top of upstream `1fde7f655b30ebd27e29b086256fffbf656e538c` (14 commits after the prior reviewed snapshot). The main checkout at `F:/tool_test/tool` and the isolated review checkout contain identical source/test changes. No deployment was performed.
+
+**Nine confirmed bug groups resolved in this pass:**
+- Bridge legacy-config token migration: a missing JSON field previously inherited a generated initializer token, skipped persistence, and changed on reload. Missing/blank tokens now persist; existing tokens remain unchanged.
+- Parent restart cancellation: stop/destroy now supersedes a pending replacement; normal manual restart and duplicate-restart guards still work.
+- System Two evaluator replay: ignored/raw model output no longer becomes system instructions. History keeps only the validated decision enum and the actual assistant reply.
+- GPT vision payloads: structured image parts survive formatting; Responses and custom Chat Completions receive their own image schemas. Custom GPT requests retain the authored system-role prompt.
+- Dashboard inventory: duplicate stacks are summed rather than retaining the last stack.
+- Process registry: valid `__proto__` names cannot change the registry prototype or break shutdown.
+- Profile creation/launch: an outside directory junction cannot redirect a new write or overwrite an outside file; creation uses exclusive writes.
+- Reserved profile targets: profile routing/listing reuses startup real-target confinement so a directory alias cannot expose reserved root files.
+- Typed-memory UI integration: replacing/deleting important memory updates its schema; preserve-important clears retain both schema and rendered facts across reload in bridge and legacy paths.
+
+**Verification:** 371/371 Node tests pass in the isolated checkout using the exact pinned OpenAI SDK 7.23.0, and 371/371 pass again in the main checkout with its installed dependencies; the protected pre-existing `test/server_data.test.js` is excluded under the existing branch convention. Repo-wide JavaScript lint (also excluding that protected file) and `git diff --check` pass. Three Java token migration/preservation tests pass under JDK 21 against the actual Fabric Loader 0.19.2 API and cached declared Mockito/JUnit dependencies. The original synthetic Java migration probe changed from two failing invariants to both passing.
+
+One fresh GPT-6 Luna review, required by `CLAUDE.md`, found no actionable regressions in the scoped production diff; its 23-test command and two separately authored adversarial checks pass. Parent integration tests also cover junction writes, reserved-file listing/routing and launch refusal. Both `profiles/Alpha.json` and the protected `test/server_data.test.js` retain their exact pre-update hashes.
+
+**Evidence:** `F:/tool_test/audit-2026-09-30/additional-runtime/REPORT.md`; independent report: `F:/tool_test/audit-2026-09-30/independent-review/report.md`. This is a bounded bug-fix pass, not a claim that every repository path or the whole handoff is complete. No full mod/Baritone rebuild, clean npm install, live Minecraft/model session or Windows ACL certification was performed in this pass. Historical tuning/roadmap and live-integration limits below remain applicable.
+
+---
+
 # 2026-09-29 final autonomous review checkpoint
 
 This section supersedes older status summaries below; historical findings are retained for traceability.

@@ -101,6 +101,12 @@ function sanitizeProfileName(name) {
 }
 
 function profileFilePath(name) {
+    if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
+    const relative = path.relative(realpathSync(REPO_ROOT), realpathSync(PROFILES_DIR));
+    const directory = process.platform === 'win32' ? relative.toLowerCase() : relative;
+    if (directory !== 'profiles') {
+        throw new Error('Profiles directory must resolve to the repository profiles library.');
+    }
     return path.join(PROFILES_DIR, `${sanitizeProfileName(name)}.json`);
 }
 
@@ -123,11 +129,7 @@ const ROOT_RESERVED_PROFILE_FILES = new Set(['package.json', 'keys.json', 'keys.
 // let user input become an arbitrary filesystem path.
 function confinedProfileTarget(filePath) {
     try {
-        const root = realpathSync(REPO_ROOT);
-        const real = realpathSync(filePath);
-        const relative = path.relative(root, real);
-        if (!relative || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) return null;
-        return real;
+        return path.resolve(REPO_ROOT, readStartupProfile(filePath).path);
     } catch {
         return null;
     }
@@ -420,12 +422,12 @@ export function createMindServer(host_public = false, port = 8080) {
                         }
                     }
                     if (!filePath) {
-                        filePath = path.join(PROFILES_DIR, `${safeName}.json`);
+                        filePath = profileFilePath(safeName);
                         if (!existsSync(filePath)) {
-                            if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
-                            writeFileSync(filePath, JSON.stringify(settings.profile, null, 4), 'utf8');
+                            writeFileSync(filePath, JSON.stringify(settings.profile, null, 4), { encoding: 'utf8', flag: 'wx' });
                             console.log(`Saved new profile to ${filePath}`);
                         }
+                        readStartupProfile(filePath);
                     }
                     settings.profile_path = filePath;
                 } catch (err) {
@@ -716,6 +718,7 @@ export function createMindServer(host_public = false, port = 8080) {
                 const files = readdirSync(PROFILES_DIR).filter(f => f.endsWith('.json'));
                 for (const f of files) {
                     const filePath = path.join(PROFILES_DIR, f);
+                    if (!confinedProfileTarget(filePath)) continue;
                     try {
                         const data = JSON.parse(readFileSync(filePath, 'utf8'));
                         if (data && typeof data === 'object') {
@@ -736,6 +739,7 @@ export function createMindServer(host_public = false, port = 8080) {
             const repoRoot = path.join(__dirname, '../..');
             for (const f of readdirSync(repoRoot).filter(x => x.endsWith('.json') && x !== 'package.json' && x !== 'keys.json' && x !== 'keys.example.json' && x !== 'settings_local.json')) {
                 const filePath = path.join(repoRoot, f);
+                if (!confinedProfileTarget(filePath)) continue;
                 try {
                     const data = JSON.parse(readFileSync(filePath, 'utf8'));
                     if (data && typeof data === 'object' && data.name && (data.model || data.personality)) {
@@ -778,9 +782,8 @@ export function createMindServer(host_public = false, port = 8080) {
             if (scanProfileCandidates(safeName).length > 0) {
                 return res.status(409).json({ error: `Profile '${safeName}' already exists. Use PUT to update.` });
             }
-            const filePath = path.join(PROFILES_DIR, `${safeName}.json`);
-            if (!existsSync(PROFILES_DIR)) mkdirSync(PROFILES_DIR, { recursive: true });
-            writeFileSync(filePath, JSON.stringify(profile, null, 4), 'utf8');
+            const filePath = profileFilePath(safeName);
+            writeFileSync(filePath, JSON.stringify(profile, null, 4), { encoding: 'utf8', flag: 'wx' });
             console.log(`Created profile ${safeName} at ${filePath}`);
             res.status(201).json({ success: true, path: `./profiles/${safeName}.json` });
         } catch (err) {

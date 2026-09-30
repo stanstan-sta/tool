@@ -5,7 +5,7 @@ import open from 'open';
 
 let mindserver;
 let connected = false;
-let agent_processes = {};
+let agent_processes = Object.create(null);
 let agent_count = 0;
 let mindserver_port = 8080;
 

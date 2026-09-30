@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { once } from 'node:events';
@@ -33,6 +33,45 @@ async function setup(t) {
     const ack = (event, ...args) => client.timeout(2000).emitWithAck(event, ...args);
     return { ...f, base, get, put, del, post, ack, module, headers };
 }
+
+function redirectProfiles(f, target) {
+    const source = path.resolve(f.root, 'profiles');
+    const backup = path.resolve(f.root, 'original-profiles');
+    assert.equal(path.dirname(source), path.resolve(f.root));
+    assert.equal(path.dirname(backup), path.resolve(f.root));
+    renameSync(source, backup);
+    symlinkSync(target, source, 'junction');
+}
+
+test('profile creation cannot overwrite a file through an outside directory junction', async t => {
+    const f = await setup(t);
+    const outside = path.join(f.temporary, 'outside-profiles');
+    mkdirSync(outside);
+    const file = path.join(outside, 'Outside.json');
+    const before = JSON.stringify({ name: 'Outside', model: 'preserved' });
+    writeFileSync(file, before);
+    redirectProfiles(f, outside);
+    assert.ok([400, 409].includes((await f.post({ name: 'Outside', model: 'overwritten' })).status));
+    assert.equal(readFileSync(file, 'utf8'), before);
+});
+
+test('profile routing and listing exclude reserved files behind a directory alias', async t => {
+    const f = await setup(t);
+    redirectProfiles(f, f.root);
+    assert.ok([400, 404].includes((await f.get('NotAProfile')).status));
+    const listed = await (await fetch(`${f.base}/api/profiles`, { headers: f.headers })).json();
+    assert.ok(listed.every(profile => profile.name !== 'NotAProfile'));
+});
+
+test('launch cannot create a new profile through an outside directory junction', async t => {
+    const f = await setup(t);
+    const outside = path.join(f.temporary, 'outside-profiles');
+    mkdirSync(outside);
+    redirectProfiles(f, outside);
+    const result = await f.ack('create-agent', { profile: { name: 'Fresh', model: 'fixture' } });
+    assert.equal(result.success, false);
+    assert.equal(existsSync(path.join(outside, 'Fresh.json')), false);
+});
 
 test('GET resolves a legacy root profile by stored name', async t => {
     const f = await setup(t);

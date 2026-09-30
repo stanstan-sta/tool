@@ -7,11 +7,13 @@ export class AgentProcess {
         this.port = port;
         this.bridge_mode = bridge_mode;
         this._awaitingManualRestart = false;
+        this._stopRequested = false;
     }
 
     start(load_memory=false, init_message=null, count_id=0) {
         this.count_id = count_id;
         this.running = true;
+        this._stopRequested = false;
 
         const initScript = this.bridge_mode
             ? 'src/process/init_bridge_agent.js'
@@ -47,7 +49,7 @@ export class AgentProcess {
 
             // Skip ALL auto-restart logic if forceRestart() is driving the
             // lifecycle — it attaches its own .once('exit') handler.
-            if (this._awaitingManualRestart) {
+            if (this._awaitingManualRestart || this._stopRequested) {
                 this._awaitingManualRestart = false;
                 return;
             }
@@ -87,6 +89,7 @@ export class AgentProcess {
     }
 
     stop() {
+        this._stopRequested = true;
         if (!this.running || !this.process) return;
         this.process.kill('SIGINT');
     }
@@ -108,6 +111,7 @@ export class AgentProcess {
             console.log(`Agent process for ${this.name} is still running. Attempting to force restart.`);
 
             // Flag so the auto-exit handler defers to the .once('exit') below.
+            this._stopRequested = false;
             this._awaitingManualRestart = true;
 
             let resolved = false;
@@ -121,6 +125,7 @@ export class AgentProcess {
                 clearTimeout(restartTimeout);
                 if (killGraceTimeout) clearTimeout(killGraceTimeout);
                 this._awaitingManualRestart = false;
+                if (this._stopRequested) return;
                 console.log(message);
                 this.start(true, 'Agent process restarted.', this.count_id);
             };
@@ -172,7 +177,7 @@ export class AgentProcess {
             current.once('exit', () => {
                  finishWithRestart(`Stopped hanging agent ${this.name}. Now restarting.`);
             });
-            this.stop(); // sends SIGINT
+            current.kill('SIGINT');
         } else {
              this.start(true, 'Agent process restarted.', this.count_id);
         }

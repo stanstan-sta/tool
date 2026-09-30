@@ -2,6 +2,7 @@ package com.mindcraft.bridge;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,7 +133,8 @@ public class BridgeConfig {
             String json = Files.readString(configPath);
             BridgeConfig config = GSON.fromJson(json, BridgeConfig.class);
             if (config == null) config = new BridgeConfig();
-            if (config.bridgeToken == null || config.bridgeToken.isBlank()) {
+            JsonObject stored = GSON.fromJson(json, JsonObject.class);
+            if (stored == null || !stored.has("bridgeToken") || config.bridgeToken == null || config.bridgeToken.isBlank()) {
                 config.bridgeToken = generateBridgeToken();
                 config.save(configPath);
                 // Shown once at generation: the owner must copy this into the

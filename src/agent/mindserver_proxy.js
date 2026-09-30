@@ -106,7 +106,10 @@ class MindServerProxy {
                         console.warn('Rejected instruction-like important memory; keeping previous memory.');
                         return;
                     }
-                    this.agent.history.memory = validated ?? '';
+                    if (!this.agent.history.setMemoryText(validated ?? '')) {
+                        console.warn('Rejected important memory that cannot fit the typed fact schema; keeping previous memory.');
+                        return;
+                    }
                     await this.agent.history.save();
                 }
             } catch (error) {

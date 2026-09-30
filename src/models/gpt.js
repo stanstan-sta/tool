@@ -23,11 +23,6 @@ export class GPT {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***') {
-        let messages = strictFormat(turns);
-        messages = messages.map(message => {
-            message.content += stop_seq;
-            return message;
-        });
         let model = this.model_name || "gpt-4o-mini";
 
         let res = null;
@@ -37,8 +32,7 @@ export class GPT {
             // if a custom URL is set, use chat.completions
             // because custom "OpenAI-compatible" endpoints likely do not have responses endpoint
             if (this.url) {
-                let messages = [{'role': 'system', 'content': systemMessage}].concat(turns);
-                messages = strictFormat(messages);
+                const messages = [{'role': 'system', 'content': systemMessage}].concat(strictFormat(turns));
                 const pack = {
                     model: model,
                     messages,
@@ -58,7 +52,7 @@ export class GPT {
             else {
                 let messages = strictFormat(turns);
                 messages = messages.map(message => {
-                    message.content += stop_seq;
+                    if (typeof message.content === 'string') message.content += stop_seq;
                     return message;
                 });
                 const response = await this.openai.responses.create({
@@ -90,14 +84,14 @@ export class GPT {
 
     async sendVisionRequest(messages, systemMessage, imageBuffer) {
         const imageMessages = [...messages];
+        const imageUrl = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
         imageMessages.push({
             role: "user",
             content: [
-                { type: "input_text", text: systemMessage },
-                {
-                    type: "input_image",
-                    image_url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}`
-                }
+                { type: this.url ? "text" : "input_text", text: systemMessage },
+                this.url
+                    ? { type: "image_url", image_url: { url: imageUrl } }
+                    : { type: "input_image", image_url: imageUrl }
             ]
         });
         

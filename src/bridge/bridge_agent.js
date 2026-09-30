@@ -3341,7 +3341,7 @@ export class BridgeAgent {
             if (decision.decision !== systemOne.choice) decision.valid = false;
         }
         console.log(`${this.name} active-task evaluator response: ${response}`);
-        this.history.add('system', `Active-task evaluator response: ${response || '(empty)'}`);
+        this.history.add('system', `Active-task evaluator decision: ${decision.valid ? decision.decision : 'invalid'}.`);
 
         if (!decision.valid) {
             this.history.add('system', 'Invalid or conflicting active-task evaluator response. No additional actions dispatched.');
@@ -3359,6 +3359,7 @@ export class BridgeAgent {
 
         if (decision.reply.trim()) {
             const reply = decision.reply.trim();
+            this.history.add(this.name, reply);
             sendOutputToServer(this.name, reply);
             if (settings.chat_ingame === true) {
                 this._trackSentChat(reply);
@@ -3521,9 +3522,7 @@ export class BridgeAgent {
     }
 
     async clearAllMemory(preserveImportant = false) {
-        const preservedMemory = preserveImportant ? this.history.memory : '';
-        this.history.clear();
-        this.history.memory = preservedMemory;
+        this.history.clear(preserveImportant);
         await this.history.save();
         sendOutputToServer(this.name, `Memory cleared${preserveImportant ? ' (important facts preserved)' : ''}.`);
     }
@@ -3552,6 +3551,12 @@ export class BridgeAgent {
     async getFullState() {
         const state = await this.bridge.getState(null, { drainChat: false });
         if (!state || !state.connected) return null;
+        const inventoryCounts = new Map();
+        for (const stack of state.inventory || []) {
+            if (!stack?.item) continue;
+            const item = stack.item.replace('minecraft:', '');
+            inventoryCounts.set(item, (inventoryCounts.get(item) || 0) + stack.count);
+        }
         const now = Date.now();
         return {
             gameplay: {
@@ -3572,11 +3577,7 @@ export class BridgeAgent {
             inventory: {
                 stacksUsed: (state.inventory || []).length,
                 totalSlots: 36,
-                counts: Object.fromEntries(
-                    (state.inventory || [])
-                        .filter(i => i && i.item)
-                        .map(i => [i.item.replace('minecraft:', ''), i.count])
-                ),
+                counts: Object.fromEntries(inventoryCounts),
                 equipment: {},
             },
             action: { current: 'Baritone' },

@@ -359,8 +359,17 @@ export class History {
         }
     }
 
-    clear() {
+    setMemoryText(text) {
+        const schema = migrateLegacyMemory(text);
+        if (String(text || '').trim() && schema.facts.length === 0) return false;
+        this.memory_schema = schema;
+        this.memory = renderMemorySchema(schema);
+        return true;
+    }
+
+    clear(preserveImportant = false) {
         this.turns = [];
+        if (preserveImportant) return;
         this.memory_schema = { version: MEMORY_SCHEMA_VERSION, facts: [] };
         this.memory = '';
     }
